@@ -37,8 +37,8 @@ cd emly-ai-assistant
 cp .env.sample .env
 
 # 3. Open .env and fill in at minimum:
-#    - ADMIN_EMAIL        (your admin login email)
-#    - ADMIN_PASSWORD     (your admin login password)
+#    - AUTH_BOOTSTRAP_SUPERADMIN_EMAIL  (your admin login email)
+#    - AUTH_LOCAL_BOOTSTRAP_PASSWORD     (your admin login password)
 #    - OPENAI_API_KEY     (your LLM provider API key)
 #    - OPENAI_BASE_URL    (your LLM provider base URL)
 #
@@ -53,7 +53,7 @@ sudo chown -R 10001:10001 ./data
 docker compose up --build
 ```
 
-Open **http://localhost:8080** in your browser. Sign in with the `ADMIN_EMAIL` and `ADMIN_PASSWORD` you set in `.env`.
+Open **http://localhost:8080** in your browser. Sign in with the `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` and `AUTH_LOCAL_BOOTSTRAP_PASSWORD` you set in `.env`.
 
 ### What's Running
 
@@ -163,7 +163,16 @@ This reads `pyproject.toml`, resolves versions, and installs everything into the
 
 > **Shortcut:** If you don't want to manually activate the venv every time, you can use `uv run` instead. For example: `uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080`. The `uv run` command automatically uses the `.venv` without needing to activate it.
 
-### Step 2 — Configure the Database
+### Step 5 — Configure the Database
+
+> **Important for local development:** In your `.env` file, set these paths for local development (the default `.env.sample` has Docker paths like `/app/data`):
+>
+> ```env
+> DATA_DIR=./data
+> SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
+> ```
+>
+> `SENTENCE_TRANSFORMERS_HOME` is where the embedding model cache is stored. It also controls the re-ranking model cache (`{DATA_DIR}/models/re_ranking`).
 
 You have two options: **SQLite** (simple, no setup) or **PostgreSQL** (production-grade).
 
@@ -174,7 +183,11 @@ SQLite stores everything in a single file. Perfect for local development and tes
 Open your `.env` file and set:
 
 ```env
-DATABASE_URL=sqlite:///data/emlygenai_app.db
+DATA_DIR=./data
+
+# For SQLite, leave DATABASE_URL commented out or unset.
+# It will automatically use: sqlite:///{DATA_DIR}/emlygenai_app.db
+# DATABASE_URL=
 ```
 
 That's it. No database server needed. The file will be created automatically at `./data/emlygenai_app.db` when the app starts.
@@ -186,6 +199,7 @@ That's it. No database server needed. The file will be created automatically at 
 If you have PostgreSQL installed locally (or running via Docker), set these in your `.env`:
 
 ```env
+DATA_DIR=./data
 DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE_NAME
 ```
 
@@ -208,7 +222,7 @@ If running only PostgreSQL + Qdrant via Docker (while developing the backend loc
 docker compose up postgres qdrant
 ```
 
-### Step 3 — Configure the Vector Database (Qdrant)
+### Step 6 — Configure the Vector Database (Qdrant)
 
 **Option A: Embedded mode (no extra setup)**
 Leave `QDRANT_URL` unset in your `.env`. Qdrant will run inside the app process and store data at `./data/qdrant_db/`. Works only with a single worker.
@@ -220,7 +234,7 @@ Run Qdrant separately and set:
 QDRANT_URL=http://localhost:6333
 ```
 
-### Step 4 — Build the Admin UI and Widget
+### Step 7 — Build the Widget, Then the Admin UI
 
 ```bash
 # Build the widget bundle
@@ -237,7 +251,7 @@ npm run build
 cd ..
 ```
 
-### Step 5 — Start the Backend
+### Step 8 — Start the Backend
 
 ```bash
 # Option 1: Using uvicorn directly
@@ -269,7 +283,12 @@ uv sync
 
 # Create .env file
 cp .env.sample .env
-# Edit .env — set DATABASE_URL (see options above), ADMIN_EMAIL, ADMIN_PASSWORD, OPENAI_API_KEY, etc.
+# Edit .env and set:
+#   DATA_DIR=./data (for local dev, not /app/data which is for Docker)
+#   SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
+#   DATABASE_URL (see options above)
+#   AUTH_BOOTSTRAP_SUPERADMIN_EMAIL, AUTH_LOCAL_BOOTSTRAP_PASSWORD
+#   OPENAI_API_KEY, OPENAI_BASE_URL
 
 # Build widget
 cd widget && npm install && npm run build-widget && cp dist/emly-widget.js ../ui/public/emly-widget.js && cd ..
@@ -295,13 +314,14 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 | Variable | What it does | Default / Example |
 |----------|-------------|-------------------|
 | `DATABASE_URL` | Database connection string | See [database section](#step-2--configure-the-database) above |
-| `ADMIN_EMAIL` | Superadmin email (created on first boot) | `admin@example.com` |
-| `ADMIN_PASSWORD` | Superadmin password | Set your own |
+| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | Superadmin email (created on first boot) | `admin@example.com` |
+| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | Superadmin password | Set your own |
 | `OPENAI_API_KEY` | LLM API key (used as fallback for bots without their own key) | Your API key |
 | `OPENAI_BASE_URL` | LLM API base URL | `https://openrouter.ai/api/v1` |
 | `MODEL` | Default LLM model | `google/gemma-4-26b-a4b-it:free` |
 | `QDRANT_URL` | Vector database URL (leave unset for embedded mode) | `http://localhost:6333` |
 | `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
+| `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
 
 ### LLM Provider Configuration
 
