@@ -1,0 +1,58 @@
+# Files that should never reach the image — keeping the build context lean
+# is the cheapest perf win we have, since BuildKit hashes every byte we send.
+
+# Python build / cache artifacts
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual envs and runtime data dirs (rebuilt inside the image)
+.venv/
+data/
+shopify_products_html/
+output.log
+voice/
+
+# Local credentials / one-off service-account JSON (NEVER bake into images)
+env.sh
+.env
+.env.*
+*.json.local
+datoin-*.json
+gen-lang-client-*.json
+
+# Stale dep manifests — the image installs from pyproject.toml + uv.lock
+requirements.txt
+
+# Untracked dev helpers
+scripts/
+
+# UI artifacts (rebuilt inside the ui-builder stage)
+ui/node_modules/
+ui/.next/
+ui/out/
+ui/pnpm-lock.yaml
+
+# Widget artifacts (rebuilt inside the widget-builder stage). widget/dist/ is
+# already covered by the global `dist/` rule above; called out here for
+# discoverability alongside the other build-output excludes.
+widget/node_modules/
+widget/dist/
+
+# Editor / VCS / agent metadata
+.git/
+.github/
+.gitignore
+.vscode/
+.idea/
+.playwright-mcp/
+.claude/
+*.log
+*.tsbuildinfo
+
+# Tests (no test framework wired up; would just bloat the layer)
+test.py
+tests/

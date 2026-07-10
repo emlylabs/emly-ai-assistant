@@ -1,0 +1,1700 @@
+@keyframes flip-circular {
+    0% {
+        transform: scale(0) rotate(-180deg);
+        opacity: 0;
+    }
+
+    100% {
+        transform: scale(1) rotate(0deg);
+        opacity: 1;
+    }
+}
+
+.chat-icon {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 80px;
+    height: 80px;
+    border-radius: 999px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    cursor: pointer;
+    font-size: 16px;
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+    z-index: 9997;
+}
+
+.animate-entry {
+    animation: flip-circular 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.chat-icon:hover {
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 0 22px 50px rgba(15, 23, 42, 0.26);
+}
+
+.emls-chatbot-widget {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 380px;
+    height: 550px;
+    border-radius: var(--cb-radius, 20px);
+    overflow: hidden;
+    background: var(--cb-panel, #ffffff);
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    box-shadow: var(--cb-shadow, 0 20px 50px rgba(15, 23, 42, 0.16));
+    display: flex;
+    flex-direction: column;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI', ui-sans-serif, system-ui, 'Helvetica Neue', Arial, sans-serif;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--cb-ink, #0f172a);
+    z-index: 9997;
+}
+
+.emls-chatbot-widget.emls-chatbot-widget-maximized {
+    top: 20px;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 96%;
+    height: calc(100vh - 40px);
+}
+
+.emls-chatbot-widget .header {
+    background: var(--cb-header-bg, var(--header-background, linear-gradient(135deg, #2563eb 0%, #60a5fa 100%)));
+    color: var(--cb-header-fg, var(--header-foreground, #ffffff));
+    padding: 14px 14px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-radius: var(--cb-radius, 20px) var(--cb-radius, 20px) 0 0;
+    width: 100%;
+    box-sizing: border-box;
+    position: relative;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.emls-chatbot-widget .header .session-icon {
+    display: flex;
+    width: 18px;
+    height: 18px;
+    padding: 8px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    filter: invert(1) brightness(2) saturate(0);
+    margin-right: 8px;
+    cursor: pointer;
+    transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.emls-chatbot-widget .header .session-icon:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .banner {
+    width: 100%;
+    position: relative;
+    background: var(--cb-banner-bg, #f8fafc);
+    color: var(--cb-ink, #0f172a);
+    padding: 14px 18px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    overflow: hidden;
+    box-sizing: border-box;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    text-align: left;
+    font-weight: 500;
+    border-bottom: 1px solid var(--cb-line, rgba(15, 23, 42, 0.06));
+    letter-spacing: -0.005em;
+}
+
+.emls-chatbot-widget .banner:empty {
+    display: none;
+}
+
+.emls-chatbot-widget .header .avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    margin-right: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.emls-chatbot-widget[data-theme="gold"] .header .avatar {
+    filter: brightness(4.5);
+}
+
+.emls-chatbot-widget .header .header-text {
+    font-size: 15px;
+    font-weight: 700;
+    flex: 1;
+    letter-spacing: -0.02em;
+}
+
+.emls-chatbot-widget .header .header-text p {
+    font-size: 12px;
+    margin: 4px 0 0;
+    opacity: 0.9;
+    font-weight: 600;
+}
+
+.emls-chatbot-widget .header .header-icons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.emls-chatbot-widget .header .header-icons div {
+    margin-right: 10px;
+    cursor: pointer;
+}
+
+.emls-chatbot-widget .header .header-icons .close-icon {
+    filter: invert(1) brightness(2) saturate(0);
+    width: 18px;
+    height: 18px;
+    padding: 8px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    cursor: pointer;
+    transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.emls-chatbot-widget .header .header-icons .close-icon:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .header .header-icons .maximize-icon {
+    border: none;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+    transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.emls-chatbot-widget .header .header-icons .maximize-icon:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .header .header-icons .maximize-icon svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+.emls-chatbot-widget .header .header-icons .new-chat-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    cursor: pointer;
+    display: flex;
+    font-size: 13px;
+    gap: 2px;
+    justify-content: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+    transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.emls-chatbot-widget .header .header-icons .new-chat-container:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .header .header-icons .new-chat-icon {
+    filter: invert(1) brightness(2) saturate(0);
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.emls-chatbot-widget .header .header-icons .new-chat-text {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.emls-chatbot-widget .header .header-icons .emw-theme-button {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.14);
+    color: inherit;
+    cursor: pointer;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.emls-chatbot-widget .header .header-icons .emw-theme-button:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .header .header-icons .emw-theme-button svg {
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+.emls-chatbot-widget .emw-theme-menu {
+    position: absolute;
+    top: 62px;
+    right: 14px;
+    z-index: 50;
+    background: var(--cb-surface, #ffffff);
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    border-radius: 14px;
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+    padding: 12px;
+    width: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-start;
+    max-width: 200px;
+}
+
+.emls-chatbot-widget .emw-theme-menu__item {
+    width: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: transparent;
+    border: 2px solid transparent;
+    cursor: pointer;
+    border-radius: 50%;
+    transition: all 0.18s ease;
+    flex-shrink: 0;
+}
+
+.emls-chatbot-widget .emw-theme-menu__item:hover {
+    transform: scale(1.1);
+}
+
+.emls-chatbot-widget .emw-theme-menu__item.is-active {
+    border-color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .emw-theme-menu__swatch {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    flex-shrink: 0;
+}
+
+.emls-chatbot-widget .em-left-window {
+    background: rgba(15, 23, 42, 0.32);
+    backdrop-filter: blur(2px);
+    border-radius: inherit;
+    float: left;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    z-index: 1;
+    animation: emw-scrim-in 0.16s ease-out;
+}
+
+@keyframes emw-scrim-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.emls-chatbot-widget .session-management-container {
+    background: var(--cb-surface, #ffffff);
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: 0;
+    border-top-left-radius: inherit;
+    border-top-right-radius: 0;
+    box-sizing: border-box;
+    float: left;
+    height: 100%;
+    max-width: 260px;
+    padding: 0;
+    position: relative;
+    width: 100%;
+    border-right: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    box-shadow: 4px 0 16px rgba(15, 23, 42, 0.06);
+    display: flex;
+    flex-direction: column;
+    animation: emw-side-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes emw-side-in {
+    from { transform: translateX(-12%); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 14px 12px;
+    background: var(--cb-header-bg, var(--header-background));
+    color: var(--cb-header-fg, var(--header-foreground));
+    border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+    z-index: 10;
+    flex-shrink: 0;
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-header-icon {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    object-fit: cover;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-header-text {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.02em;
+    color: inherit;
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-close-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: inherit;
+    transition: background 0.18s ease, transform 0.18s ease;
+    flex-shrink: 0;
+    padding: 0;
+    appearance: none;
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-close-icon:hover {
+    background: rgba(255, 255, 255, 0.22);
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-close-icon:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 2px;
+}
+
+.emls-chatbot-widget .session-dropdown {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 10px 8px 14px;
+    flex: 1;
+}
+
+.emls-chatbot-widget .session-dropdown::-webkit-scrollbar {
+    width: 8px;
+    height: 4px;
+}
+
+.emls-chatbot-widget .session-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 20px;
+}
+
+.emls-chatbot-widget .session-dropdown::-webkit-scrollbar-thumb {
+    background: var(--cb-accent, var(--header-background));
+    border-radius: 20px;
+}
+
+.emls-chatbot-widget .session-dropdown::-webkit-scrollbar-thumb:hover {
+    background: var(--cb-accent, var(--header-background));
+}
+
+.emls-chatbot-widget .session-dropdown .session-item {
+    position: relative;
+    padding: 9px 8px 9px 14px;
+    cursor: pointer;
+    color: var(--cb-ink, #0f172a);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    font-size: 12.5px;
+    font-weight: 500;
+    gap: 6px;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item::before {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 2px;
+    background: var(--cb-accent, #2563eb);
+    transform: translateY(-50%);
+    transition: height 0.18s ease;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item .session-item-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item .session-delete-trigger {
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    color: var(--cb-muted, #64748b);
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item:hover .session-delete-trigger,
+.emls-chatbot-widget .session-dropdown .session-item.active .session-delete-trigger {
+    opacity: 1;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item .session-delete-trigger:hover {
+    background: rgba(239, 68, 68, 0.10);
+    color: #ef4444;
+    opacity: 1;
+}
+
+.emls-chatbot-widget .session-dropdown .session-item.is-confirming {
+    background: rgba(239, 68, 68, 0.06);
+    border-color: rgba(239, 68, 68, 0.22);
+}
+
+.emls-chatbot-widget .session-item-confirm {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    animation: emw-confirm-in 0.14s ease-out;
+}
+
+@keyframes emw-confirm-in {
+    from { opacity: 0; transform: translateX(4px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+.emls-chatbot-widget .session-item-confirm__btn {
+    appearance: none;
+    cursor: pointer;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    line-height: 1;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.emls-chatbot-widget .session-item-confirm__yes {
+    background: #ef4444;
+    color: #ffffff;
+    border-color: rgba(239, 68, 68, 0.9);
+}
+
+.emls-chatbot-widget .session-item-confirm__yes:hover {
+    background: #dc2626;
+    transform: translateY(-1px);
+}
+
+.emls-chatbot-widget .session-item-confirm__no {
+    background: var(--cb-surface, #ffffff);
+    color: var(--cb-muted, #64748b);
+    border-color: var(--cb-line, rgba(15, 23, 42, 0.12));
+}
+
+.emls-chatbot-widget .session-item-confirm__no:hover {
+    background: var(--cb-hover, rgba(15, 23, 42, 0.06));
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .session-dropdown .session-item:hover {
+    background-color: var(--cb-hover, rgba(15, 23, 42, 0.05));
+    border-color: var(--cb-line, rgba(15, 23, 42, 0.08));
+}
+
+.emls-chatbot-widget .session-dropdown .session-item.active {
+    background-color: var(--cb-active, rgba(15, 23, 42, 0.08));
+    font-weight: 600;
+    border-color: var(--cb-line, rgba(15, 23, 42, 0.10));
+}
+
+.emls-chatbot-widget .session-dropdown .session-item.active::before {
+    height: 60%;
+}
+
+.emls-chatbot-widget .body {
+    position: relative;
+    float: left;
+    padding: 16px;
+    flex: 1;
+    overflow-y: auto;
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--cb-body-bg, var(--body-background, #f8fafc));
+}
+
+.emls-chatbot-widget .emw-session-overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: var(--cb-overlay, rgba(15, 23, 42, 0.10));
+    backdrop-filter: blur(6px);
+    z-index: 80;
+    cursor: progress;
+}
+
+.emls-chatbot-widget .emw-session-spinner {
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    border: 3px solid rgba(148, 163, 184, 0.30);
+    border-top-color: var(--cb-accent, #2563eb);
+    animation: spin 0.9s linear infinite;
+    box-shadow: 0 16px 34px rgba(15, 23, 42, 0.18);
+    background: transparent;
+}
+
+.emls-chatbot-widget .body::-webkit-scrollbar {
+    width: 8px;
+    height: 4px;
+}
+
+.emls-chatbot-widget .body::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 20px;
+}
+
+.emls-chatbot-widget .body::-webkit-scrollbar-thumb {
+    background: var(--cb-accent, var(--header-background));
+    border-radius: 20px;
+}
+
+.emls-chatbot-widget .body::-webkit-scrollbar-thumb:hover {
+    background: var(--cb-accent, var(--header-background));
+}
+
+.emls-chatbot-widget .body .no-messages {
+    text-align: center;
+    color: var(--cb-muted, #64748b);
+    font-style: italic;
+}
+
+.emls-chatbot-widget .body .emw-messages {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 10px;
+}
+
+.emls-chatbot-widget .body .emw-message {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    gap: 10px;
+}
+
+.emls-chatbot-widget .body .emw-message.emw-user {
+    justify-content: flex-end;
+}
+
+.emls-chatbot-widget .body .emw-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    background: var(--cb-surface, #ffffff);
+}
+
+.emls-chatbot-widget .body .emw-content {
+    display: flex;
+    flex-direction: column;
+    max-width: calc(100% - 40px);
+}
+
+.emls-chatbot-widget .body .emw-content.emw-user-content {
+    align-items: flex-end;
+}
+
+.emls-chatbot-widget .body .emw-content.emw-bot-content {
+    align-items: flex-start;
+}
+
+.emls-chatbot-widget .body .emw-message-bubble {
+    background-color: var(--cb-surface, #ffffff);
+    padding: 10px 14px;
+    border-radius: 14px;
+    word-break: break-word;
+    font-size: 13.5px;
+    line-height: 1.5;
+    position: relative;
+    max-width: 100%;
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.06));
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.emls-chatbot-widget .body .emw-message-bubble.emw-user-bubble {
+    background-color: var(--cb-user-bg, var(--user-message-background, #2563eb));
+    color: var(--cb-user-fg, var(--user-message-foreground, #ffffff));
+    border-color: transparent;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.emls-chatbot-widget .body .emw-message-bubble.emw-bot-bubble {
+    background-color: var(--cb-bot-bg, var(--bot-message-background, #ffffff));
+    color: var(--cb-bot-fg, var(--bot-message-foreground, #0f172a));
+}
+
+.emls-chatbot-widget .body .emw-analytics-card {
+    margin-top: 10px;
+    border-top: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.emls-chatbot-widget .body .emw-analytics-summary {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-analytics-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.emls-chatbot-widget .body .emw-analytics-group-title {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.emls-chatbot-widget .body .emw-analytics-chart {
+    width: 100%;
+    min-height: 120px;
+}
+
+.emls-chatbot-widget .body .emw-analytics-chart .recharts-cartesian-axis-tick-value {
+    fill: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-timestamp {
+    font-size: 10px;
+    color: var(--cb-muted, #64748b);
+    margin-top: 2px;
+}
+
+.emls-chatbot-widget .body .emw-feedback {
+    list-style: none;
+    display: flex;
+    gap: 8px;
+    margin: 4px 0 0;
+    padding: 0;
+    align-items: center;
+}
+
+.emls-chatbot-widget .body .emw-feedback li {
+    display: flex;
+}
+
+.emls-chatbot-widget .body .emw-feedback-btn {
+    background: transparent;
+    border: 0;
+    padding: 4px;
+    margin: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--cb-muted, #64748b);
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.emls-chatbot-widget .body .emw-feedback-btn:hover:not(:disabled) {
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .body .emw-feedback-btn.is-active {
+    color: var(--cb-accent, #2563eb);
+}
+
+.emls-chatbot-widget .body .emw-feedback-btn:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.emls-chatbot-widget .body .emw-citations {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+    width: 100%;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-row {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill {
+    display: inline-flex;
+    align-items: center;
+    background: rgba(15, 23, 42, 0.04);
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    border-radius: 999px;
+    padding: 2px 4px 2px 8px;
+    font-size: 11px;
+    line-height: 1.2;
+    max-width: 100%;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill.is-open {
+    background: rgba(37, 99, 235, 0.08);
+    border-color: rgba(37, 99, 235, 0.25);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill:hover {
+    background: rgba(15, 23, 42, 0.08);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--cb-ink, #0f172a);
+    text-decoration: none;
+    overflow: hidden;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-link:hover {
+    text-decoration: underline;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-link--inert {
+    cursor: default;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-link--inert:hover {
+    text-decoration: none;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-icon {
+    flex-shrink: 0;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-ext {
+    flex-shrink: 0;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-toggle {
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    margin-left: 2px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-toggle:hover {
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-chev {
+    transition: transform 0.15s ease;
+}
+
+.emls-chatbot-widget .body .emw-cite-pill-chev.is-open {
+    transform: rotate(180deg);
+}
+
+.emls-chatbot-widget .body .emw-cite-card {
+    background: var(--cb-surface, #ffffff);
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    border-radius: 10px;
+    padding: 10px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+}
+
+.emls-chatbot-widget .body .emw-cite-card-image {
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 1;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cb-ink, #0f172a);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    line-height: 1.3;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-title:hover:not(.emw-cite-card-title--inert) {
+    text-decoration: underline;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-title--inert {
+    cursor: default;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-host {
+    font-size: 10px;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-cite-card-desc {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--cb-ink, #0f172a);
+    margin: 0;
+}
+
+.emls-chatbot-widget .body .emw-cite-card-chunk {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--cb-muted, #64748b);
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    border-left: 2px solid var(--cb-line, rgba(15, 23, 42, 0.12));
+    background: rgba(15, 23, 42, 0.02);
+    border-radius: 0 6px 6px 0;
+    font-style: italic;
+    overflow-wrap: anywhere;
+}
+
+.emls-chatbot-widget .footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 14px 10px;
+    border-top: 1px solid var(--cb-line, rgba(15, 23, 42, 0.06));
+    position: relative;
+    float: left;
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--cb-panel, var(--footer-background, #ffffff));
+}
+
+.emls-chatbot-widget .footer .input-container {
+    position: relative;
+    width: 100%;
+    display: flex;
+    align-items: flex-end;
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.10));
+    border-radius: 14px;
+    padding: 8px 10px 8px 14px;
+    background: var(--cb-input-bg, #ffffff);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.emls-chatbot-widget .footer .input-container:focus-within {
+    border-color: var(--cb-accent, #2563eb);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.emls-chatbot-widget .footer .input-container textarea {
+    flex: 1;
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 4px 2px;
+    font-family: inherit;
+    font-size: 13.5px;
+    background-color: transparent;
+    min-height: 20px;
+    max-height: 100px;
+    overflow-y: auto;
+    line-height: 1.5;
+    margin-right: 8px;
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .footer .input-container textarea::placeholder {
+    color: var(--cb-muted, #94a3b8);
+    opacity: 1;
+}
+
+.emls-chatbot-widget .footer .input-container .send-icon {
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    align-self: flex-end;
+    margin-bottom: 0;
+    opacity: 1;
+    color: var(--cb-accent, #2563eb);
+    filter: var(--cb-icon-filter, none);
+    border-radius: 10px;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.emls-chatbot-widget .footer .input-container .send-icon:not(.send-icon--disabled):hover {
+    background: rgba(37, 99, 235, 0.08);
+}
+
+
+
+.emls-chatbot-widget .body .emw-loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-style: italic;
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-loading .loader {
+    border: 3px solid rgba(148, 163, 184, 0.22);
+    border-top: 3px solid var(--cb-accent, #2563eb);
+    border-radius: 50%;
+    width: 15px;
+    height: 15px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.emw-loader-container {
+    max-width: 215px;
+    text-align: left;
+}
+
+.emw-loader-dots {
+    display: inline-block;
+    height: 6px;
+    width: 6px;
+    border-radius: 50%;
+    background: var(--cb-accent, var(--header-background));
+    margin-right: 2px;
+    animation: em_bounce 0.5s ease infinite alternate;
+}
+
+.emw-loader-container:nth-child(1) {
+    animation-delay: 0.2s;
+}
+
+.emw-loader-container:nth-child(2) {
+    animation-delay: 0.3s;
+}
+
+.emw-loader-container:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes em_bounce {
+    0% {
+        transform: translateY(0px);
+    }
+
+    100% {
+        transform: translateY(5px);
+    }
+}
+
+@media (max-width: 768px) {
+
+    .emls-chatbot-widget,
+    .emls-chatbot-widget.emls-chatbot-widget-maximized {
+        top: 0;
+        bottom: 0;
+        right: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        transform: none;
+        border-radius: 0;
+        max-width: 100vw;
+        max-height: 100vh;
+    }
+
+    .emls-chatbot-widget .header {
+        border-radius: 0;
+    }
+
+    .emls-chatbot-widget .header .header-icons .maximize-icon {
+        display: none;
+    }
+}
+
+.animate-rotate {
+    animation: emw-rotate 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-rotate-out {
+    animation: emw-rotate-out 0.45s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes emw-rotate-out {
+    0% {
+        transform: rotate(0deg) scale(1);
+        opacity: 1;
+    }
+
+    100% {
+        transform: rotate(180deg) scale(0);
+        opacity: 0;
+    }
+}
+
+@keyframes emw-rotate {
+    0% {
+        transform: rotate(180deg) scale(0);
+        opacity: 0;
+    }
+
+    100% {
+        transform: rotate(0deg) scale(1);
+        opacity: 1;
+    }
+}
+
+/* Dynamic Data Renderer Styles */
+.emw-data-table-container {
+    overflow-x: auto;
+    margin: 12px 0;
+    border-radius: 8px;
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+}
+
+.emw-data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    background: var(--cb-surface, #ffffff);
+}
+
+.emw-data-table thead {
+    background: var(--cb-hover, rgba(15, 23, 42, 0.04));
+    border-bottom: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+}
+
+.emw-data-header {
+    padding: 8px 10px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--cb-ink, #0f172a);
+    white-space: nowrap;
+}
+
+.emw-data-row {
+    border-bottom: 1px solid var(--cb-line, rgba(15, 23, 42, 0.04));
+    transition: background 0.12s ease;
+}
+
+.emw-data-row:hover {
+    background: var(--cb-hover, rgba(15, 23, 42, 0.02));
+}
+
+.emw-data-cell {
+    padding: 8px 10px;
+    color: var(--cb-ink, #0f172a);
+    text-align: left;
+    word-break: break-word;
+    max-width: 200px;
+}
+
+.emw-data-cell.emw-long-content {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Data Cards Layout */
+.emw-data-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 12px 0;
+}
+
+.emw-data-card {
+    background: var(--cb-hover, rgba(15, 23, 42, 0.02));
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.08));
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.emw-data-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.emw-field-label {
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--cb-muted, #64748b);
+    text-transform: capitalize;
+    letter-spacing: 0.3px;
+}
+
+.emw-field-value {
+    font-size: 12px;
+    color: var(--cb-ink, #0f172a);
+    word-break: break-word;
+    line-height: 1.4;
+}
+/* Lucide icon overrides — added when PNG assets were replaced with
+   `lucide-react` components. Each icon now lives inside a real
+   `<button>`, so reset button defaults and color SVG strokes via
+   currentColor instead of the previous `filter: invert(...)` hack. */
+.chat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
+  color: #ffffff;
+  padding: 0;
+  appearance: none;
+}
+.chat-icon svg { width: 36px; height: 36px; }
+
+.emls-chatbot-widget .header .session-icon,
+.emls-chatbot-widget .header .header-icons .close-icon,
+.emls-chatbot-widget .footer .input-container .send-icon {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Size to content — the original `width/height: 18px` was sized for
+     an 18px PNG, but a 20px Lucide SVG inside that box gets cropped to
+     a dot. Keep the padding for breathing room and let content size
+     drive the box. */
+  width: auto;
+  height: auto;
+  color: currentColor;
+  filter: none;
+}
+.emls-chatbot-widget .header .session-icon,
+.emls-chatbot-widget .header .header-icons .close-icon {
+  color: #ffffff;
+}
+.emls-chatbot-widget .header .session-icon svg,
+.emls-chatbot-widget .header .header-icons .close-icon svg,
+.emls-chatbot-widget .footer .input-container .send-icon svg {
+  flex-shrink: 0;
+}
+
+.emls-chatbot-widget .footer .input-container .send-icon {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  display: inline-flex;
+  padding: 6px;
+}
+.emls-chatbot-widget .footer .input-container .send-icon--disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.emls-chatbot-widget .header .avatar.avatar--icon,
+.emls-chatbot-widget .body .emw-avatar.emw-avatar--icon,
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-header-icon--lucide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.18);
+  color: currentColor;
+}
+.emls-chatbot-widget .header .avatar.avatar--icon,
+.emls-chatbot-widget .session-management-container .session-management-header .session-management-header-icon--lucide { color: #ffffff; }
+.emls-chatbot-widget .body .emw-avatar.emw-avatar--icon { color: var(--cb-ink, #0f172a); background: var(--cb-bot-bg, #f1f5f9); }
+
+/* Position variants — driven by config `launcher_position`. The
+   original CSS hardcoded `right: 20px` for both the launcher and the
+   panel; these variants let the bot owner flip both to the left side. */
+.chat-icon--left { right: auto; left: 20px; }
+.chat-icon--right { right: 20px; left: auto; }
+.emls-chatbot-widget--left { right: auto; left: 20px; }
+.emls-chatbot-widget--right { right: 20px; left: auto; }
+
+/* Launcher label (config `launcher_label` + `is_icon_with_label`). */
+.chat-icon--with-label {
+  width: auto;
+  padding: 0 18px 0 14px;
+  height: 56px;
+  border-radius: 28px;
+  gap: 8px;
+}
+.chat-icon-label {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chat-icon-img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  display: block;
+}
+.close-icon-img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+}
+
+/* Markdown rendering for bot replies. Tightens default browser
+   margins so the chat bubble doesn't blow up on multi-paragraph
+   answers, and gives code blocks/quotes a neutral look. */
+.emls-chatbot-widget .emw-markdown { font-size: inherit; line-height: 1.5; }
+.emls-chatbot-widget .emw-markdown > *:first-child { margin-top: 0; }
+.emls-chatbot-widget .emw-markdown > *:last-child { margin-bottom: 0; }
+.emls-chatbot-widget .emw-markdown p { margin: 0 0 8px; }
+.emls-chatbot-widget .emw-markdown ul,
+.emls-chatbot-widget .emw-markdown ol { margin: 4px 0 8px; padding-left: 20px; }
+.emls-chatbot-widget .emw-markdown li { margin: 2px 0; }
+.emls-chatbot-widget .emw-markdown a { color: var(--cb-accent, #2563eb); text-decoration: underline; }
+.emls-chatbot-widget .emw-markdown code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.9em;
+  background: rgba(15, 23, 42, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.emls-chatbot-widget .emw-markdown pre {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.emls-chatbot-widget .emw-markdown pre code { background: transparent; padding: 0; }
+.emls-chatbot-widget .emw-markdown blockquote {
+  margin: 6px 0;
+  padding: 4px 12px;
+  border-left: 3px solid rgba(15, 23, 42, 0.2);
+  color: rgba(15, 23, 42, 0.75);
+}
+.emls-chatbot-widget .emw-markdown table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 0.92em;
+}
+.emls-chatbot-widget .emw-markdown th,
+.emls-chatbot-widget .emw-markdown td {
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  padding: 4px 8px;
+  text-align: left;
+}
+.emls-chatbot-widget .emw-markdown img { max-width: 100%; height: auto; border-radius: 6px; }
+
+/* Starter messages — clickable chips that pre-fill and send the
+   selected text. Rendered below the welcome banner, hidden after the
+   first user message. Mirrors the `ul.starterMessages` block in
+   your-assistant/src/index.css. */
+.emls-chatbot-widget .starter-messages {
+  margin: 8px 14px 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.emls-chatbot-widget .starter-messages li { margin: 0; }
+.emls-chatbot-widget .starter-messages button {
+  appearance: none;
+  background: var(--cb-accent-soft, rgba(37, 99, 235, 0.08));
+  color: var(--cb-ink, #0f172a);
+  border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.12));
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.emls-chatbot-widget .starter-messages button:hover {
+  background: var(--cb-accent-soft-hover, rgba(37, 99, 235, 0.15));
+  transform: translateY(-1px);
+}
+
+/* Action chips — pill row rendered under bot messages whose text
+   contains a URL (BUTTON_ON_LINK) or whose `data` payload is non-null
+   (BUTTON_ON_CARD). Tap a chip to open the configured form bubble. */
+.emls-chatbot-widget .emw-action-chips {
+  margin: 4px 14px 8px 50px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.emls-chatbot-widget .emw-action-chips li { margin: 0; }
+.emls-chatbot-widget .emw-action-chips button {
+  appearance: none;
+  background: var(--cb-accent-soft, rgba(37, 99, 235, 0.08));
+  color: var(--cb-ink, #0f172a);
+  border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.12));
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.emls-chatbot-widget .emw-action-chips button:hover {
+  background: var(--cb-accent-soft-hover, rgba(37, 99, 235, 0.15));
+  transform: translateY(-1px);
+}
+
+/* Submission-limit footnote shown above a form's action row when the
+   trigger has `allow_limit && limit`. */
+.emls-chatbot-widget .emw-form-footnote {
+  font-size: 12px;
+  color: var(--cb-muted-fg, #64748b);
+  margin: 6px 0 0;
+  font-style: italic;
+}
+
+/* Header polish: tighten title typography, drop the "New" text label,
+   normalize the new-chat button to the same square pill shape as the
+   sessions / close / maximize buttons. */
+.emls-chatbot-widget .header .header-text {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.emls-chatbot-widget .header .header-text p {
+  font-size: 11.5px;
+  font-weight: 400;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+.emls-chatbot-widget .header .header-icons .new-chat-container {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  gap: 0;
+  color: #ffffff;
+}
+.emls-chatbot-widget .header .header-icons .new-chat-icon {
+  filter: none;
+  width: auto;
+  height: auto;
+}
+.emls-chatbot-widget .header .header-icons .new-chat-text { display: none; }
+
+/* Branding row at the bottom of the chat panel — small muted text
+   with a link to emlylabs.com. Mirrors the `rcw-poweredby` slot in
+   react-chat-widget that your-assistant exposes via `isPoweredBy`. */
+.emls-chatbot-widget .emly-attribution {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(15, 23, 42, 0.45);
+  padding: 4px 12px 8px;
+  background: var(--cb-panel, #ffffff);
+  border-top: none;
+  letter-spacing: 0.02em;
+}
+.emls-chatbot-widget .emly-attribution a {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+.emls-chatbot-widget .emly-attribution img {
+  height: 12px;
+  width: auto;
+  display: block;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+.emls-chatbot-widget .emly-attribution a:hover img { opacity: 1; }
+
+/* Launcher nudges — floating tooltip near the chat icon while the
+   widget is collapsed. Mirrors the `nudge-Component` markup that
+   `react-chat-widget` injects in your-assistant. */
+.emw-nudge {
+  position: fixed;
+  bottom: 100px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 9998;
+  animation: emw-nudge-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.emw-nudge--right { right: 30px; }
+.emw-nudge--left  { left:  30px; }
+
+@keyframes emw-nudge-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.emw-nudge-bubble {
+  appearance: none;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  background: #ffffff;
+  color: #0f172a;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+  max-width: 240px;
+  text-align: left;
+  line-height: 1.35;
+}
+.emw-nudge-bubble:hover { transform: translateY(-1px); }
+
+.emw-nudge-cta {
+  background: var(--cb-accent, #2563eb);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.emw-nudge-close {
+  appearance: none;
+  border: none;
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.emw-nudge-close:hover { background: rgba(15, 23, 42, 0.12); }
+
+.emw-nudge-arrow {
+  position: absolute;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-right: 1px solid rgba(15, 23, 42, 0.10);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.10);
+  transform: rotate(45deg);
+}
+.emw-nudge--right .emw-nudge-arrow { right: 30px; }
+.emw-nudge--left  .emw-nudge-arrow { left:  30px; }
+
+/* Inline form bubbles — rendered by `FormBubble` as a regular bot
+   message slot. Keep the same outer chrome as `.emw-bot-bubble`, just
+   give the inner form some breathing room. */
+.emls-chatbot-widget .emw-form-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  max-width: 320px;
+}
+.emls-chatbot-widget .emw-form { display: flex; flex-direction: column; gap: 8px; }
+.emls-chatbot-widget .emw-form-title { font-size: 14px; font-weight: 700; color: var(--cb-ink, #0f172a); }
+.emls-chatbot-widget .emw-form-desc { font-size: 12px; color: var(--cb-muted, #64748b); }
+.emls-chatbot-widget .emw-form-row { display: flex; flex-direction: column; gap: 4px; }
+.emls-chatbot-widget .emw-form-row label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cb-muted, #64748b);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.emls-chatbot-widget .emw-form-row input,
+.emls-chatbot-widget .emw-form-row select,
+.emls-chatbot-widget .emw-form-row textarea {
+  appearance: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--cb-ink, #0f172a);
+  background: #ffffff;
+  border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.14));
+  border-radius: 10px;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.emls-chatbot-widget .emw-form-row input:focus,
+.emls-chatbot-widget .emw-form-row select:focus,
+.emls-chatbot-widget .emw-form-row textarea:focus {
+  border-color: var(--cb-accent, #2563eb);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+.emls-chatbot-widget .emw-form-row input[aria-invalid="true"],
+.emls-chatbot-widget .emw-form-row select[aria-invalid="true"],
+.emls-chatbot-widget .emw-form-row textarea[aria-invalid="true"] {
+  border-color: #ef4444;
+}
+.emls-chatbot-widget .emw-form-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--cb-ink, #0f172a);
+  cursor: pointer;
+}
+.emls-chatbot-widget .emw-form-checkbox input { width: 16px; height: 16px; }
+.emls-chatbot-widget .emw-form-error {
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 500;
+}
+.emls-chatbot-widget .emw-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.emls-chatbot-widget .emw-form-btn {
+  appearance: none;
+  border: none;
+  background: var(--cb-accent, #2563eb);
+  color: #ffffff;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.emls-chatbot-widget .emw-form-btn:disabled { opacity: 0.6; cursor: progress; }
+.emls-chatbot-widget .emw-form-btn:not(:disabled):hover { transform: translateY(-1px); }
+.emls-chatbot-widget .emw-form-btn--ghost {
+  background: transparent;
+  color: var(--cb-ink, #0f172a);
+  border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.14));
+}
+.emls-chatbot-widget .emw-form-confirm-msg {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--cb-ink, #0f172a);
+}
