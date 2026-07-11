@@ -89,6 +89,51 @@ rm -rf ./data
 
 Use this when you want hot-reload on the backend or UI during development.
 
+---
+
+## Configuration Reference
+
+All configuration is done via environment variables. Copy `.env.sample` to `.env` and edit it.
+
+### Essential Variables
+
+| Variable | What it does | Default / Example |
+|----------|-------------|-------------------|
+| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | Superadmin email (created on first boot) | `admin@example.com` |
+| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | Superadmin password | Set your own |
+| `QDRANT_URL` | Vector database URL (leave unset for embedded mode) | `http://localhost:6333` |
+| `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
+| `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
+
+### RAG / Embeddings
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `EMBEDDING_PROVIDER` | `huggingface` or `openai` | `huggingface` |
+| `RAG_EMBEDDING_MODEL` | Embedding model name | `Alibaba-NLP/gte-base-en-v1.5` |
+| `RAG_TOP_K` | Number of chunks to retrieve | `5` |
+| `CHUNK_SIZE` | Text chunk size for splitting | `2048` |
+| `CHUNK_OVERLAP` | Overlap between chunks | `256` |
+| `ENABLE_RAG_HYBRID_SEARCH` | Enable CrossEncoder re-ranking | `false` |
+
+### Authentication
+
+The app includes a built-in OIDC identity provider — no external auth service needed.
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | First admin email | `admin@example.com` |
+| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password (random if unset) | — |
+| `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in auth (`true`) or external IdP (`false`) | `true` |
+
+To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.
+
+### All Variables
+
+See [`.env.sample`](.env.sample) for the complete list with inline documentation.
+
+---
+
 ### Step 1 — Install `uv`
 
 ```bash
@@ -163,7 +208,9 @@ This reads `pyproject.toml`, resolves versions, and installs everything into the
 
 > **Shortcut:** If you don't want to manually activate the venv every time, you can use `uv run` instead. For example: `uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080`. The `uv run` command automatically uses the `.venv` without needing to activate it.
 
-### Step 5 — Configure the Database
+### Step 5 — Install and Configure PostgreSQL
+
+> **Important:** This project requires **PostgreSQL**. SQLite is not supported for local development due to compatibility issues.
 
 > **Important for local development:** In your `.env` file, set these paths for local development (the default `.env.sample` has Docker paths like `/app/data`):
 >
@@ -174,39 +221,164 @@ This reads `pyproject.toml`, resolves versions, and installs everything into the
 >
 > `SENTENCE_TRANSFORMERS_HOME` is where the embedding model cache is stored. It also controls the re-ranking model cache (`{DATA_DIR}/models/re_ranking`).
 
-You have two options: **SQLite** (simple, no setup) or **PostgreSQL** (production-grade).
+#### Install PostgreSQL
 
-#### Option A: SQLite (Easiest — No Extra Software)
+If you don't have PostgreSQL installed, follow the instructions for your operating system:
 
-SQLite stores everything in a single file. Perfect for local development and testing.
+**Linux (Ubuntu/Debian):**
 
-Open your `.env` file and set:
+```bash
+# Update package list
+sudo apt update
 
-```env
-DATA_DIR=./data
+# Install PostgreSQL and contrib extensions
+sudo apt install -y postgresql postgresql-contrib
 
-# For SQLite, leave DATABASE_URL commented out or unset.
-# It will automatically use: sqlite:///{DATA_DIR}/emlygenai_app.db
-# DATABASE_URL=
+# Start and enable PostgreSQL service
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Verify installation
+psql --version
 ```
 
-That's it. No database server needed. The file will be created automatically at `./data/emlygenai_app.db` when the app starts.
+**Linux (Fedora/RHEL/CentOS):**
 
-> **Note:** SQLite works only with a **single worker process**. Do not set `WEB_CONCURRENCY` > 1 with SQLite.
+```bash
+# Install PostgreSQL
+sudo dnf install -y postgresql-server postgresql-contrib
 
-#### Option B: PostgreSQL (Recommended for Production)
+# Initialize the database
+sudo postgresql-setup --initdb
 
-If you have PostgreSQL installed locally (or running via Docker), set these in your `.env`:
+# Start and enable PostgreSQL service
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Verify installation
+psql --version
+```
+
+**Windows:**
+
+1. Download the installer from [postgresql.org/download](https://www.postgresql.org/download/windows/)
+2. Run the installer and follow the setup wizard
+3. Remember the password you set for the `postgres` superuser
+4. Keep the default port `5432`
+5. After installation, PostgreSQL service starts automatically
+
+Or using **winget** (Windows Package Manager):
+
+```powershell
+winget install PostgreSQL.PostgreSQL.16
+```
+
+Or using **Chocolatey**:
+
+```powershell
+choco install postgresql --params '/Password:yourpassword'
+```
+
+#### Create Database and User
+
+After installing PostgreSQL, you need to create a database and user for the application.
+
+**Linux:**
+
+```bash
+# Switch to the postgres system user
+sudo -i -u postgres
+
+# Open PostgreSQL prompt
+psql
+```
+
+**Windows (Command Prompt or PowerShell):**
+
+```cmd
+# Open PowerShell as Administrator, then run:
+psql -U postgres
+```
+
+> **Note:** On Windows, you may need to add PostgreSQL to your PATH. The default location is `C:\Program Files\PostgreSQL\16\bin`.
+
+**In the PostgreSQL prompt, run these commands:**
+
+```sql
+-- Create a new user for the application
+CREATE USER emly WITH PASSWORD 'your_secure_password';
+
+-- Create the database
+CREATE DATABASE emly OWNER emly;
+
+-- Grant all privileges on the database to the user
+GRANT ALL PRIVILEGES ON DATABASE emly TO emly;
+
+-- Exit the prompt
+\q
+```
+
+**Linux — exit back to your user:**
+
+```bash
+exit
+```
+
+#### Configure PostgreSQL Authentication
+
+By default, PostgreSQL uses `peer` authentication on Linux, which may cause connection issues. You need to update the authentication method.
+
+**Linux:**
+
+1. Find your `pg_hba.conf` file:
+
+```bash
+sudo find / -name "pg_hba.conf" 2>/dev/null
+```
+
+Usually located at `/etc/postgresql/<version>/main/pg_hba.conf`
+
+2. Edit the file:
+
+```bash
+sudo nano /etc/postgresql/16/main/pg_hba.conf  # Replace 16 with your version
+```
+
+3. Find these lines and change `peer`/`scram-sha-256` to `md5`:
+
+```
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            md5
+# IPv6 local connections:
+host    all             all             ::1/128                 md5
+```
+
+4. Restart PostgreSQL:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+**Windows:**
+
+Edit `pg_hba.conf` (usually at `C:\Program Files\PostgreSQL\16\data\pg_hba.conf`) and ensure the local connections use `md5` authentication as shown above, then restart the PostgreSQL service.
+
+#### Configure Environment Variables
+
+Set these in your `.env` file:
 
 ```env
 DATA_DIR=./data
-DATABASE_URL=postgresql://USERNAME:PASSWORD@HOST:PORT/DATABASE_NAME
+DATABASE_URL=postgresql://emly:your_secure_password@localhost:5432/emly
 ```
 
 **Real examples:**
 
 ```env
-# Local PostgreSQL with default user
+# Local PostgreSQL with custom user
+DATABASE_URL=postgresql://emly:your_secure_password@localhost:5432/emly
+
+# Local PostgreSQL with default postgres user
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/emly
 
 # Remote PostgreSQL (e.g., AWS RDS, Supabase, Neon, etc.)
@@ -216,11 +388,30 @@ DATABASE_URL=postgresql://myuser:mypassword@db.example.com:5432/emly
 DATABASE_URL=postgresql://emly:emlypassword@localhost:5432/emly
 ```
 
-If running only PostgreSQL + Qdrant via Docker (while developing the backend locally):
+#### Verify Database Connection
+
+Test your connection before running the app:
 
 ```bash
+# Using psql
+psql -h localhost -U emly -d emly
+
+# If successful, you'll see:
+# psql (16.x)
+# Type "help" for help.
+# emly=>
+```
+
+#### Alternative: Use Docker for PostgreSQL Only
+
+If you prefer to run PostgreSQL via Docker while developing locally:
+
+```bash
+# Start only PostgreSQL and Qdrant via Docker
 docker compose up postgres qdrant
 ```
+
+This uses the pre-configured credentials from `docker-compose.yml`.
 
 ### Step 6 — Configure the Vector Database (Qdrant)
 
@@ -255,10 +446,7 @@ cd ..
 
 ```bash
 # Option 1: Using uvicorn directly
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080
-
-# Option 2: Using the start script
-bash start.sh
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 ```
 
 Open **http://localhost:8080** in your browser.
@@ -286,7 +474,7 @@ cp .env.sample .env
 # Edit .env and set:
 #   DATA_DIR=./data (for local dev, not /app/data which is for Docker)
 #   SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
-#   DATABASE_URL (see options above)
+#   DATABASE_URL=postgresql://emly:your_password@localhost:5432/emly
 #   AUTH_BOOTSTRAP_SUPERADMIN_EMAIL, AUTH_LOCAL_BOOTSTRAP_PASSWORD
 #   OPENAI_API_KEY, OPENAI_BASE_URL
 
@@ -300,61 +488,9 @@ cd ui && npm install && npm run build && cd ..
 mkdir -p ./data
 
 # Start the server
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080
+uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 ```
 
----
-
-## Configuration Reference
-
-All configuration is done via environment variables. Copy `.env.sample` to `.env` and edit it.
-
-### Essential Variables
-
-| Variable | What it does | Default / Example |
-|----------|-------------|-------------------|
-| `DATABASE_URL` | Database connection string | See [database section](#step-2--configure-the-database) above |
-| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | Superadmin email (created on first boot) | `admin@example.com` |
-| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | Superadmin password | Set your own |
-| `OPENAI_API_KEY` | LLM API key (used as fallback for bots without their own key) | Your API key |
-| `OPENAI_BASE_URL` | LLM API base URL | `https://openrouter.ai/api/v1` |
-| `MODEL` | Default LLM model | `google/gemma-4-26b-a4b-it:free` |
-| `QDRANT_URL` | Vector database URL (leave unset for embedded mode) | `http://localhost:6333` |
-| `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
-| `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
-
-### LLM Provider Configuration
-
-Per-bot LLM settings (provider, model, API key) are configured through the Admin UI under each bot's **Config** tab. The environment variables (`MODEL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`) serve as deployment-wide fallbacks only.
-
-### RAG / Embeddings
-
-| Variable | What it does | Default |
-|----------|-------------|---------|
-| `EMBEDDING_PROVIDER` | `huggingface` or `openai` | `huggingface` |
-| `RAG_EMBEDDING_MODEL` | Embedding model name | `Alibaba-NLP/gte-base-en-v1.5` |
-| `RAG_TOP_K` | Number of chunks to retrieve | `5` |
-| `CHUNK_SIZE` | Text chunk size for splitting | `2048` |
-| `CHUNK_OVERLAP` | Overlap between chunks | `256` |
-| `ENABLE_RAG_HYBRID_SEARCH` | Enable CrossEncoder re-ranking | `false` |
-
-### Authentication
-
-The app includes a built-in OIDC identity provider — no external auth service needed.
-
-| Variable | What it does | Default |
-|----------|-------------|---------|
-| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | First admin email | `admin@example.com` |
-| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password (random if unset) | — |
-| `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in auth (`true`) or external IdP (`false`) | `true` |
-
-To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.
-
-### All Variables
-
-See [`.env.sample`](.env.sample) for the complete list with inline documentation.
-
----
 
 ## Admin UI Routes
 
@@ -474,7 +610,7 @@ curl -X POST https://emly.yourdomain.com/api/admin/admins/pending \
          ▼                    ▼
 ┌──────────────┐    ┌──────────────┐
 │  PostgreSQL  │    │   Qdrant     │
-│  (or SQLite) │    │  (Vector DB) │
+│  (Database)  │    │  (Vector DB) │
 └──────────────┘    └──────────────┘
 ```
 
@@ -525,11 +661,34 @@ The container runs as user `emly` (uid 10001). Fix with:
 sudo chown -R 10001:10001 ./data
 ```
 
-### Database errors after switching between SQLite and PostgreSQL
-Delete the data directory and start fresh:
+### Database errors
+
+If you encounter database errors:
+
+1. Verify PostgreSQL is running:
 ```bash
-rm -rf ./data
-mkdir -p ./data
+# Linux
+sudo systemctl status postgresql
+
+# Windows (PowerShell)
+Get-Service postgresql*
+```
+
+2. Test the database connection:
+```bash
+psql -h localhost -U emly -d emly
+```
+
+3. Check your `DATABASE_URL` in `.env` is correct
+
+4. If needed, recreate the database:
+```bash
+sudo -i -u postgres  # Linux
+psql
+DROP DATABASE IF EXISTS emly;
+CREATE DATABASE emly OWNER emly;
+\q
+exit
 ```
 
 ### Embedding model download is slow on first boot
