@@ -1,0 +1,90 @@
+# =============================================================================
+# Emly AI Assistant — local development / single-host stack
+# =============================================================================
+# Usage:
+#   cp .env.sample .env       # then edit secrets
+#   docker compose up --build         # initial build
+#   docker compose up --build app     # rebuild after editing widget/ or ui/
+#
+# The Dockerfile has three build stages — widget-builder (webpack widget
+# bundle), ui-builder (Next.js static export), and runtime (FastAPI). Layer
+# caching means a change under widget/ rebuilds only the widget bundle and the
+# Next.js step that bakes it in; a change under ui/ skips the widget rebuild;
+# a change in Python source skips both. `docker compose up` *without*
+# `--build` will reuse the existing image — pass `--build` to pick up source
+# changes.
+#
+# Services:
+#   - postgres : durable relational store (matches DATABASE_URL in .env)
+#   - qdrant   : vector store, server mode (matches QDRANT_URL in .env)
+#   - app      : the FastAPI service + admin UI + embeddable widget bundle
+#
+# This stack is intentionally single-replica. Horizontal scale needs S3-backed
+# file storage and Redis-backed locks — see docs/multi-bot.md.
+# =============================================================================
+
+name: emly-ai-assistant
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-emly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emlypassword}
+      POSTGRES_DB: ${POSTGRES_DB:-emly}
+    volumes:
+      # Bind-mount under ./data so backups / inspection are easy.
+      # Override with POSTGRES_DATA_HOST in .env if you want a different path.
+      - ${POSTGRES_DATA_HOST:-./data/postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-emly} -d ${POSTGRES_DB:-emly}"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    # Not exposed on the host by default — uncomment to connect a local client.
+    # ports:
+    #   - "5432:5432"
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    volumes:
+      # Bind-mount under ./data so backups / inspection are easy.
+      # Override with QDRANT_DATA_HOST in .env if you want a different path.
+      - ${QDRANT_DATA_HOST:-./data/qdrant}:/qdrant/storage
+    # No healthcheck. The qdrant image is distroless-ish — no curl, wget, or
+    # nc — so any shell-based probe ends up flaky. The app's own readiness
+    # gate (`/api/readyz`) verifies Qdrant connectivity, and the supervisor
+    # task tolerates a brief startup window. `depends_on` below uses
+    # `service_started` for the same reason.
+    ports:
+      - "6333:6333"   # HTTP API
+      - "6334:6334"   # gRPC API
+
+  app:
+    build:
+      context: .
+    image: emly-ai-assistant:dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override anything from .env that needs to point at the colocated
+      # services rather than localhost. These win because they're declared
+      # after env_file.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-emly}:${POSTGRES_PASSWORD:-emlypassword}@postgres:5432/${POSTGRES_DB:-emly}
+      QDRANT_URL: http://qdrant:6333
+      DATA_DIR: /app/data
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Bind-mount the data dir so uploads, the embedding cache, the JWT
+      # signing key, and (when DATABASE_URL is sqlite) the SQLite file all
+      # survive `docker compose down` and are easy to back up / inspect.
+      # Override the host path with DATA_DIR_HOST in .env.
+      - ${DATA_DIR_HOST:-./data}:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started

@@ -1,0 +1,40 @@
+[project]
+name = "emly-ai-assistant"
+version = "0.1.0"
+description = "Emly AI Assistant"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi==0.136.1",
+    "langchain-community==0.4.1",
+    "langchain[openai]==1.2.15",
+    "psycopg2-binary==2.9.10",
+    "pydantic[email]==2.11.4",
+    "sqlalchemy==2.0.40",
+    "uvicorn==0.46.0",
+    "python-multipart==0.0.27",
+    "pypdf==6.10.2",
+    "docx2txt==0.9",
+    "unstructured==0.22.23",
+    "pandas==3.0.2",
+    "sentence-transformers==5.4.1",
+    "qdrant-client==1.17.1",
+    "langchain-huggingface==1.2.2",
+    "langgraph==1.1.10",
+    "peewee==3.18.2",
+    "peewee_migrate==1.13.0",
+    "mistune==3.2.0",
+    "PyJWT[crypto]==2.10.1",
+    "cryptography>=42.0.0",
+    "APScheduler==3.11.2",
+    "cachetools==7.0.6",
+    "httpx==0.28.1",
+    "authlib==1.4.1",
+    "argon2-cffi==23.1.0",
+    "slowapi==0.1.9"
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4"
+]

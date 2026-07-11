@@ -1,0 +1,51 @@
+{
+  "name": "chatbot",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start": "vite",
+    "build-app": "vite build",
+    "build-widget": "webpack --config webpack.config.cjs"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.9.0",
+    "lucide-react": "^1.14.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-is": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "react-redux": "^9.2.0",
+    "recharts": "^3.8.0",
+    "remark-gfm": "^4.0.1",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/preset-react": "^7.23.3",
+    "@babel/preset-typescript": "^7.23.3",
+    "@eslint/js": "^9.35.0",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "babel-loader": "^9.1.3",
+    "css-loader": "^6.8.1",
+    "eslint": "^9.35.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "globals": "^16.4.0",
+    "style-loader": "^3.3.3",
+    "terser-webpack-plugin": "^5.3.9",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "^8.43.0",
+    "vite": "^7.1.6",
+    "webpack": "^5.92.0",
+    "webpack-cli": "^5.1.4"
+  }
+}

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="ink" data-density="comfortable">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Widget test — Emly</title>
+  <style>
+    /* Inlined token sheet — see ui/app/globals.css for the canonical version. */
+    :root {
+      --bg:      oklch(97% 0.012 80);
+      --surface: oklch(99% 0.005 80);
+      --fg:      oklch(20% 0.02 60);
+      --muted:   oklch(48% 0.015 60);
+      --border:  oklch(89% 0.012 80);
+      --accent:  oklch(58% 0.16 35);
+
+      --font-display: "Iowan Old Style", Charter, Georgia, serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --font-mono:    ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+      --accent-soft: color-mix(in oklch, var(--accent) 13%, transparent);
+      --fg-soft:     color-mix(in oklch, var(--fg) 5%, transparent);
+      --paper:       color-mix(in oklch, var(--surface) 84%, var(--bg));
+
+      --error:      oklch(58% 0.18 28);
+      --error-soft: color-mix(in oklch, var(--error) 14%, transparent);
+
+      --radius: 8px;
+    }
+    [data-theme="ink"] {
+      --bg:      oklch(18% 0.02 60);
+      --surface: oklch(23% 0.018 60);
+      --fg:      oklch(96% 0.008 80);
+      --muted:   oklch(73% 0.015 70);
+      --border:  oklch(34% 0.018 60);
+      --paper:   oklch(15% 0.018 60);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 64px 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.018em;
+      line-height: 1.15;
+    }
+    p { margin: 0; text-wrap: pretty; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .eyebrow::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-right: 8px;
+      vertical-align: 1px;
+    }
+
+    .card {
+      max-width: 640px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+
+    code {
+      background: var(--paper);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .muted { color: var(--muted); }
+    .stack > * + * { margin-top: 12px; }
+
+    .banner {
+      margin-top: 18px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      background: var(--fg-soft);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .banner.warning {
+      background: var(--error-soft);
+      border-color: color-mix(in oklch, var(--error) 40%, transparent);
+      color: var(--fg);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="stack">
+      <p class="eyebrow">Emly · widget</p>
+      <h1>Widget test page</h1>
+      <p class="muted">
+        The chat launcher should appear in the bottom-right corner of this page.
+        If it doesn&rsquo;t, open the browser console for errors.
+      </p>
+      <p class="muted" style="font-size: 12px;">
+        This page exists so admins can verify the widget against their bot
+        without needing a third-party site to host the snippet.
+      </p>
+    </div>
+    <div id="status" class="banner">Loading widget&hellip;</div>
+  </div>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var botId = params.get("bot");
+      var statusEl = document.getElementById("status");
+
+      if (!botId) {
+        statusEl.className = "banner warning";
+        statusEl.textContent = "Missing ?bot=<bot-id> in the URL.";
+        return;
+      }
+
+      var s = document.createElement("script");
+      s.src = "/emly-widget.js?ts=" + Date.now();
+      s.dataset.botId = botId;
+      s.dataset.baseUrl = location.origin;
+      s.dataset.debug = "true";
+      s.onload = function () {
+        statusEl.className = "banner";
+        statusEl.textContent = "Widget loaded. Look for the chat launcher in the corner.";
+      };
+      s.onerror = function () {
+        statusEl.className = "banner warning";
+        statusEl.textContent = "Failed to load /emly-widget.js — is the server serving it?";
+      };
+      document.body.appendChild(s);
+    })();
+  </script>
+
+</body>
+</html>

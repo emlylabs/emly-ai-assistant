@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+data
+shopify_products_html
+output.log
+emly_labs_managed.sh
+datoin-200610-1ead6f785270.json
+test.py
+voice/
+gen-lang-client-0125099398-bd121e70f658.json
+
+# Local environment / secrets — .env.sample IS tracked, .env IS NOT.
+.env
+.env.local
+.env.*.local
