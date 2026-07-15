@@ -28,22 +28,50 @@ export type PendingAdmin = {
   expires_at: string | null;
   consumed_at: string | null;
   consumed_by: string | null;
+  // 008_space_invites_and_default_space — pending rows now carry an
+  // explicit lifecycle and optional URL token. Legacy rows show
+  // ``kind: 'superadmin_legacy'`` and ``token: null``.
+  token?: string | null;
+  status?: "pending" | "accepted" | "rejected" | "expired" | "revoked";
+  kind?: "space_invite" | "superadmin_legacy";
+  target_bot_id?: string | null;
+  responded_at?: string | null;
+  responded_by?: string | null;
 };
 
-// AdminInvite — legacy invite-token type, no longer issued by the backend.
-// Kept as a type alias for any straggler consumer until Phase 9 cleanup.
-export type AdminInvite = never;
+export type MyInvite = {
+  token: string;
+  status: "pending" | "accepted" | "rejected" | "expired" | "revoked";
+  email: string;
+  role: string;
+  bot_slug: string | null;
+  bot_name: string | null;
+  is_superadmin: boolean;
+  inviter_email: string | null;
+  inviter_name: string | null;
+  created_at: string;
+  expires_at: string | null;
+};
 
-// Backend now returns bot-scoped fields (Phase 0 multi-bot strip dropped
-// bot_type / dataset_id; per-bot dashboard endpoints land later in
-// backend Phase 4). Today's `/api/admin/dashboard/stats` is still
-// deployment-wide — see the global-data banner in `BotShell`.
-export type DashboardStats = {
-  bot_id: string;
-  admin_count: number;
-  end_user_count: number;
-  message_count: number;
-  last_import: Record<string, unknown> | null;
+export type InviteByToken = {
+  token: string;
+  status: "pending" | "accepted" | "rejected" | "expired" | "revoked";
+  kind: "space_invite" | "superadmin_legacy";
+  email: string;
+  role: string;
+  bot_slug: string | null;
+  bot_name: string | null;
+  is_superadmin: boolean;
+  inviter_name: string | null;
+  inviter_email: string | null;
+  created_at: string;
+  expires_at: string | null;
+};
+
+export type SpaceInviteCreated = PendingAdmin & {
+  invite_url: string | null;
+  bot_slug: string | null;
+  bot_name: string | null;
 };
 
 export type Message = {
@@ -53,8 +81,8 @@ export type Message = {
   session_id: string;
   message: string;
   role: string;
-  created_on: string;
-  updated_on: string;
+  created_at: string;
+  updated_at: string;
   not_useful: boolean;
   expanded_query: string | null;
   page: string | null;
@@ -265,8 +293,8 @@ export type EndUser = {
   region: string | null;
   latitude: number | null;
   longitude: number | null;
-  created_on: string | null;
-  updated_on: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   meta: Record<string, unknown> | null;
 };
 
@@ -288,8 +316,111 @@ export type Bot = {
   is_deleted: boolean;
   config_schema_version: number;
   config_version: number;
+  tags: string[];
+  /** Auto-created default space — gets a one-shot rename. */
+  is_default?: boolean;
+  /** ``true`` once the default space has been renamed; further renames are
+   * locked server-side. */
+  default_renamed?: boolean;
   created_at: string;
   updated_at: string;
+  /** Set when the bot is in the soft-delete grace window; null otherwise. */
+  deleted_at?: string | null;
+};
+
+/** One row of `GET /api/admin/bots-deleted` — soft-deleted bots within the
+ * 7-day restore grace window. */
+export type DeletedBot = {
+  id: string;
+  slug: string;
+  name: string;
+  deleted_at: string;
+  hard_purge_at: string;
+};
+
+export type ConfigHistoryEntry = {
+  id: string;
+  config_version: number;
+  admin_id: string | null;
+  admin_email: string | null;
+  created_at: string;
+};
+
+export type ConfigHistoryDetail = ConfigHistoryEntry & {
+  config: Record<string, unknown>;
+};
+
+/** One row of the per-bot draft slot — populated only while an admin has
+ * unpublished edits pending. */
+export type ConfigDraft = {
+  config: Record<string, unknown>;
+  updated_at: string;
+  updated_by_admin_id: string | null;
+  updated_by_admin_email: string | null;
+};
+
+/** Response shape for `GET/PUT /api/admin/bots/{slug}/config`. */
+export type BotConfigResponse = {
+  config: Record<string, unknown>;
+  config_version: number;
+  last_updated_by_admin_id: string | null;
+  last_updated_by_admin_email: string | null;
+  last_updated_at: string | null;
+  draft: ConfigDraft | null;
+};
+
+/** One row of `GET /api/admin/bots/summary` — Phase 5 workspace overview. */
+export type BotSummary = {
+  slug: string;
+  name: string;
+  is_active: boolean;
+  msgs_24h: number;
+  sessions_24h: number | null;
+  csat_avg: number | null;
+  csat_count: number | null;
+  p95_latency_ms: number | null;
+  deflection_rate: number | null;
+  active_channels: ChannelType[];
+  owner_email: string | null;
+  tags: string[];
+  /** File count for this bot's knowledge base. Backfilled by §11 T10. */
+  file_count: number;
+  /** Total bytes across the bot's uploaded files. Backfilled by §11 T10. */
+  storage_bytes: number;
+  updated_at: string;
+};
+
+/** One row of `GET /api/admin/bots/validation-summary`. */
+export type BotValidationCounts = {
+  slug: string;
+  errors: number;
+  warnings: number;
+  info: number;
+};
+
+/** Mirror of `services.config_validation.Issue`. The TS validator
+ * (`ui/lib/config-validation.ts`) emits the same shape for client-side
+ * preview, but the keys here come from the server. */
+export type ConfigValidationIssue = {
+  severity: "error" | "warning" | "info";
+  key: string;
+  section:
+    | "identity"
+    | "widget"
+    | "topics"
+    | "forms"
+    | "llm"
+    | "rag"
+    | "limits"
+    | "raw"
+    | "knowledge";
+  message: string;
+  cta?: { label: string; href?: string; tab?: string };
+};
+
+export type ConfigValidationResponse = {
+  issues: ConfigValidationIssue[];
+  counts: { error: number; warning: number; info: number };
 };
 
 export type Role = "owner" | "admin" | "viewer";
@@ -360,8 +491,22 @@ export type BotFile = {
   embedding_status: "pending" | "embedding" | "embedded" | "failed";
   error_message: string | null;
   document_type: DocumentType;
-  created_on: string | null;
-  updated_on: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type BotFileStatusBucket = "indexed" | "in_progress" | "errors";
+
+export type BotFileListResponse = {
+  items: BotFile[];
+  total: number;
+  page: number;
+  page_size: number;
+  grand_total: number;
+  total_bytes: number;
+  last_updated_at: string | null;
+  status_counts: Record<BotFileStatusBucket, number>;
+  document_type_counts: Partial<Record<DocumentType, number>>;
 };
 
 export type CrawlJobOptions = {
@@ -393,9 +538,9 @@ export type CrawlJob = {
   pages_failed: number;
   document_type: DocumentType;
   created_by_admin_id: string | null;
-  created_on: string | null;
-  updated_on: string | null;
-  completed_on: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
   error_message: string | null;
 };
 
@@ -414,8 +559,41 @@ export type CrawlJobPage = {
     | "failed";
   reason: string | null;
   file_id: string | null;
-  created_on: string | null;
-  updated_on: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CrawlSchedule = {
+  id: string;
+  bot_id: string;
+  seed_url: string;
+  options: Record<string, unknown>;
+  document_type: string;
+  cadence: string;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_job_id: string | null;
+  created_by_admin_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type CrawlPageState =
+  | "queued"
+  | "fetching"
+  | "uploading"
+  | "embedding"
+  | "done"
+  | "skipped"
+  | "failed";
+
+export type CrawlJobPagesResponse = {
+  items: CrawlJobPage[];
+  total: number;
+  counts: Record<CrawlPageState, number>;
+  limit: number;
+  offset: number;
 };
 
 // Auth is cookie-based; these helpers exist for backwards-compatibility
@@ -436,9 +614,12 @@ export function loginUrl(returnTo?: string): string {
   return `/api/admin/auth/login?return_to=${encodeURIComponent(safe)}`;
 }
 
+let _redirecting = false;
 function redirectToLogin() {
   if (typeof window === "undefined") return;
+  if (_redirecting) return;
   if (window.location.pathname.startsWith("/login") || window.location.pathname.startsWith("/auth/")) return;
+  _redirecting = true;
   window.location.href = loginUrl();
 }
 
@@ -474,12 +655,20 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
+    let message = `${res.status} ${res.statusText}`.trim();
     let detail: unknown = undefined;
     try {
       const data = await res.json();
       detail = data?.detail;
-      if (detail) message = typeof detail === "string" ? detail : JSON.stringify(detail);
+      // Backend's generic exception handler in main.py returns
+      // `{"message": "Internal server error"}` for 500s — fall through to
+      // it so the UI shows something more readable than a bare "500".
+      const payloadMessage = typeof data?.message === "string" ? data.message : null;
+      if (detail) {
+        message = typeof detail === "string" ? detail : JSON.stringify(detail);
+      } else if (payloadMessage) {
+        message = payloadMessage;
+      }
     } catch {
       // ignore parse errors
     }
@@ -570,6 +759,60 @@ export async function fetchReadyz(): Promise<ReadyzResponse | null> {
 }
 
 // ----- Phase 11 backend-backfill UI types -----
+// ----- Workspace (§6) -----
+
+export type WorkspaceSettingsResponse = {
+  settings: Record<string, unknown>;
+  updated_at: string;
+  updated_by_admin_id: string | null;
+};
+
+export type WorkspaceTemplate = {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by_admin_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WorkspaceTemplateDetail = WorkspaceTemplate & {
+  config_json: Record<string, unknown>;
+};
+
+export type BulkBotActionResult = {
+  slug: string;
+  status: string;
+  detail: string | null;
+};
+
+/** One row of the workspace-wide crawl monitor (`GET /api/admin/crawl-jobs`).
+ * Differs from `CrawlJob` only by carrying the bot's slug + name for
+ * cross-bot rendering. §11 T7. */
+export type WorkspaceCrawlJobRow = {
+  id: string;
+  bot_id: string;
+  bot_slug: string;
+  bot_name: string;
+  seed_url: string;
+  status: CrawlJobStatus;
+  pages_total: number;
+  pages_done: number;
+  pages_skipped: number;
+  pages_failed: number;
+  document_type: string;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+};
+
+export type WorkspaceCrawlJobsResponse = {
+  items: WorkspaceCrawlJobRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type AuditLog = {
   id: string;
   admin_id: string | null;
@@ -632,20 +875,187 @@ export const api = {
   revokePendingAdmin: (email: string) =>
     request<void>("DELETE", `/admins/pending/${encodeURIComponent(email)}`),
 
+  // Space invites (new in 008). Owner-scoped invite creation; tokenised
+  // accept/reject UX; per-space pending-invite list.
+  createSpaceInvite: (payload: { email: string; bot_slug: string; role: string }) =>
+    request<SpaceInviteCreated>("POST", "/admins/invites", payload),
+  listMyInvites: () => request<MyInvite[]>("GET", "/admins/invites/mine"),
+  getInviteByToken: (token: string) =>
+    request<InviteByToken>(
+      "GET",
+      `/admins/invites/by-token/${encodeURIComponent(token)}`,
+      undefined,
+      { auth: false },
+    ),
+  acceptInvite: (token: string) =>
+    request<{ token: string; status: string; bot_slug: string | null }>(
+      "POST",
+      `/admins/invites/${encodeURIComponent(token)}/accept`,
+    ),
+  rejectInvite: (token: string) =>
+    request<void>(
+      "POST",
+      `/admins/invites/${encodeURIComponent(token)}/reject`,
+    ),
+  revokeInvite: (token: string) =>
+    request<void>(
+      "DELETE",
+      `/admins/invites/${encodeURIComponent(token)}`,
+    ),
+  listInvitesForBot: (slug: string) =>
+    request<MyInvite[]>(
+      "GET",
+      `/admins/invites/for-bot/${encodeURIComponent(slug)}`,
+    ),
+
+  // Cross-bot membership matrix (superadmin).
+  getAdminMemberships: (adminId: string) =>
+    request<{
+      admin: AdminUser;
+      rows: { bot_id: string; bot_slug: string; bot_name: string; role: Role | null }[];
+    }>("GET", `/admins/${encodeURIComponent(adminId)}/memberships`),
+  bulkUpdateAdminMemberships: (
+    adminId: string,
+    assignments: { bot_slug: string; role: Role | null }[],
+  ) =>
+    request<{
+      results: { bot_slug: string; status: string; detail: string | null }[];
+    }>(
+      "POST",
+      `/admins/${encodeURIComponent(adminId)}/memberships`,
+      { assignments },
+    ),
+
+  // Atomic owner transfer.
+  transferBotOwnership: (
+    slug: string,
+    payload: {
+      bot_slug: string;
+      new_owner_admin_id: string;
+      leaving_owner_new_role?: "admin" | "viewer" | null;
+    },
+  ) =>
+    request<{
+      bot_slug: string;
+      new_owner_admin_id: string;
+      previous_owner_admin_id: string | null;
+      previous_owner_new_role: string | null;
+    }>("POST", `/bots/${encodeURIComponent(slug)}/transfer-ownership`, payload),
+
+  // Workspace defaults + templates + bulk actions (§6).
+  getWorkspaceSettings: () =>
+    request<WorkspaceSettingsResponse>("GET", "/workspace/settings"),
+  putWorkspaceSettings: (settings: Record<string, unknown>) =>
+    request<WorkspaceSettingsResponse>("PUT", "/workspace/settings", { settings }),
+  listWorkspaceTemplates: () =>
+    request<WorkspaceTemplate[]>("GET", "/workspace/templates"),
+  getWorkspaceTemplate: (id: string) =>
+    request<WorkspaceTemplateDetail>(
+      "GET",
+      `/workspace/templates/${encodeURIComponent(id)}`,
+    ),
+  createWorkspaceTemplate: (payload: {
+    name: string;
+    description?: string;
+    source_bot_slug?: string;
+    config_json?: Record<string, unknown>;
+  }) =>
+    request<WorkspaceTemplateDetail>(
+      "POST",
+      "/workspace/templates",
+      payload,
+    ),
+  deleteWorkspaceTemplate: (id: string) =>
+    request<void>(
+      "DELETE",
+      `/workspace/templates/${encodeURIComponent(id)}`,
+    ),
+  listWorkspaceCrawlJobs: (opts?: { limit?: number; offset?: number }) =>
+    request<WorkspaceCrawlJobsResponse>(
+      "GET",
+      `/crawl-jobs${qs({ limit: opts?.limit, offset: opts?.offset })}`,
+    ),
+  bulkBotAction: (payload: {
+    action: "pause" | "unpause" | "delete" | "tag-add" | "tag-remove";
+    slugs: string[];
+    tag?: string;
+  }) =>
+    request<{ results: BulkBotActionResult[] }>(
+      "POST",
+      "/bots/bulk-action",
+      payload,
+    ),
+
   // Bot CRUD
   listBots: () => request<Bot[]>("GET", "/bots"),
+  /**
+   * Aggregate-per-bot row used by the workspace overview table. Replaces
+   * the prior N+1 over `/dashboard/stats`. Backend caches for 60s per admin.
+   */
+  listBotsSummary: () => request<BotSummary[]>("GET", "/bots/summary"),
+  /**
+   * Per-bot validation counts for the workspace overview health icon.
+   * Replaces the N+1 client-side `getBotConfig` + `validateConfig` loop
+   * the page used to do for every row. Cached server-side by
+   * (bot_id, config_version) — implicitly invalidated on save.
+   */
+  listBotsValidationSummary: () =>
+    request<BotValidationCounts[]>("GET", "/bots/validation-summary"),
+  /**
+   * Validate an in-progress config blob without saving. Used by the
+   * editor's preview path so the issue list matches what publish / save
+   * gates will enforce server-side.
+   */
+  validateBotConfig: (
+    slug: string,
+    config: Record<string, unknown>,
+  ) =>
+    request<ConfigValidationResponse>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/config/validate`,
+      { config },
+    ),
   getBot: (slug: string) => request<Bot>("GET", `/bots/${encodeURIComponent(slug)}`),
   listBotTemplates: () =>
     request<{ id: string; name: string; description: string; preview_topics: string[] }[]>(
       "GET",
       "/bot-templates"
     ),
-  createBot: (payload: { slug: string; name: string; template_id?: string }) =>
-    request<Bot>("POST", "/bots", payload),
-  patchBot: (slug: string, payload: { name?: string }) =>
-    request<Bot>("PATCH", `/bots/${encodeURIComponent(slug)}`, payload),
+  createBot: (payload: {
+    slug: string;
+    name: string;
+    template_id?: string;
+    source_bot_id?: string;
+  }) => request<Bot>("POST", "/bots", payload),
+  checkBotSlugAvailable: (slug: string) =>
+    request<{ slug: string; available: boolean; reason?: "invalid" | "taken" }>(
+      "GET",
+      `/bots/slug-available${qs({ slug })}`,
+    ),
+  patchBot: (
+    slug: string,
+    payload: { name?: string; tags?: string[]; is_active?: boolean; slug?: string },
+  ) => request<Bot>("PATCH", `/bots/${encodeURIComponent(slug)}`, payload),
   deleteBot: (slug: string) =>
     request<{ status: string; bot_id: string }>("DELETE", `/bots/${encodeURIComponent(slug)}`),
+  listDeletedBots: () => request<DeletedBot[]>("GET", "/bots-deleted"),
+  restoreBot: (slug: string) =>
+    request<Bot>("POST", `/bots/${encodeURIComponent(slug)}/restore`),
+  listConfigHistory: (slug: string) =>
+    request<ConfigHistoryEntry[]>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/config/history`,
+    ),
+  getConfigHistoryEntry: (slug: string, entryId: string) =>
+    request<ConfigHistoryDetail>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/config/history/${encodeURIComponent(entryId)}`,
+    ),
+  restoreConfigHistory: (slug: string, entryId: string) =>
+    request<BotConfigResponse>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/config/history/${encodeURIComponent(entryId)}/restore`,
+    ),
 
   // Membership
   listBotAdmins: (slug: string) =>
@@ -809,22 +1219,42 @@ export const api = {
       `/bots/${encodeURIComponent(slug)}/end-users${qs({ ...opts })}`
     ),
   getBotConfig: (slug: string) =>
-    request<{ config: Record<string, unknown>; config_version: number }>(
+    request<BotConfigResponse>(
       "GET",
       `/bots/${encodeURIComponent(slug)}/config`
     ),
   putBotConfig: (
     slug: string,
     config: Record<string, unknown>,
-    expected_version?: number
+    expected_version?: number,
+    options?: { force?: boolean },
   ) =>
-    request<{ config: Record<string, unknown>; config_version: number }>(
+    request<BotConfigResponse>(
       "PUT",
-      `/bots/${encodeURIComponent(slug)}/config`,
+      `/bots/${encodeURIComponent(slug)}/config${options?.force ? "?force=1" : ""}`,
       { config, expected_version }
     ),
+  putBotConfigDraft: (
+    slug: string,
+    config: Record<string, unknown>,
+  ) =>
+    request<BotConfigResponse>(
+      "PUT",
+      `/bots/${encodeURIComponent(slug)}/config/draft`,
+      { config }
+    ),
+  discardBotConfigDraft: (slug: string) =>
+    request<BotConfigResponse>(
+      "DELETE",
+      `/bots/${encodeURIComponent(slug)}/config/draft`
+    ),
+  publishBotConfigDraft: (slug: string) =>
+    request<BotConfigResponse>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/config/draft/publish`
+    ),
   getBotApiKeyStatus: (slug: string) =>
-    request<{ has_key: boolean }>(
+    request<{ has_key: boolean; has_deployment_fallback: boolean }>(
       "GET",
       `/bots/${encodeURIComponent(slug)}/api-key/status`
     ),
@@ -846,8 +1276,29 @@ export const api = {
     }>("POST", `/bots/${encodeURIComponent(slug)}/rag/search`, payload),
 
   // Files
-  listBotFiles: (slug: string) =>
-    request<BotFile[]>("GET", `/bots/${encodeURIComponent(slug)}/files`),
+  listBotFiles: (
+    slug: string,
+    opts?: {
+      page?: number;
+      pageSize?: number;
+      documentTypes?: DocumentType[];
+      status?: BotFileStatusBucket;
+      q?: string;
+    },
+  ) =>
+    request<BotFileListResponse>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/files${qs({
+        page: opts?.page,
+        page_size: opts?.pageSize,
+        document_types:
+          opts?.documentTypes && opts.documentTypes.length > 0
+            ? opts.documentTypes.join(",")
+            : undefined,
+        status: opts?.status,
+        q: opts?.q && opts.q.length > 0 ? opts.q : undefined,
+      })}`,
+    ),
   uploadBotFile: (
     slug: string,
     file: File,
@@ -881,6 +1332,15 @@ export const api = {
       "POST",
       `/bots/${encodeURIComponent(slug)}/reindex`
     ),
+  /** Cross-bot single-file copy. ``slug`` is the *target*; the source is
+   * in the body. The backend clones the file row, the file on disk, and
+   * the Qdrant points (no re-embed). §11 T11. */
+  copyFileToBot: (targetSlug: string, payload: { source_slug: string; file_id: string }) =>
+    request<BotFile>(
+      "POST",
+      `/bots/${encodeURIComponent(targetSlug)}/files/copy-from`,
+      payload,
+    ),
 
   // Crawl jobs (backend-resident, recoverable)
   createCrawlJob: (
@@ -899,10 +1359,18 @@ export const api = {
       "GET",
       `/bots/${encodeURIComponent(slug)}/crawl/jobs/${encodeURIComponent(jobId)}`
     ),
-  listCrawlJobPages: (slug: string, jobId: string, opts?: { limit?: number; offset?: number }) =>
-    request<CrawlJobPage[]>(
+  listCrawlJobPages: (
+    slug: string,
+    jobId: string,
+    opts?: { limit?: number; offset?: number; states?: string[] }
+  ) =>
+    request<CrawlJobPagesResponse>(
       "GET",
-      `/bots/${encodeURIComponent(slug)}/crawl/jobs/${encodeURIComponent(jobId)}/pages${qs({ ...opts })}`
+      `/bots/${encodeURIComponent(slug)}/crawl/jobs/${encodeURIComponent(jobId)}/pages${qs({
+        limit: opts?.limit,
+        offset: opts?.offset,
+        states: opts?.states && opts.states.length > 0 ? opts.states.join(",") : undefined,
+      })}`
     ),
   pauseCrawlJob: (slug: string, jobId: string) =>
     request<CrawlJob>(
@@ -914,11 +1382,56 @@ export const api = {
       "POST",
       `/bots/${encodeURIComponent(slug)}/crawl/jobs/${encodeURIComponent(jobId)}/resume`
     ),
+  // Recurring crawl schedules (§11 T5). One-shot crawls still flow
+  // through the createCrawlJob path; this surface is for "run daily".
+  listCrawlSchedules: (slug: string) =>
+    request<CrawlSchedule[]>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/crawl/schedules`,
+    ),
+  createCrawlSchedule: (
+    slug: string,
+    payload: {
+      seed_url: string;
+      document_type: string;
+      options: CrawlJobOptions;
+      cadence: string;
+      run_immediately?: boolean;
+    },
+  ) =>
+    request<CrawlSchedule>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/crawl/schedules`,
+      payload,
+    ),
+  patchCrawlSchedule: (slug: string, scheduleId: string, enabled: boolean) =>
+    request<CrawlSchedule>(
+      "PATCH",
+      `/bots/${encodeURIComponent(slug)}/crawl/schedules/${encodeURIComponent(scheduleId)}`,
+      { enabled },
+    ),
+  deleteCrawlSchedule: (slug: string, scheduleId: string) =>
+    request<void>(
+      "DELETE",
+      `/bots/${encodeURIComponent(slug)}/crawl/schedules/${encodeURIComponent(scheduleId)}`,
+    ),
   cancelCrawlJob: (slug: string, jobId: string) =>
     request<CrawlJob>(
       "POST",
       `/bots/${encodeURIComponent(slug)}/crawl/jobs/${encodeURIComponent(jobId)}/cancel`
     ),
+
+  // -------------------------------------------------------------------------
+  // Widget loader metadata (Channels tab — version pinning + preview QR).
+  // -------------------------------------------------------------------------
+  widgetInfo: () =>
+    request<{ version: string | null; built_at: string | null }>(
+      "GET",
+      "/widget/info"
+    ),
+  /** Browser-facing URL for the per-bot preview QR (used as `<img src>`). */
+  botPreviewQrUrl: (slug: string) =>
+    `/api/admin/bots/${encodeURIComponent(slug)}/preview-qr.svg`,
 
   // -------------------------------------------------------------------------
   // Channels — Slack/Telegram/WhatsApp/Teams/GoogleChat install management.
@@ -965,32 +1478,6 @@ export const api = {
       `/bots/${encodeURIComponent(slug)}/channels/oauth-start`,
       payload
     ),
-
-  // ---------------------------------------------------------------------------
-  // Legacy global routes — used by Phase 2 pages until backend slug-scoped
-  // routes ship. Each consumer surfaces the "deployment-wide data" banner.
-  // ---------------------------------------------------------------------------
-  /** @deprecated — backend route is global; awaits per-bot variant. */
-  dashboardStats: () => request<DashboardStats>("GET", "/dashboard/stats"),
-  /** @deprecated — backend route is global. */
-  listMessages: (opts?: { skip?: number; limit?: number; user_id?: string; session_id?: string }) =>
-    request<Paginated<Message>>("GET", `/messages${qs({ ...opts })}`),
-  /** @deprecated — backend route is global. */
-  updateMessage: (id: string | number, payload: { not_useful: boolean }) =>
-    request<Message>("PATCH", `/messages/${encodeURIComponent(String(id))}`, payload),
-  /** @deprecated — backend route is global. */
-  deleteMessage: (id: string | number) =>
-    request<void>("DELETE", `/messages/${encodeURIComponent(String(id))}`),
-  /** @deprecated — backend route is global. */
-  listEndUsers: (opts?: { skip?: number; limit?: number }) =>
-    request<Paginated<EndUser>>("GET", `/end-users${qs({ ...opts })}`),
-  /** @deprecated — backend route is global. */
-  getEndUser: (id: string) => request<EndUser>("GET", `/end-users/${encodeURIComponent(id)}`),
-  /** @deprecated — backend route is global; writes to JOB_ID's bot. */
-  getConfig: () => request<Record<string, unknown>>("GET", "/config"),
-  /** @deprecated — backend route is global; writes to JOB_ID's bot. */
-  putConfig: (config: Record<string, unknown>) =>
-    request<Record<string, unknown>>("PUT", "/config", { config }),
 };
 
 export { ApiError };
