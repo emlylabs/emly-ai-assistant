@@ -13,7 +13,7 @@ from typing import Protocol
 
 from services.auth.base import OAuthState
 
-DEFAULT_TTL = timedelta(minutes=5)
+DEFAULT_TTL = timedelta(minutes=15)
 
 
 class StateStore(Protocol):
