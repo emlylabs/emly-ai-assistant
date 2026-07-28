@@ -4,8 +4,8 @@ Two install paths:
 
 1. **OAuth (Embedded Signup)** — Meta's OAuth dance returns a short-lived
    user token. ``MetaEmbeddedSignup.post_install_hook`` exchanges it
-   for a long-lived (60-day) token and POSTs ``/{phone_number_id}/subscribed_apps``
-   to register the webhook. Admin still needs to provide
+   for a long-lived (60-day) token and discovers the ``waba_id`` /
+   ``phone_number_id``. Admin still needs to provide
    ``verify_token`` (used in the GET handshake) — they do that on a
    follow-up screen after callback. (For v1 the OAuth path stores
    whatever the callback can derive; admin completes the row via
@@ -45,7 +45,8 @@ from models.bot_channels import BotChannelModel
 
 log = logging.getLogger(__name__)
 
-GRAPH_API = "https://graph.facebook.com/v19.0"
+_GRAPH_API_VERSION = os.environ.get("META_GRAPH_API_VERSION", "v21.0")
+GRAPH_API = f"https://graph.facebook.com/{_GRAPH_API_VERSION}"
 
 
 class WhatsAppCloudSecrets(BaseModel):
@@ -66,7 +67,7 @@ class MetaEmbeddedSignup(OAuth2AuthCodeBase):
     is the recommended v1 path; this exists so the architecture is
     additive when we want to ship Embedded Signup later."""
 
-    authorize_url = "https://www.facebook.com/v19.0/dialog/oauth"
+    authorize_url = f"https://www.facebook.com/{_GRAPH_API_VERSION}/dialog/oauth"
     token_url = f"{GRAPH_API}/oauth/access_token"
     secrets_model = WhatsAppCloudSecrets
     allows_direct_static_install = True  # Static is preferred in v1.
@@ -211,7 +212,9 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             log.error("META_APP_SECRET not set; rejecting all WhatsApp inbound")
             return False
         provided = request.headers.get("x-hub-signature-256", "")
+        log.info("WhatsApp inbound signature: %s", provided)
         if not provided.startswith("sha256="):
+            log.info("WhatsApp inbound signature missing sha256= prefix: %s", provided)
             return False
         provided_hex = provided[len("sha256="):]
         raw_body = getattr(request, "_body", None) or b""
@@ -318,23 +321,36 @@ class WhatsAppCloudAdapter(ChannelAdapter):
         already did this."""
         if not secrets.access_token or not secrets.phone_number_id:
             raise InstallError("access_token and phone_number_id are required")
+        if not secrets.waba_id:
+            raise InstallError("waba_id is required — Meta subscribes apps at the WABA level, not the phone number level")
         async with make_client() as client:
             try:
                 resp = await client.post(
-                    f"{GRAPH_API}/{secrets.phone_number_id}/subscribed_apps",
+                    f"{GRAPH_API}/{secrets.waba_id}/subscribed_apps",
                     headers={"Authorization": f"Bearer {secrets.access_token}"},
                 )
             except Exception as e:
                 raise InstallError(f"unable to reach Meta Graph API: {e}")
             if resp.status_code >= 400:
-                detail = ""
+                err: dict = {}
                 try:
-                    detail = resp.json().get("error", {}).get("message") or ""
+                    err = (resp.json() or {}).get("error", {}) or {}
                 except Exception:
                     pass
+                message = err.get("message") or resp.text[:200] or "no error description"
+                tags: List[str] = []
+                if err.get("code") is not None:
+                    tags.append(f"code={err.get('code')}")
+                if err.get("error_subcode") is not None:
+                    tags.append(f"subcode={err.get('error_subcode')}")
+                if err.get("type"):
+                    tags.append(f"type={err.get('type')}")
+                if err.get("fbtrace_id"):
+                    tags.append(f"fbtrace_id={err.get('fbtrace_id')}")
+                tag_str = f" ({', '.join(tags)})" if tags else ""
                 raise InstallError(
-                    f"Meta subscribe_apps rejected the credentials (status {resp.status_code}): "
-                    f"{detail or resp.text[:200] or 'no error description'}"
+                    f"Meta subscribe_apps rejected the credentials (status {resp.status_code}) "
+                    f"for waba_id={secrets.waba_id}{tag_str}: {message}"
                 )
 
     async def healthcheck(self, channel: BotChannelModel) -> dict:
@@ -358,10 +374,13 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             secrets = _decrypt(channel)
         except Exception:
             return
+        if not secrets.waba_id:
+            log.warning("WhatsApp revoke skipped channel=%s: no waba_id", channel.id)
+            return
         try:
             async with make_client() as client:
                 await client.delete(
-                    f"{GRAPH_API}/{secrets.phone_number_id}/subscribed_apps",
+                    f"{GRAPH_API}/{secrets.waba_id}/subscribed_apps",
                     headers={"Authorization": f"Bearer {secrets.access_token}"},
                 )
         except Exception:

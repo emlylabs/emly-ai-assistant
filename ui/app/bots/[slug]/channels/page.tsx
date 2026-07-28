@@ -22,9 +22,28 @@ export default function BotChannelsPage() {
   const [installs, setInstalls] = useState<ChannelInstall[]>([]);
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<Banner>(null);
+  // Loader build id, used to pin `?v=` and `data-version` on the embed snippet.
+  // Null until the first fetch resolves, in which case we degrade to an
+  // unpinned URL — better than blocking the snippet on a network call.
+  const [widgetVersion, setWidgetVersion] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") setOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .widgetInfo()
+      .then((info) => {
+        if (!cancelled) setWidgetVersion(info.version);
+      })
+      .catch(() => {
+        // Non-fatal — snippet still works without the ?v= pin.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -66,11 +85,34 @@ export default function BotChannelsPage() {
   // Use bot.id (not slug) so a future rename doesn't break a customer's
   // pasted snippet. Backend route accepts both, but only id is stable.
   const widgetUrl = `${origin}/widget/${bot.id}/chat`;
-  const widgetScriptUrl = `${origin}/emly-widget.js`;
+  // ?v=<build-id> busts customer-side CDN caches on each loader release.
+  // data-version on the tag is documentation — the URL is what pins.
+  const widgetScriptUrl = widgetVersion
+    ? `${origin}/emly-widget.js?v=${encodeURIComponent(widgetVersion)}`
+    : `${origin}/emly-widget.js`;
+  const previewUrl = `${origin}/widget-test.html?bot=${encodeURIComponent(bot.id)}`;
 
-  const embedSnippet = `<script src="${widgetScriptUrl}"
+  const embedSnippet = widgetVersion
+    ? `<script src="${widgetScriptUrl}"
+        data-bot-id="${bot.id}"
+        data-base-url="${origin}"
+        data-version="${widgetVersion}"></script>`
+    : `<script src="${widgetScriptUrl}"
         data-bot-id="${bot.id}"
         data-base-url="${origin}"></script>`;
+
+  // CSP directives the customer's site needs. We name the origin
+  // explicitly so the snippet is paste-ready; ``'unsafe-inline'`` for
+  // ``style-src`` is unavoidable today because the loader injects its
+  // own <style> tag at runtime via webpack style-loader.
+  const cspDirectives = [
+    `script-src ${origin}`,
+    `connect-src ${origin}`,
+    `img-src ${origin} data:`,
+    `style-src 'unsafe-inline'`,
+    `font-src data:`,
+  ].join("; ");
+  const cspHeader = `Content-Security-Policy: ${cspDirectives}`;
 
   const curlSnippet = `curl -X POST "${widgetUrl}" \\
   -H "Content-Type: application/json" \\
@@ -96,10 +138,58 @@ export default function BotChannelsPage() {
     return out;
   }, [types]);
 
+  // Hand-off helpers for the developer who will install the embed.
+  // - Print: opens the OS print dialog; the @media print stylesheet in
+  //   globals.css hides shell chrome and emits a clean A4-ready document.
+  // - Copy as Markdown: flattens the embed snippet + CSP directives + the
+  //   per-bot HTTP endpoint into a single markdown blob that an admin can
+  //   paste into a ticket or email.
+  function buildMarkdownHandoff(): string {
+    const lines: string[] = [];
+    lines.push(`# Embed — ${bot.name}`);
+    lines.push("");
+    lines.push("## HTML snippet");
+    lines.push("```html");
+    lines.push(embedSnippet);
+    lines.push("```");
+    lines.push("");
+    if (cspDirectives.length > 0) {
+      lines.push("## Content-Security-Policy directives");
+      lines.push("Add these to your existing `Content-Security-Policy` response header:");
+      lines.push("```");
+      for (const d of cspDirectives) lines.push(d);
+      lines.push("```");
+      lines.push("");
+    }
+    lines.push("## HTTP endpoint (for non-browser clients)");
+    lines.push("```");
+    lines.push(`POST ${widgetUrl}`);
+    lines.push("```");
+    lines.push("");
+    lines.push(`Hosted test page: ${previewUrl}`);
+    return lines.join("\n");
+  }
+
   return (
     <>
       <div className="header">
         <h1>Channels — {bot.name}</h1>
+        <div className="row print-hidden" style={{ gap: 8 }}>
+          <button
+            className="ghost compact"
+            onClick={() => copy(buildMarkdownHandoff(), "handoff")}
+            title="Copy embed snippet + CSP + endpoint as a single markdown bundle"
+          >
+            {copied === "handoff" ? "Copied" : "Copy as Markdown"}
+          </button>
+          <button
+            className="ghost compact"
+            onClick={() => window.print()}
+            title="Open the print dialog with shell chrome hidden"
+          >
+            Print embed instructions
+          </button>
+        </div>
       </div>
 
       {banner && (
@@ -132,7 +222,7 @@ export default function BotChannelsPage() {
           <pre className="snippet">{embedSnippet}</pre>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
             <a
-              href={`${origin}/widget-test.html?bot=${encodeURIComponent(bot.id)}`}
+              href={previewUrl}
               target="_blank"
               rel="noreferrer"
               className="ghost"
@@ -144,7 +234,28 @@ export default function BotChannelsPage() {
               {copied === "embed" ? "Copied" : "Copy snippet"}
             </button>
           </div>
+          {widgetVersion && (
+            <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+              Pinned to loader build <code>{widgetVersion}</code>. Omit{" "}
+              <code>?v=</code> to always pull the latest deployed version.
+            </div>
+          )}
         </div>
+
+        <SharePreview
+          previewUrl={previewUrl}
+          qrSrc={api.botPreviewQrUrl(bot.slug)}
+          copied={copied}
+          copy={copy}
+        />
+
+        <CspGuidance
+          origin={origin}
+          cspHeader={cspHeader}
+          cspDirectives={cspDirectives}
+          copied={copied}
+          copy={copy}
+        />
 
         <details style={{ marginTop: 20 }}>
           <summary className="muted" style={{ cursor: "pointer", fontSize: 13 }}>
@@ -199,6 +310,167 @@ export default function BotChannelsPage() {
         onBanner={setBanner}
       />
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Share preview — QR + copy-link for the hosted /widget-test.html page.
+// ---------------------------------------------------------------------------
+//
+// The hosted preview page is itself public — anyone with the link can open it
+// and chat as a real end user (subject to the bot's `widget_allowed_origins`
+// allowlist, which already gates the deployment's own origin). We surface
+// that posture in the body copy so admins don't assume the link is private.
+function SharePreview({
+  previewUrl,
+  qrSrc,
+  copied,
+  copy,
+}: {
+  previewUrl: string;
+  qrSrc: string;
+  copied: string | null;
+  copy: (text: string, label: string) => void;
+}) {
+  return (
+    <div
+      style={{
+        marginTop: 20,
+        padding: 16,
+        borderRadius: 8,
+        border: "1px solid var(--panel-border)",
+        background: "var(--paper)",
+      }}
+    >
+      <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", marginBottom: 8 }}>
+        Share preview
+      </div>
+      <div
+        className="row"
+        style={{ alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}
+      >
+        <img
+          src={qrSrc}
+          alt="QR code for the share-preview page"
+          width={144}
+          height={144}
+          style={{
+            width: 144,
+            height: 144,
+            background: "white",
+            padding: 8,
+            borderRadius: 6,
+            border: "1px solid var(--panel-border)",
+            flexShrink: 0,
+          }}
+        />
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+            Scan or share this link to preview the bot in a hosted page —
+            useful for showing a stakeholder on mobile without pasting the
+            snippet on their site.
+          </p>
+          <div className="row" style={{ alignItems: "center", gap: 8 }}>
+            <code
+              style={{
+                flex: 1,
+                padding: "6px 10px",
+                background: "var(--surface)",
+                borderRadius: 6,
+                border: "1px solid var(--panel-border)",
+                fontSize: 12,
+                wordBreak: "break-all",
+              }}
+            >
+              {previewUrl}
+            </code>
+            <button className="ghost" onClick={() => copy(previewUrl, "previewUrl")}>
+              {copied === "previewUrl" ? "Copied" : "Copy link"}
+            </button>
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+            The preview page is public — anyone with the link can chat as
+            an end user. Chat itself is still gated by the bot&apos;s{" "}
+            <em>Allowed widget origins</em> list (Config → Limits).
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CSP guidance — directives the customer's site needs to load the widget.
+// ---------------------------------------------------------------------------
+//
+// The loader injects styles at runtime via webpack style-loader, which forces
+// `style-src 'unsafe-inline'` on the customer side. Until the loader switches
+// to nonces or extracted CSS, there's no cleaner story to recommend.
+function CspGuidance({
+  origin,
+  cspHeader,
+  cspDirectives,
+  copied,
+  copy,
+}: {
+  origin: string;
+  cspHeader: string;
+  cspDirectives: string;
+  copied: string | null;
+  copy: (text: string, label: string) => void;
+}) {
+  return (
+    <details style={{ marginTop: 20 }}>
+      <summary className="muted" style={{ cursor: "pointer", fontSize: 13 }}>
+        Content-Security-Policy directives
+      </summary>
+      <div style={{ marginTop: 12 }}>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          If the customer&apos;s site sets a Content-Security-Policy, it must
+          allow the widget to load scripts and call back to{" "}
+          <code>{origin}</code>. Paste these directives into the existing
+          policy (merge if there&apos;s already a <code>script-src</code>,
+          <code> connect-src</code>, etc.).
+        </p>
+        <pre className="snippet">{cspHeader}</pre>
+        <div className="row" style={{ justifyContent: "flex-end", marginTop: 8, gap: 8 }}>
+          <button className="ghost" onClick={() => copy(cspDirectives, "cspDirectives")}>
+            {copied === "cspDirectives" ? "Copied" : "Copy directives"}
+          </button>
+          <button className="ghost" onClick={() => copy(cspHeader, "cspHeader")}>
+            {copied === "cspHeader" ? "Copied" : "Copy full header"}
+          </button>
+        </div>
+        <ul
+          className="muted"
+          style={{ fontSize: 12, marginTop: 12, paddingLeft: 18, lineHeight: 1.7 }}
+        >
+          <li>
+            <code>script-src {origin}</code> — needed to load{" "}
+            <code>emly-widget.js</code>.
+          </li>
+          <li>
+            <code>connect-src {origin}</code> — XHR/fetch + streaming chat
+            requests to <code>/widget/&lt;id&gt;/*</code>.
+          </li>
+          <li>
+            <code>img-src {origin} data:</code> — bot avatar plus a few
+            inline data-URI icons rendered by the launcher.
+          </li>
+          <li>
+            <code>style-src &apos;unsafe-inline&apos;</code> — the loader injects
+            its CSS at runtime; until it&apos;s ported to a nonce-able
+            extracted stylesheet, this is unavoidable on the customer
+            side.
+          </li>
+          <li>
+            <code>font-src data:</code> — only if the customer&apos;s policy
+            already forbids data-URI fonts; the launcher inlines a small
+            icon font.
+          </li>
+        </ul>
+      </div>
+    </details>
   );
 }
 
@@ -494,12 +766,14 @@ function WhatsAppPanel({
   const [wabaId, setWabaId] = useState("");
   const [verifyToken, setVerifyToken] = useState("");
   const [displayPhoneNumber, setDisplayPhoneNumber] = useState("");
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   if (!info) return null;
 
   async function submit() {
-    if (!accessToken.trim() || !phoneNumberId.trim() || !verifyToken.trim()) return;
+    if (!accessToken.trim() || !phoneNumberId.trim() || !wabaId.trim() || !verifyToken.trim()) return;
     setBusy(true);
+    setConnectError(null);
     try {
       await api.createChannel(slug, {
         type: "whatsapp_cloud",
@@ -520,7 +794,9 @@ function WhatsAppPanel({
       setDisplayPhoneNumber("");
       onChange();
     } catch (e) {
-      onBanner({ kind: "err", message: errorMessage(e) });
+      const msg = errorMessage(e);
+      onBanner({ kind: "err", message: msg });
+      setConnectError(msg);
     } finally {
       setBusy(false);
     }
@@ -592,7 +868,7 @@ function WhatsAppPanel({
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
           <SecretField label="System-user access token" value={accessToken} onChange={setAccessToken} type="password" placeholder="EAAB…" />
           <SecretField label="Phone number ID" value={phoneNumberId} onChange={setPhoneNumberId} placeholder="106540352242922" />
-          <SecretField label="WABA ID (optional)" value={wabaId} onChange={setWabaId} placeholder="102290129340398" />
+          <SecretField label="WABA ID" value={wabaId} onChange={setWabaId} placeholder="102290129340398" />
           <SecretField
             label="Verify token (admin-chosen string used in the GET handshake)"
             value={verifyToken}
@@ -606,8 +882,16 @@ function WhatsAppPanel({
             Meta App&apos;s WhatsApp webhook config along with this verify_token.
             Set <code>META_APP_SECRET</code> on the deployment env.
           </div>
+          {connectError && (
+            <WhatsAppErrorPanel
+              error={connectError}
+              phoneNumberId={phoneNumberId.trim()}
+              wabaId={wabaId.trim()}
+              onDismiss={() => setConnectError(null)}
+            />
+          )}
           <div className="row" style={{ justifyContent: "flex-end" }}>
-            <button onClick={submit} disabled={busy || !accessToken.trim() || !phoneNumberId.trim() || !verifyToken.trim()}>
+            <button onClick={submit} disabled={busy || !accessToken.trim() || !phoneNumberId.trim() || !wabaId.trim() || !verifyToken.trim()}>
               {busy ? "Connecting…" : "Connect"}
             </button>
           </div>
@@ -615,6 +899,220 @@ function WhatsAppPanel({
       )}
     </div>
   );
+}
+
+function WhatsAppErrorPanel({
+  error,
+  phoneNumberId,
+  wabaId,
+  onDismiss,
+}: {
+  error: string;
+  phoneNumberId: string;
+  wabaId: string;
+  onDismiss: () => void;
+}) {
+  const hints = classifyWhatsAppError(error);
+  const pid = phoneNumberId || "<PHONE_NUMBER_ID>";
+  const debugCmds = [
+    `# 1. Verify the access token and inspect its scopes`,
+    `curl -s "https://graph.facebook.com/v21.0/debug_token?input_token=$TOKEN&access_token=$TOKEN" | jq`,
+    ``,
+    `# 2. Confirm the Phone number ID resolves to a phone-number node`,
+    `curl -s "https://graph.facebook.com/v21.0/${pid}?fields=display_phone_number,verified_name" \\`,
+    `  -H "Authorization: Bearer $TOKEN" | jq`,
+    ``,
+    ...(wabaId
+      ? [
+          `# 3. List phone numbers attached to the WABA`,
+          `curl -s "https://graph.facebook.com/v21.0/${wabaId}/phone_numbers" \\`,
+          `  -H "Authorization: Bearer $TOKEN" | jq`,
+          ``,
+        ]
+      : []),
+    `# 4. Reproduce the failing call (GET, non-mutating)`,
+    `curl -s "https://graph.facebook.com/v21.0/${wabaId || "<WABA_ID>"}/subscribed_apps" \\`,
+    `  -H "Authorization: Bearer $TOKEN" | jq`,
+  ].join("\n");
+  const scriptCmd = `./test_wa.sh -t "$TOKEN" -p "${pid}"${wabaId ? ` -w "${wabaId}"` : ""}`;
+
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // best effort — fall through silently
+    }
+  }
+
+  return (
+    <div
+      role="alert"
+      style={{
+        border: "1px solid var(--error)",
+        background: "var(--error-soft)",
+        borderRadius: 8,
+        padding: 14,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ fontWeight: 600, color: "var(--error)" }}>Connection failed</div>
+        <button className="ghost" onClick={onDismiss} aria-label="Dismiss error">
+          Dismiss
+        </button>
+      </div>
+
+      <div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+          Raw error from Meta
+        </div>
+        <pre
+          style={{
+            margin: 0,
+            padding: 10,
+            background: "var(--panel-bg, rgba(0,0,0,0.04))",
+            border: "1px solid var(--panel-border)",
+            borderRadius: 6,
+            fontSize: 12,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {error}
+        </pre>
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+          Likely causes &amp; fixes
+        </div>
+        <ol style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+          {hints.map((h, i) => (
+            <li key={i} style={{ fontSize: 13 }}>
+              <div style={{ fontWeight: 600 }}>{h.title}</div>
+              <div className="muted" style={{ fontSize: 12 }}>{h.body}</div>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <div>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>
+            Reproduce on your terminal
+          </div>
+          <button className="ghost" onClick={() => copyToClipboard(debugCmds)}>
+            Copy commands
+          </button>
+        </div>
+        <pre
+          style={{
+            margin: 0,
+            padding: 10,
+            background: "var(--panel-bg, rgba(0,0,0,0.04))",
+            border: "1px solid var(--panel-border)",
+            borderRadius: 6,
+            fontSize: 11,
+            overflowX: "auto",
+            lineHeight: 1.45,
+          }}
+        >
+{`export TOKEN='<paste your access token>'
+
+${debugCmds}`}
+        </pre>
+        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+          Or run the bundled one-shot diagnostic from the repo root — it runs all of the
+          above and prints the most likely root cause:
+        </div>
+        <pre
+          style={{
+            margin: "6px 0 0 0",
+            padding: 8,
+            background: "var(--panel-bg, rgba(0,0,0,0.04))",
+            border: "1px solid var(--panel-border)",
+            borderRadius: 6,
+            fontSize: 11,
+          }}
+        >
+{`export TOKEN='<paste your access token>'
+${scriptCmd}`}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+type WhatsAppHint = { title: string; body: string };
+
+function classifyWhatsAppError(raw: string): WhatsAppHint[] {
+  const e = raw.toLowerCase();
+  const hints: WhatsAppHint[] = [];
+  const has = (s: string) => e.includes(s);
+
+  // Code-based fast paths (the backend now stamps "code=NNN, subcode=NNN" into the detail).
+  if (has("code=190") || has("invalid oauth") || has("session has expired") || has("access token")) {
+    hints.push({
+      title: "The access token is invalid or expired",
+      body:
+        "Regenerate a long-lived system-user token in Business Settings → System Users → <user> → Generate New Token. " +
+        "Tokens minted before the system user was assigned to the WABA also fail this way — assign first, then regenerate.",
+    });
+  }
+  if (has("code=200") || has("missing permissions") || has("(#10)") || has("(#200)") || has("permission")) {
+    hints.push({
+      title: "Token is missing required WhatsApp scopes",
+      body:
+        "The system user needs whatsapp_business_management and whatsapp_business_messaging granted on the WABA. " +
+        "Open Business Settings → System Users → Assign Assets, pick the WABA, enable both permissions, then regenerate the token.",
+    });
+  }
+  if (has("subcode=33") || has("does not exist") || has("unsupported post request") || has("cannot be loaded")) {
+    hints.push({
+      title: "The WABA ID or Phone number ID is wrong or unreachable for this token",
+      body:
+        "Meta subscribes webhooks at the WABA level (POST /{waba_id}/subscribed_apps), not the phone-number level. " +
+        "Confirm the WABA ID is correct — open WhatsApp → API Setup in the Meta App dashboard and copy the " +
+        "'WhatsApp Business Account ID'. If the IDs are correct, the system user that minted the token has not " +
+        "been assigned to the WABA — fix that in Business Settings → Accounts → WhatsApp Accounts → Add People.",
+    });
+  }
+  if (has("code=100") && !has("subcode=33")) {
+    hints.push({
+      title: "Meta returned a generic 'invalid parameter' (code=100)",
+      body:
+        "This usually means either the Phone number ID is wrong OR the token lacks whatsapp_business_management. " +
+        "Run the diagnostic curl below to see which is the case — it'll fail on step 1 (token) or step 2 (ID lookup).",
+    });
+  }
+  if (has("status 401") || has("status 403")) {
+    hints.push({
+      title: "Meta refused the call entirely (401/403)",
+      body:
+        "Almost always a token problem: expired, wrong app, or never granted WhatsApp scopes. " +
+        "Regenerate the system-user token and confirm both whatsapp_business_management and " +
+        "whatsapp_business_messaging are listed under its scopes.",
+    });
+  }
+
+  // Always-on tail: generic checklist if nothing matched, or as a final sanity prompt.
+  if (hints.length === 0) {
+    hints.push({
+      title: "Unrecognised error — run the diagnostic below",
+      body:
+        "The reproduction commands below will pinpoint whether the token, the Phone number ID, " +
+        "or the WABA assignment is the broken piece.",
+    });
+  }
+  hints.push({
+    title: "Also double-check META_APP_SECRET",
+    body:
+      "If install succeeds but inbound webhooks still 403, the deployment is missing the META_APP_SECRET env var " +
+      "(used for HMAC verification of every inbound payload). Set it from the Meta App → Settings → Basic page.",
+  });
+  return hints;
 }
 
 function TeamsPanel({
