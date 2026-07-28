@@ -84,8 +84,17 @@ class AuthProvider(Protocol):
     def verify_token(self, token: str) -> Principal:
         """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure."""
 
-    def authorize_url(self, oauth_state: OAuthState, redirect_uri: str) -> str:
-        """Build the IdP authorize URL the browser should redirect to."""
+    def authorize_url(
+        self,
+        oauth_state: OAuthState,
+        redirect_uri: str,
+        state_override: str | None = None,
+    ) -> str:
+        """Build the IdP authorize URL the browser should redirect to.
+
+        If *state_override* is supplied it replaces the raw ``oauth_state.state``
+        value in the generated URL (used when a gateway envelope wraps the
+        inner state)."""
 
     def exchange_code(
         self,

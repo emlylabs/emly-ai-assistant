@@ -222,7 +222,12 @@ class OidcProvider:
 
     # -------- authorize / token / logout --------
 
-    def authorize_url(self, oauth_state: OAuthState, redirect_uri: str) -> str:
+    def authorize_url(
+        self,
+        oauth_state: OAuthState,
+        redirect_uri: str,
+        state_override: str | None = None,
+    ) -> str:
         endpoint = self._discovery.get("authorization_endpoint")
         if not endpoint:
             raise RuntimeError("OIDC discovery has no authorization_endpoint")
@@ -231,7 +236,7 @@ class OidcProvider:
             "client_id": self._client_id,
             "redirect_uri": redirect_uri,
             "scope": self._scopes,
-            "state": oauth_state.state,
+            "state": state_override or oauth_state.state,
             "nonce": oauth_state.nonce,
             "code_challenge": _pkce_challenge(oauth_state.code_verifier),
             "code_challenge_method": "S256",

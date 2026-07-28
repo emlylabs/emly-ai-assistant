@@ -49,6 +49,10 @@ class EmailLinkedToOtherProvider(AuthError):
     disabled. Refuses by default to prevent silent account takeover."""
 
 
+class EmailNotVerified(AuthError):
+    """The IdP reports that the user's email address has not been verified."""
+
+
 def _allow_email_relink() -> bool:
     return os.environ.get("AUTH_ALLOW_EMAIL_RELINK", "").strip().lower() in ("1", "true", "yes", "on")
 
