@@ -269,7 +269,7 @@ async def _verify(token: str, cache_key: str, fetcher, issuer: str, audience: st
             algorithms=["RS256"],
             audience=audience,
             issuer=issuer,
-            options={"require": ["exp", "iat", "iss", "aud"]},
+            options={"require": ["exp", "iss", "aud"]},
         )
     except pyjwt.PyJWTError as e:
         raise PermissionError(f"jwt verification failed: {e}")
