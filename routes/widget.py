@@ -36,6 +36,7 @@ from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
 from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
+from services.auth.ratelimit import client_ip, hit, rate_limit
 from services.auth.widget_hmac import WidgetPrincipal
 from services.bot_config import get_config_for_bot
 
@@ -334,7 +335,11 @@ def widget_impression(
     Bot_Impressions.insert_impression(bot_id=bot.id, impression_type=kind.upper())
 
 
-@router.post("/widget/{bot_ref}/init", response_model=WidgetInitResponse)
+@router.post(
+    "/widget/{bot_ref}/init",
+    response_model=WidgetInitResponse,
+    dependencies=[Depends(rate_limit("widget_init", per_path_param="bot_ref"))],
+)
 def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
     """Mint a per-bot HMAC token for a widget visitor.
 
@@ -367,6 +372,7 @@ def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
 # ---------------------------------------------------------------------------
 # POST /widget/{bot_id}/action — form submissions / OTP
 # ---------------------------------------------------------------------------
+from services.email_service import email_enabled  # noqa: E402
 from services.otp import authorize_otp, create_otp  # noqa: E402
 from services.widget_email import send_email_with_attachments  # noqa: E402
 from services.widget_uploads import handle_file_uploads  # noqa: E402
@@ -497,7 +503,10 @@ def widget_rate_message(
     return WidgetRateResponse(ok=True, message_id=message_id, rating=payload.rating)
 
 
-@router.post("/widget/{bot_ref}/action")
+@router.post(
+    "/widget/{bot_ref}/action",
+    dependencies=[Depends(rate_limit("widget_action", per_path_param="bot_ref"))],
+)
 async def widget_action(
     bot_ref: str,
     request: Request,
@@ -521,8 +530,12 @@ async def widget_action(
     bot = _resolve_bot(bot_ref)
     page = request.headers.get("X-Emly-PageID")
 
-    # Reject abusive uploads (size / count / MIME) up front. The widget
-    # is unauthenticated, so caps come from the bot's ``LimitsConfig``.
+    # Uploads write to disk, so they get their own, tighter rate limit.
+    if files:
+        hit("widget_upload", client_ip(request), bot.id)
+
+    # Reject abusive uploads (size / count / MIME) up front. Caps come
+    # from the bot's ``LimitsConfig``.
     _validate_uploads(files, bot)
 
     try:
@@ -549,6 +562,21 @@ async def widget_action(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"status": "failed", "message": "user_id is required"},
             )
+        # Without an SMTP relay the code could never arrive; say so instead
+        # of reporting success.
+        if not email_enabled():
+            log.warning("OTP requested for bot=%s but email is disabled (EMAIL_SERVER unset)", bot.id)
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "status": "failed",
+                    "message": "Email verification isn't available right now. Please try again later.",
+                },
+            )
+        # Per-recipient limit stops email-bombing one address; per-IP limit
+        # stops one client spraying many addresses.
+        hit("otp_send_ip", client_ip(request), bot.id)
+        hit("otp_send_target", bot.id, str(payload_data["user_id"]).strip().lower())
         create_otp(payload_data, bot_id=bot.id)
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -561,6 +589,7 @@ async def widget_action(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"status": "failed", "message": "user_id is required"},
             )
+        hit("otp_verify", client_ip(request), bot.id)
         result = authorize_otp(payload_data, bot_id=bot.id)
         return JSONResponse(
             status_code=result["code"],

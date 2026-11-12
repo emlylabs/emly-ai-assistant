@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from models.admin_users import AdminUsers
@@ -59,6 +59,7 @@ from services.auth.issuer.flows import (
     parse_authorize_request,
 )
 from services.auth.issuer.passwords import hash_password, needs_rehash, verify_password
+from services.auth.ratelimit import rate_limit
 from services.auth.issuer.tokens import mint_access_token, mint_id_token
 
 log = logging.getLogger(__name__)
@@ -303,7 +304,11 @@ def _4xx(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
-@router.get("/api/auth/local/authorize", include_in_schema=False)
+@router.get(
+    "/api/auth/local/authorize",
+    include_in_schema=False,
+    dependencies=[Depends(rate_limit("local_authorize"))],
+)
 async def authorize_get(request: Request):
     """Render the login form. Validates query params first so a malformed link 400s early."""
     params = dict(request.query_params)
@@ -328,7 +333,11 @@ async def authorize_get(request: Request):
     return _render_authorize_form(params=params)
 
 
-@router.post("/api/auth/local/authorize", include_in_schema=False)
+@router.post(
+    "/api/auth/local/authorize",
+    include_in_schema=False,
+    dependencies=[Depends(rate_limit("local_authorize"))],
+)
 async def authorize_post(
     request: Request,
     client_id: str = Form(...),
@@ -501,7 +510,11 @@ def _mint_token_set(
     return access, id_token
 
 
-@router.post("/api/auth/local/token", include_in_schema=False)
+@router.post(
+    "/api/auth/local/token",
+    include_in_schema=False,
+    dependencies=[Depends(rate_limit("local_token"))],
+)
 async def token(
     request: Request,
     grant_type: str = Form(...),

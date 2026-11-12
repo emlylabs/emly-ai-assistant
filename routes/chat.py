@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from services.agent_service import AgentService
+from services.auth.ratelimit import rate_limit
 from utils.dependencies import get_agent_service
 from utils.schemas import AgentRequest
 
@@ -23,7 +24,11 @@ def _chat_principal(bot_slug: str, request: Request):
 logger = logging.getLogger(__name__)
 
 
-@router.post("/widget/{bot_slug}/chat", summary="Web widget chat (path-scoped to bot)")
+@router.post(
+    "/widget/{bot_slug}/chat",
+    summary="Web widget chat (path-scoped to bot)",
+    dependencies=[Depends(rate_limit("widget_chat", per_path_param="bot_slug"))],
+)
 async def widget_chat(
     bot_slug: str,
     request: AgentRequest,

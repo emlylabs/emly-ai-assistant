@@ -59,3 +59,14 @@ def isolated_db():
             model.delete().execute()
         except Exception:
             pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate-limit counters are process-global; start every test clean so a
+    burst in one test can't 429 another."""
+    from services.auth.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()

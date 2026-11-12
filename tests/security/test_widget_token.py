@@ -185,6 +185,7 @@ def test_action_otp_uses_email_but_checks_visitor(env, monkeypatch):
     from routes import widget as widget_routes
 
     monkeypatch.setattr(widget_routes, "create_otp", lambda payload, bot_id: None)
+    monkeypatch.setattr(widget_routes, "email_enabled", lambda: True)
     token = env["token_for"](env["bot"], "alice")
     ok = {"user_id": "alice@example.com", "form_title": "auth_authentication", "visitor_id": "alice"}
     r = env["client"].post(

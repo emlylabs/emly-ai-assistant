@@ -112,6 +112,7 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 |----------|-------------|---------|
 | `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
+| `AUTH_RATE_*` | Per-client rate limits, in [`limits`](https://limits.readthedocs.io/) syntax such as `20/minute`. `WIDGET_INIT` (30/min), `WIDGET_CHAT` (20/min), `WIDGET_ACTION` (20/min) and `WIDGET_UPLOAD` (10/min) are per IP per bot. `OTP_SEND_TARGET` (5 per 10 min) is per bot and email address, `OTP_SEND_IP` (20/hour) and `OTP_VERIFY` (10 per 10 min) per IP per bot. `LOCAL_AUTHORIZE` (5/min) and `LOCAL_TOKEN` (10/min) are per IP. Counters are in memory, per process | see left |
 | `EMAIL_SERVER` | Your SMTP relay for OTP codes, invites and form alerts. With no value, email is disabled and a line is logged at boot. Port 465 uses implicit TLS and 587 uses STARTTLS, both with certificate verification | unset (email off) |
 
 ### RAG / Embeddings
