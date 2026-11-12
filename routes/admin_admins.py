@@ -901,8 +901,8 @@ async def accept_invite(
         )
     if row.email.lower() != admin.email.lower():
         log.warning(
-            "invite.accept email mismatch admin=%s invite_email=%s token=%s",
-            admin.id, row.email, token,
+            "invite.accept email mismatch admin=%s invite_email=%s invite_id=%s",
+            admin.id, row.email, row.id,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -931,7 +931,7 @@ async def accept_invite(
 
     bot_id, _ = _primary_assignment(row)
     bot_slug, _name = _bot_summary(bot_id)
-    log.info("invite.accept by=%s token=%s bot=%s", admin.id, token, bot_id)
+    log.info("invite.accept by=%s invite_id=%s bot=%s", admin.id, row.id, bot_id)
     audit(
         "invite.accepted",
         admin_id=admin.id,
@@ -966,7 +966,7 @@ async def reject_invite(
         )
     PendingAdmins.mark_rejected(row.id, admin.id)
     bot_id, _ = _primary_assignment(row)
-    log.info("invite.reject by=%s token=%s bot=%s", admin.id, token, bot_id)
+    log.info("invite.reject by=%s invite_id=%s bot=%s", admin.id, row.id, bot_id)
     audit(
         "invite.rejected",
         admin_id=admin.id,
@@ -1010,7 +1010,7 @@ async def revoke_invite(
             detail={"code": "invite_revoke_not_authorized"},
         )
     PendingAdmins.mark_revoked(row.id, admin.id)
-    log.info("invite.revoke by=%s token=%s bot=%s", admin.id, token, bot_id)
+    log.info("invite.revoke by=%s invite_id=%s bot=%s", admin.id, row.id, bot_id)
     audit(
         "invite.revoked",
         admin_id=admin.id,

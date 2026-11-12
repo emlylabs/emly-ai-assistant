@@ -189,7 +189,7 @@ def _classify_one(job: _EnrichmentJob) -> Optional[Dict[str, Any]]:
 
     parsed = _parse_classifier_json(content)
     if parsed is None:
-        log.debug("enrichment: classifier returned non-JSON output: %s", content[:200])
+        log.debug("enrichment: classifier returned non-JSON output (len=%d)", len(content or ""))
     return parsed
 
 

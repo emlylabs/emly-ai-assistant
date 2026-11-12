@@ -54,6 +54,9 @@ logging_context.install()
 # accidentally `log.info("body=%s", body)`s a secret gets scrubbed.
 from services.auth.logging_filter import install as _install_redaction  # noqa: E402
 _install_redaction()
+# Logger-level filters only see records created on that logger, so the
+# access log (which records URL paths) needs its own copy.
+_install_redaction(logging.getLogger("uvicorn.access"), preserve_args=True)
 
 logo = """
  _____           _ _            _    ___      _                    _

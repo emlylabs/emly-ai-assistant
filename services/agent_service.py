@@ -136,7 +136,11 @@ class AgentService:
             return ("Please create at least one topic to get started. Click on Topics tab in Bot dashboard.", [])
 
         response = agent_handler.process_user_input(message, stream, page_id, channel_id=channel_id)
-        logger.info("Processed message for user '%s', session %s: %s...", user_id, session_id, message[:50])
+        # Never log message text — only its length.
+        logger.info(
+            "Processed message for user '%s', session %s (len=%d)",
+            user_id, session_id, len(message or ""),
+        )
         return response
 
     def is_available(self) -> bool:

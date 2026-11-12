@@ -212,9 +212,12 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             log.error("META_APP_SECRET not set; rejecting all WhatsApp inbound")
             return False
         provided = request.headers.get("x-hub-signature-256", "")
-        log.info("WhatsApp inbound signature: %s", provided)
         if not provided.startswith("sha256="):
-            log.info("WhatsApp inbound signature missing sha256= prefix: %s", provided)
+            # Never log the header value itself — only whether it was present.
+            log.info(
+                "WhatsApp inbound rejected: signature %s",
+                "malformed" if provided else "missing",
+            )
             return False
         provided_hex = provided[len("sha256="):]
         raw_body = getattr(request, "_body", None) or b""
