@@ -50,4 +50,38 @@ router = Router(
 )
 router.run()
 
+# SQLite ignores foreign keys unless asked, on every connection. Turned on
+# only after migrations: SQLite applies some schema changes by copying a
+# table and dropping the old one, and with enforcement on that DROP would
+# fire ON DELETE CASCADE into the child tables. `permanent=True` re-applies
+# it on every new thread-local connection.
+if DATABASE_URL.startswith("sqlite"):
+    DB.pragma("foreign_keys", 1, permanent=True)
+
 DB.connect(reuse_if_open=True)
+
+
+def report_orphaned_rows() -> dict:
+    """Count rows whose parent row no longer exists (SQLite only).
+
+    Databases from before enforcement may hold some. They stay readable,
+    but updating their foreign key column now fails, so they are logged
+    at boot by table. Returns ``{table: count}``."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return {}
+    counts: dict = {}
+    try:
+        for table, *_ in DB.execute_sql("PRAGMA foreign_key_check").fetchall():
+            counts[table] = counts.get(table, 0) + 1
+    except Exception:
+        log.exception("foreign key check failed")
+        return {}
+    if counts:
+        log.warning(
+            "SQLite has rows whose parent row is missing (foreign keys are now enforced): %s",
+            ", ".join(f"{t}={n}" for t, n in sorted(counts.items())),
+        )
+    return counts
+
+
+report_orphaned_rows()
