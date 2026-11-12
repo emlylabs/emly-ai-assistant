@@ -105,6 +105,13 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 | `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
 | `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
 
+### Runtime and Security
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
+| `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
+
 ### RAG / Embeddings
 
 | Variable | What it does | Default |
@@ -518,6 +525,7 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 | `/api/admin/admins/*` | Admin management |
 | `/api/livez` | Health check (liveness) |
 | `/api/readyz` | Readiness check (waits for models + DB) |
+| `/docs`, `/openapi.json` | Interactive API docs and schema. Off when `MODE=prod` unless `ENABLE_API_DOCS=true` |
 
 ---
 

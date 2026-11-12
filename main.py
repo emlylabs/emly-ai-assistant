@@ -110,8 +110,10 @@ def _assert_runtime_topology() -> None:
     # Falling back to ``request.url.netloc`` (Host header) for the OIDC redirect
     # / post-login normalization opens a Host-spoof window where return_to
     # could resolve to an attacker-controlled origin.
-    mode = (os.environ.get("MODE") or "").strip().lower()
-    if mode in ("prod", "production", "preprod", "stage", "staging") and not os.environ.get("APP_BASE_URL"):
+    from utils.runtime import current_mode, is_prod_mode
+
+    mode = current_mode()
+    if is_prod_mode() and not os.environ.get("APP_BASE_URL"):
         raise RuntimeError(
             f"MODE={mode!r} requires APP_BASE_URL to be set (the public-facing origin of this app). "
             "Without it the OIDC callback redirect derives from the Host header, which is "
@@ -258,7 +260,15 @@ class CustomMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=500, content={"message": "Internal server error"})
 
 
-app = FastAPI()
+from utils.runtime import (  # noqa: E402
+    API_DOC_PATHS,
+    api_docs_enabled,
+    fastapi_docs_kwargs,
+)
+
+# A5: /docs, /redoc and /openapi.json are off when MODE is production-like,
+# unless ENABLE_API_DOCS=true.
+app = FastAPI(**fastapi_docs_kwargs())
 # Phase 10: rate-limit auth-sensitive endpoints. Routes opt in by decorating
 # their handlers with `@limiter.limit(...)` — the middleware below converts
 # 429 responses into JSON-shaped errors instead of plain text.
@@ -603,6 +613,11 @@ def _app_base_url_from_request(request: Request) -> str:
 
 
 def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
+    # With API docs disabled, their paths must 404 — not fall through to
+    # the SPA shell below and look like they exist.
+    if rel_path.strip("/") in API_DOC_PATHS and not api_docs_enabled():
+        return JSONResponse(status_code=404, content={"message": "Not found"})
+
     if not _UI_DIR.exists():
         return JSONResponse(
             status_code=503,
