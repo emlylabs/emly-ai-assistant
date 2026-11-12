@@ -14,8 +14,10 @@ Stack ordering (last-added = outermost):
     add(WidgetCORSMiddleware)    # outermost — intercepts widget preflight,
                                  # overwrites Allow-Origin on widget responses.
 
-Bare ``"*"`` in the allowlist keeps the legacy "any origin" behaviour —
-that's the schema default, so existing bots are unaffected. Specific
+The app's own origin (``APP_BASE_URL`` / ``PUBLIC_BASE_URL``) is always
+allowed, so the admin preview and hosted test page work even with an empty
+list — which is the default for new bots. Bare ``"*"`` allows any origin
+(existing bots were migrated to an explicit ``["*"]``). Specific
 origins (``https://example.com``) match exactly; ``https://*.example.com``
 matches any non-empty subdomain of ``example.com`` (boundary-anchored so
 ``https://*.com`` can't accidentally allow ``https://evil-example.com``).
@@ -108,6 +110,22 @@ def origin_allowed(origin: Optional[str], allowlist: Iterable[str]) -> bool:
     return False
 
 
+def self_origins() -> Tuple[str, ...]:
+    """This deployment's own origin(s), always allowed for the widget."""
+    import os
+    from urllib.parse import urlparse
+
+    origins = []
+    for name in ("APP_BASE_URL", "PUBLIC_BASE_URL"):
+        parsed = urlparse((os.environ.get(name) or "").strip())
+        if parsed.scheme and parsed.netloc:
+            origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    if not origins:
+        # Same local-dev fallback as the admin CSRF origin check.
+        origins.append("http://localhost:8080")
+    return tuple(origins)
+
+
 def _lookup_allowlist(bot_ref: str) -> Tuple[Optional[str], Tuple[str, ...]]:
     """Resolve ``bot_ref`` → (bot_id, allowlist). Cached for ``_CACHE_TTL_SECONDS``.
 
@@ -183,7 +201,7 @@ class WidgetCORSMiddleware(BaseHTTPMiddleware):
                 return _preflight_response(origin, allowed=False, request_headers=None)
             return await call_next(request)
 
-        allowed = origin_allowed(origin, allowlist)
+        allowed = origin_allowed(origin, allowlist) or origin_allowed(origin, self_origins())
 
         if request.method.upper() == "OPTIONS":
             request_headers = request.headers.get("access-control-request-headers")

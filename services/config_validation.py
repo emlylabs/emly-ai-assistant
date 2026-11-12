@@ -489,16 +489,16 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
                 message="No LLM API key set for this bot and no deployment-wide fallback configured. Chat will fail with a 4xx the moment a visitor sends a message.",
             ))
 
-    # RT2 — widget origin allowlist explicitly empty. ``["*"]`` is the
-    # default and means "any origin"; an empty list means "no origin
-    # passes" which causes WidgetCORSMiddleware to 403 every embed.
-    allowed_origins = limits.get("widget_allowed_origins") if isinstance(limits.get("widget_allowed_origins"), list) else None
-    if allowed_origins is not None and len(allowed_origins) == 0:
+    # RT2 — no widget origins configured. Empty is the default for new
+    # bots and means only this app's own pages (preview / test link) can
+    # load the widget; a customer-site embed is refused until listed.
+    allowed_origins = limits.get("widget_allowed_origins") if isinstance(limits.get("widget_allowed_origins"), list) else []
+    if len(allowed_origins) == 0:
         issues.append(Issue(
-            severity="error",
+            severity="warning",
             key="RT2_widget_origins_empty",
             section="limits",
-            message="Widget allowed-origins list is empty — every embed will be refused by the CORS middleware. Add at least one origin (or `*` to allow any).",
+            message="No widget origins are allowed yet, so the widget only works on this app's own preview and test pages. Add the sites you embed it on (e.g. https://www.example.com).",
         ))
 
     # RT3 — model name not in the known list. We only fire when the

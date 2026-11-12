@@ -2136,7 +2136,7 @@ function LimitsSection({
   writable: boolean;
 }) {
   const limits = config.limits ?? {};
-  const allowedOrigins = (limits.widget_allowed_origins ?? ["*"]) as string[];
+  const allowedOrigins = (limits.widget_allowed_origins ?? []) as string[];
   const mimeAllowlist = (limits.mime_allowlist ?? []) as string[];
   return (
     <div className="card">
@@ -2206,7 +2206,7 @@ function LimitsSection({
       <h2 style={{ marginTop: 24 }}>Widget origins</h2>
       <ListField
         label="Allowed widget origins"
-        hint="Origins this bot's widget can be embedded on. One per line. Examples: https://customer-site.com, https://*.customer-site.com (any subdomain), or * to allow any origin. Enforced on /widget/{slug}/* requests; non-matching origins get 403."
+        hint="Sites this bot's widget can be embedded on. One per line. Examples: https://customer-site.com, https://*.customer-site.com (any subdomain), or * to allow any site (not recommended). Empty = only this app's own preview and test pages. Enforced on /widget/{slug}/* requests; other origins get 403."
         values={allowedOrigins}
         onChange={(v) => patchPath(["limits", "widget_allowed_origins"], v)}
         placeholder="https://customer-site.com"

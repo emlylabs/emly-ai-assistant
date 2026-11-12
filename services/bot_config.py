@@ -50,7 +50,10 @@ class LimitsConfig(BaseModel):
             "text/csv",
         ]
     )
-    widget_allowed_origins: List[str] = Field(default_factory=lambda: ["*"])
+    # Sites allowed to embed the widget. Empty (the default for new bots)
+    # means only this app's own origin — the admin preview and the hosted
+    # test page. Existing bots were given an explicit ["*"] by migration 010.
+    widget_allowed_origins: List[str] = Field(default_factory=list)
 
 
 class LLMConfig(BaseModel):
