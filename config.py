@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+from utils import model_pins
+
 
 SRC_LOG_LEVELS = {"DB": logging.INFO, "MODELS": logging.INFO, "ACTIONS": logging.INFO}
 BACKEND_DIR = Path(__file__).parent
@@ -27,12 +29,13 @@ CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 256))
 ############# Load LLm and Embedding model configuration #############
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "huggingface")
-SENTENCE_TRANSFORMERS_HOME = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/embedding")
-RE_RANKING_MODEL_CACHE_FOLDER = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/re_ranking")
+# Model names, pinned revisions and cache folders: utils/model_pins.py (D2).
+SENTENCE_TRANSFORMERS_HOME = model_pins.embedding_cache_dir()
+RE_RANKING_MODEL_CACHE_FOLDER = model_pins.rerank_cache_dir()
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
 
 EMBEDDING_MODEL_INSTANCE = None
-EMBEDDING_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "Alibaba-NLP/gte-base-en-v1.5")
+EMBEDDING_MODEL_NAME = model_pins.embedding_model_name()
 if EMBEDDING_PROVIDER == "openai":
     OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL")
     EMBEDDING_MODEL_NAME = OPENAI_EMBEDDING_MODEL or EMBEDDING_MODEL_NAME
@@ -42,11 +45,17 @@ if EMBEDDING_PROVIDER == "openai":
         base_url=OPENAI_BASE_URL,
     )
 elif EMBEDDING_PROVIDER == "huggingface":
-    EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
-                    EMBEDDING_MODEL_NAME,
-                    cache_folder=SENTENCE_TRANSFORMERS_HOME,
-                    trust_remote_code=True, device='cpu', local_files_only=False
-                )
+    try:
+        EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
+            EMBEDDING_MODEL_NAME,
+            cache_folder=SENTENCE_TRANSFORMERS_HOME,
+            device="cpu",
+            **model_pins.embedding_load_kwargs(),
+        )
+    except OSError as exc:
+        if not model_pins.hf_offline():
+            raise
+        raise model_pins.missing_model_error("embedding", EMBEDDING_MODEL_NAME, SENTENCE_TRANSFORMERS_HOME, exc) from exc
     class SentenceTransformerEmbeddings:
         def __init__(self, model):
             self.model = model
@@ -139,9 +148,15 @@ with open(UTILS_DIR / FILE_NAME, "r") as f:
 # Load Reranking model
 ####################################
 ENABLE_RAG_HYBRID_SEARCH = os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "false").lower() == "true"
-RE_RANKING_MODEL = "cross-encoder/" + os.getenv("RE_RANKING_MODEL", "ms-marco-TinyBERT-L-2-v2")
+RE_RANKING_MODEL = model_pins.rerank_model_name()
 if ENABLE_RAG_HYBRID_SEARCH:
-    RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER)
+    try:
+        RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
+                                        **model_pins.rerank_load_kwargs())
+    except OSError as exc:
+        if not model_pins.hf_offline():
+            raise
+        raise model_pins.missing_model_error("re-ranking", RE_RANKING_MODEL, RE_RANKING_MODEL_CACHE_FOLDER, exc) from exc
 
 
 SESSION_TIMEOUT = timedelta(minutes=30)

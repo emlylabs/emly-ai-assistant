@@ -91,10 +91,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # chown pass at the end of the build.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly 2>/dev/null || true && \
     chown emly:emly /app && \
-    mkdir -p /home/emly/.cache/huggingface && \
-    mkdir -p /app/data/models/embedding && \
-    chown -R emly:emly /home/emly/.cache && \
-    chown -R emly:emly /app/data
+    mkdir -p /home/emly/.cache/huggingface /app/data /opt/models && \
+    chown -R emly:emly /home/emly/.cache /app/data /opt/models
 
 
 USER emly
@@ -111,13 +109,20 @@ COPY --chown=emly:emly pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/home/emly/.cache/uv,uid=10001,gid=10001 \
     uv sync --frozen --no-install-project --no-dev
 
-# ---- Embedding model layer: invalidates only when the model name changes -----
-ENV SENTENCE_TRANSFORMERS_HOME=/app/data/models/embedding \
-    RAG_EMBEDDING_MODEL=Alibaba-NLP/gte-base-en-v1.5
-RUN python -c "import os; from sentence_transformers import SentenceTransformer; \
-SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], \
-cache_folder=os.environ['SENTENCE_TRANSFORMERS_HOME'], \
-trust_remote_code=True, device='cpu')"
+# ---- Model layer: invalidates only when the pinned models change -------------
+# The embedding model and the re-ranking cross-encoder are downloaded at the
+# commits pinned in utils/model_pins.py (edit that file to update them). They
+# live under /opt/models, outside /app/data, so mounting a data volume can't
+# hide them. After this step Hugging Face downloads are switched off: the app
+# never fetches models or remote code at runtime.
+ENV SENTENCE_TRANSFORMERS_HOME=/opt/models/embedding \
+    RE_RANKING_MODEL_HOME=/opt/models/re_ranking \
+    HF_HOME=/opt/models/hf
+COPY --chown=emly:emly utils/__init__.py utils/model_pins.py ./utils/
+RUN python -m utils.model_pins
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1
 
 # ---- Application source: changes most often, copied last ---------------------
 # .dockerignore strips node_modules, .next, .venv, .git, data/, etc.

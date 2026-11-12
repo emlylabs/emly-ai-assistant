@@ -106,7 +106,7 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 | `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | Superadmin password | Set your own |
 | `QDRANT_URL` | Vector database URL (leave unset for embedded mode) | `http://localhost:6333` |
 | `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
-| `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
+| `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory. Leave unset in Docker | `./data/models/embedding` (local) / `/opt/models/embedding` (Docker) |
 
 ### LLM provider
 
@@ -150,6 +150,13 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `CHUNK_SIZE` | Text chunk size for splitting | `2048` |
 | `CHUNK_OVERLAP` | Overlap between chunks | `256` |
 | `ENABLE_RAG_HYBRID_SEARCH` | Enable CrossEncoder re-ranking | `false` |
+| `RE_RANKING_MODEL` | Cross-encoder for re-ranking (a name under `cross-encoder/`, or a full repo id) | `ms-marco-TinyBERT-L2-v2` |
+| `RE_RANKING_MODEL_HOME` | Re-ranking model cache directory. Leave unset in Docker | `./data/models/re_ranking` (local) / `/opt/models/re_ranking` (Docker) |
+| `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | Load models from the local cache only, never from Hugging Face. Set to `1` in the Docker image | unset (local) / `1` (Docker) |
+| `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION` | Commit to load when you use a model other than the defaults (the defaults are pinned in `utils/model_pins.py`) | unset |
+| `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Allow a non-default embedding model to run its own Python code from Hugging Face. Only for models you have reviewed, at a pinned revision | `false` |
+
+The Docker image downloads the default embedding and re-ranking models at build time, at the commits pinned in `utils/model_pins.py`, and then runs with Hugging Face downloads switched off: the app makes no requests to Hugging Face at runtime. To use a different model in Docker, change the pins and rebuild.
 
 ### Authentication
 
@@ -255,9 +262,10 @@ This reads `pyproject.toml`, resolves versions, and installs everything into the
 > ```env
 > DATA_DIR=./data
 > SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
+> RE_RANKING_MODEL_HOME=./data/models/re_ranking
 > ```
 >
-> `SENTENCE_TRANSFORMERS_HOME` is where the embedding model cache is stored. It also controls the re-ranking model cache (`{DATA_DIR}/models/re_ranking`).
+> These are the embedding and re-ranking model caches. Run `uv run python -m utils.model_pins` once to download the pinned models; after that you can set `HF_HUB_OFFLINE=1` to work without Hugging Face access.
 
 #### Install PostgreSQL
 
@@ -512,6 +520,7 @@ cp .env.sample .env
 # Edit .env and set:
 #   DATA_DIR=./data (for local dev, not /app/data which is for Docker)
 #   SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
+#   RE_RANKING_MODEL_HOME=./data/models/re_ranking
 #   DATABASE_URL=postgresql://emly:your_password@localhost:5432/emly
 #   AUTH_BOOTSTRAP_SUPERADMIN_EMAIL, AUTH_LOCAL_BOOTSTRAP_PASSWORD
 #   Optionally MODEL, OPENAI_BASE_URL, OPENAI_API_KEY as defaults for all bots
@@ -750,7 +759,10 @@ exit
 ```
 
 ### Embedding model download is slow on first boot
-The first run downloads the embedding model (~500MB). This is cached for subsequent runs.
+Outside Docker, the first run downloads the embedding model (~500MB) and caches it. The Docker image already contains it.
+
+### "Could not load the embedding model … Hugging Face downloads are off"
+The image loads models from `/opt/models` only. An older `.env` may still set `SENTENCE_TRANSFORMERS_HOME=/app/data/models/embedding`; remove that line (and any `RE_RANKING_MODEL_HOME` under `/app/data`) and restart.
 
 ### Port 8080 already in use
 Change the port in `.env`:
