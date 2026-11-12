@@ -376,6 +376,9 @@ def _boot_scheduler() -> None:
     start_scheduler()
 
 
+INVITE_EXPIRY_SWEEP_REF = "services.invite_email:sweep_expired_invites"
+
+
 @app.on_event("startup")
 def _register_audit_retention_purge() -> None:
     """Daily purge of audit rows older than AUDIT_RETENTION_DAYS (C7).
@@ -399,21 +402,14 @@ def _register_audit_retention_purge() -> None:
 def _register_invite_expiry_sweep() -> None:
     """Hourly sweep that promotes any ``pending`` ``pending_admin`` row whose
     ``expires_at`` is in the past to ``status='expired'``. Idempotent; the
-    accept route also re-checks expiry per-row before granting access."""
+    accept route also re-checks expiry per-row before granting access.
+    Registered by import path: the persistent jobstore can't pickle a
+    nested function, so the job never got stored before."""
     try:
-        from models.pending_admins import PendingAdmins
         from services.scheduler import scheduler
 
-        def _sweep() -> None:
-            try:
-                n = PendingAdmins.mark_expired_sweep()
-                if n:
-                    logging.info("Marked %d invite(s) expired by sweep", n)
-            except Exception:
-                logging.exception("invite expiry sweep failed")
-
         scheduler.add_job(
-            _sweep,
+            INVITE_EXPIRY_SWEEP_REF,
             "interval",
             hours=1,
             id="invite_expiry_sweep",

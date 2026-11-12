@@ -151,3 +151,18 @@ def _send_invite_email(payload: dict) -> None:
         ).send_email(msg)
     except Exception:
         log.exception("Invite email send failed (to=%s)", payload["email"])
+
+
+def sweep_expired_invites() -> int:
+    """Scheduler job: mark pending invites past ``expires_at`` as expired.
+    Module-level so APScheduler can store it by import path."""
+    from models.pending_admins import PendingAdmins
+
+    try:
+        n = PendingAdmins.mark_expired_sweep()
+    except Exception:
+        log.exception("invite expiry sweep failed")
+        return 0
+    if n:
+        log.info("Marked %d invite(s) expired by sweep", n)
+    return n
