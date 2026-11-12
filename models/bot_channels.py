@@ -155,11 +155,11 @@ class BotChannelsTable:
     def get_default_web_widget_channel_id(self, bot_id: str) -> Optional[str]:
         """Return the id of the bot's first active web_widget channel, if any.
 
-        Phase 3 backend-backfill: legacy widget chat ingress (`/emly/api/chat`)
-        doesn't carry a channel id today, so we synthesize one by looking up
-        the bot's web_widget BotChannel row at message-receive time. Returns
-        ``None`` if the bot hasn't installed a web_widget channel — the
-        ``channel_id`` column on `EMLYMessage` is nullable so this is fine.
+        The path-scoped ``/widget/{bot}/chat`` ingress doesn't carry a
+        channel id, so we synthesize one by looking up the bot's
+        web_widget BotChannel row at message-receive time. Returns
+        ``None`` if the bot hasn't installed one — ``EMLYMessage.channel_id``
+        is nullable.
         """
         try:
             row = (

@@ -358,16 +358,9 @@ def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
 # ---------------------------------------------------------------------------
 # POST /widget/{bot_id}/action — form submissions / OTP
 # ---------------------------------------------------------------------------
-# Helpers from `routes.actions` are imported at module top — there's no
-# circular-import pressure (actions doesn't import widget) and hoisting
-# the import keeps each request handler from re-running the import
-# machinery.
-from routes.actions import (  # noqa: E402  — import after router/router-helpers for clarity
-    authorize_otp,
-    create_otp,
-    handle_file_uploads,
-    send_email_with_attachments,
-)
+from services.otp import authorize_otp, create_otp  # noqa: E402
+from services.widget_email import send_email_with_attachments  # noqa: E402
+from services.widget_uploads import handle_file_uploads  # noqa: E402
 
 
 def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
@@ -597,7 +590,9 @@ async def widget_action(
     # see them and admins of bot B don't.
     uploaded_files = await handle_file_uploads(files, user.id, bot_id=bot.id)
 
-    recipients = _resolve_alert_recipients(bot.id, payload_data.get("form_title"))
+    recipients, analysis_prompt = _resolve_alert_trigger(
+        bot.id, payload_data.get("form_title")
+    )
     if recipients:
         form_data = EMLYUserActionsFormData(**{
             "user_id": user.id,
@@ -615,7 +610,7 @@ async def widget_action(
                 payload_data.get("form_title"),
                 uploaded_files,
                 page,
-                payload_data.get("prompt", ""),
+                analysis_prompt,
                 bot_id=bot.id,
             )
 
@@ -634,25 +629,22 @@ def _parse_payload(payload: str) -> Dict[str, Any]:
     return json.loads(payload)
 
 
-def _resolve_alert_recipients(bot_id: str, form_title: Optional[str]) -> List[str]:
-    """Look up the configured ``alert_emails`` for a submitted form.
+def _resolve_alert_trigger(
+    bot_id: str, form_title: Optional[str]
+) -> tuple[List[str], str]:
+    """Look up the configured alert recipients and summary prompt for a form.
 
-    Matches ``form_title`` (which the widget derives from
-    ``form_schema.name`` or ``form_schema.id``) against each
-    ``c_forms_selected`` entry's outer key, ``form_schema.name``, and
-    ``form_schema.id``. ``alert_emails`` may be a list or a
-    comma-separated string; both shapes are accepted.
-
-    Recipients are server-only: ``_TRIGGER_PRIVATE_KEYS`` strips them
-    from the public widget config, so the browser never sees them and
-    can't be the source of truth here.
+    Both live under ``c_forms_selected[*].trigger`` and are server-only
+    (``_TRIGGER_PRIVATE_KEYS`` strips them from the public widget config).
+    Returns ``(recipients, analysis_prompt)`` — the prompt is "" when
+    unset so the summarizer falls back to the deployment-wide default.
     """
     if not form_title:
-        return []
+        return [], ""
     try:
         cfg = get_config_for_bot(bot_id)
     except LookupError:
-        return []
+        return [], ""
 
     target = form_title.strip().lower()
     raw = cfg.model_dump(mode="json")
@@ -671,8 +663,11 @@ def _resolve_alert_recipients(bot_id: str, form_title: Optional[str]) -> List[st
             if target not in keys:
                 continue
             trigger = body.get("trigger") or {}
-            return _coerce_email_list(trigger.get("alert_emails"))
-    return []
+            return (
+                _coerce_email_list(trigger.get("alert_emails")),
+                str(trigger.get("analysis_prompt") or ""),
+            )
+    return [], ""
 
 
 def _coerce_email_list(value: Any) -> List[str]:

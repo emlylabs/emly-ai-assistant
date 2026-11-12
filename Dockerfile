@@ -66,8 +66,8 @@ RUN --mount=type=cache,target=/ui/.next/cache \
 ################################################################################
 FROM python:3.13-slim AS runtime
 
-# Pull the uv binary from its official image — no `pip install uv` round-trip.
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /usr/local/bin/
+# Install uv via pip (prebuilt wheel, no Rust compilation needed).
+RUN pip install --no-cache-dir uv==0.5.11
 
 WORKDIR /app
 
@@ -89,15 +89,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly && \
     chown emly:emly /app
 
-# ---- Non-root runtime user ---------------------------------------------------
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly && \
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly 2>/dev/null || true && \
     chown emly:emly /app && \
     mkdir -p /home/emly/.cache/huggingface && \
     mkdir -p /app/data/models/embedding && \
     chown -R emly:emly /home/emly/.cache && \
     chown -R emly:emly /app/data
 
-USER emly
 
 USER emly
 
@@ -127,6 +125,24 @@ COPY --chown=emly:emly . .
 
 # Pull the pre-built static UI in from stage 1.
 COPY --from=ui-builder --chown=emly:emly /ui/out ./ui/out
+
+# ---- Version stamp -----------------------------------------------------------
+# CI fills these from the git tag on a release build (see .gitlab-ci.yml). Local
+# `docker build` without args produces a clearly-unversioned image so a stray
+# dev artifact never gets mistaken for a release. version.py reads APP_VERSION
+# / GIT_SHA / BUILT_AT at import time; the labels follow the OCI image spec so
+# `docker inspect` and registries (Harbor) show consistent provenance.
+ARG APP_VERSION=0.0.0-dev
+ARG GIT_SHA=unknown
+ARG BUILT_AT=unknown
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA} \
+    BUILT_AT=${BUILT_AT}
+LABEL org.opencontainers.image.title="emly-ai-assistant" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILT_AT}" \
+      org.opencontainers.image.source="https://github.com/emlylabs/emly-ai-assistant"
 
 EXPOSE 8080
 

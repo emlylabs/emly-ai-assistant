@@ -52,7 +52,7 @@ def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     superadmins so callers that need ``.role`` always get a value.
     """
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=member", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=member", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _READER_ROLES:
@@ -66,7 +66,7 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     Owners and admins pass; viewers do not. Superadmins bypass.
     """
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=writer", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=writer", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _WRITER_ROLES:
@@ -77,7 +77,7 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
 def require_owner(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel:
     """Returns the membership row if the admin is an owner of the bot, else 403."""
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=owner", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=owner", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role != "owner":

@@ -14,8 +14,8 @@ class BotImpressions(pw.Model):
     id = pw.CharField(max_length=255, primary_key=True)
     bot = pw.ForeignKeyField(Bot, field="id", on_delete="CASCADE", backref="impressions")
     impression_type = pw.CharField(null=False, max_length=255)
-    created_on = pw.DateTimeField()
-    updated_on = pw.DateTimeField()
+    created_at = pw.DateTimeField()
+    updated_at = pw.DateTimeField()
 
     class Meta:
         database = DB
@@ -26,8 +26,8 @@ class BotImpressionsModel(BaseModel):
     id: str
     bot_id: str
     impression_type: str
-    created_on: datetime
-    updated_on: datetime
+    created_at: datetime
+    updated_at: datetime
 
 
 def _row_to_model(row: BotImpressions) -> BotImpressionsModel:
@@ -36,8 +36,8 @@ def _row_to_model(row: BotImpressions) -> BotImpressionsModel:
         id=data["id"],
         bot_id=data["bot"],
         impression_type=data["impression_type"],
-        created_on=data["created_on"],
-        updated_on=data["updated_on"],
+        created_at=data["created_at"],
+        updated_at=data["updated_at"],
     )
 
 
@@ -52,8 +52,8 @@ class BotImpressionsTable:
             id=str(uuid.uuid4()),
             bot=bot_id,
             impression_type=impression_type,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
         )
         return _row_to_model(row)
 
@@ -68,8 +68,8 @@ class BotImpressionsTable:
             to_date = to_timestamp if to_timestamp else datetime.max
             query = BotImpressions.select().where(
                 (BotImpressions.bot == bot_id)
-                & (BotImpressions.created_on >= from_date)
-                & (BotImpressions.created_on <= to_date)
+                & (BotImpressions.created_at >= from_date)
+                & (BotImpressions.created_at <= to_date)
             )
             return [_row_to_model(r) for r in query]
         except pw.DoesNotExist:

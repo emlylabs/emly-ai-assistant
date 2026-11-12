@@ -30,9 +30,11 @@ from channels.auth.state import verify as state_verify
 from channels.dispatcher import handle_handshake, handle_inbound
 from channels.registry import get as registry_get
 from models.admin_bot_memberships import AdminBotMemberships
-from models.admin_users import AdminUserModel
+from models.admin_users import AdminUserModel, AdminUsers
 from models.bot_channels import BotChannelModel, BotChannels
+from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.authz import has_role_at_least
 from services.secrets import encrypt as fernet_encrypt
 
 log = logging.getLogger(__name__)
@@ -83,8 +85,10 @@ async def channel_oauth_install(
     adapter = registry_get(channel_type)
     if adapter is None or not adapter.auth.requires_oauth_callback:
         raise HTTPException(status_code=404, detail=f"{channel_type} does not support OAuth install")
-    if AdminBotMemberships.get(admin.id, bot_id) is None:
-        raise HTTPException(status_code=403, detail="not a member of this bot")
+    # Installing a channel is a write to the bot — require admin/owner
+    # (writers), not just any-member. Superadmins bypass via has_role_at_least.
+    if not has_role_at_least(admin, bot_id, "admin"):
+        raise HTTPException(status_code=403, detail="writer access required to install a channel")
     try:
         safe_redirect = _validate_redirect_to(redirect_to)
     except InvalidRedirect as e:
@@ -121,6 +125,31 @@ async def channel_oauth_callback(
         raise HTTPException(status_code=404, detail="adapter not OAuth-capable")
 
     bot_id = payload["bot_id"]
+    # Re-verify the initiating admin still has writer rights on the bot.
+    # The state is signed, but the admin's role may have been revoked
+    # between /install and the IdP redirect back here — refuse the install
+    # in that window rather than completing a write the admin can no
+    # longer authorize.
+    initiating_admin_id = payload.get("admin_user_id")
+    if initiating_admin_id:
+        initiating_admin = AdminUsers.get_by_id(initiating_admin_id)
+        if (
+            initiating_admin is None
+            or not initiating_admin.is_active
+            or not has_role_at_least(initiating_admin, bot_id, "admin")
+        ):
+            audit(
+                "channel.install_refused",
+                admin_id=initiating_admin_id,
+                bot_id=bot_id,
+                target_type="bot_channel",
+                payload={"type": channel_type, "reason": "writer_revoked"},
+                success=False,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="initiating admin no longer has writer access to this bot",
+            )
     redirect_uri = f"{_public_base_url()}/channels/{channel_type}/oauth/callback"
     try:
         token_set = await adapter.auth.exchange_code(code, redirect_uri)  # type: ignore[attr-defined]
@@ -166,6 +195,15 @@ async def channel_oauth_callback(
         await adapter.auth.post_install_hook(channel, token_set)  # type: ignore[attr-defined]
     except Exception:
         log.exception("post_install_hook failed channel=%s", channel.id)
+
+    audit(
+        "channel.oauth_installed",
+        admin_id=initiating_admin_id,
+        bot_id=bot_id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={"type": channel_type, "external_id": external_id},
+    )
 
     # `redirect_to` was validated at issue time and HMAC-sealed; trust the
     # signed payload here. Fall back to ``/`` if it wasn't supplied.

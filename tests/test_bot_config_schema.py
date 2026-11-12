@@ -1,4 +1,4 @@
-"""Schema contract for ``services.bot_config.BotConfigV1``.
+"""Schema contract for ``services.bot_config.BotConfig``.
 
 The config blob is the API surface between the admin UI and the runtime;
 once a key is named in the schema, every reader expects it. Drift here
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from services.bot_config import BotConfigV1
+from services.bot_config import BotConfig
 
 
 def test_snake_case_payload_round_trips():
@@ -40,7 +40,7 @@ def test_snake_case_payload_round_trips():
         "social_handles": {"accounts": {}},
         "terms_of_service": {"terms": "..."},
     }
-    cfg = BotConfigV1.model_validate(payload)
+    cfg = BotConfig.model_validate(payload)
     dumped = cfg.model_dump(mode="json", exclude_none=True)
     assert dumped["c_forms_selected"][0]["callback_form"]["form_schema"]["id"] == "callback_form"
     assert dumped["launcher_label"] == "Chat"
@@ -63,7 +63,7 @@ def test_snake_case_payload_round_trips():
 def test_camel_case_root_key_rejected(bad_key: str):
     payload = {bad_key: "anything"}
     with pytest.raises(ValidationError):
-        BotConfigV1.model_validate(payload)
+        BotConfig.model_validate(payload)
 
 
 def test_camel_case_inside_c_forms_entry_rejected():
@@ -73,4 +73,4 @@ def test_camel_case_inside_c_forms_entry_rejected():
         ]
     }
     with pytest.raises(ValidationError):
-        BotConfigV1.model_validate(payload)
+        BotConfig.model_validate(payload)

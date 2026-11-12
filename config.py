@@ -105,15 +105,6 @@ The summary and analysis should contain
         </div>
 
         Important: Provide ONLY the HTML content without any markdown code fences or additional formatting. Start directly with <div> and end with </div>""")
-GENERATE_SUMMARY_PROMPT = """Analyze User-Assistant(bot) interactions to identify trends, issues, and improvement areas. Integrate key metrics into the analysis where relevant.
-
-1.Summary – Concisely describe the conversation's main topic.
-2. Sentiment – Determine overall sentiment (positive, neutral, negative) and key emotions.
-3. Key Issues – Highlight recurring concerns, questions, or pain points.
-4. Bot Performance – Evaluate response accuracy, relevance, and impact on engagement, conversion, and user satisfaction.
-5. Metrics Integration – Contextually reference metrics (e.g., engagement, impressions, conversion rate) to support findings.
-6. Actionable Insights – Recommend improvements based on user behavior, conversation trends, and metric performance.
-7. Focus on clarity, efficiency, and driving actionable improvements."""
 #############################################################
 
 ############ Load previous message configuration #############

@@ -7,12 +7,29 @@ import {
   CrawlJobOptions,
   CrawlJobPage,
   CrawlJobStatus,
+  CrawlPageState,
+  CrawlSchedule,
   DOCUMENT_TYPES,
   DocumentType,
   api,
 } from "@/lib/api";
 
 const POLL_MS = 3000;
+const PAGE_SIZE = 50;
+
+// Filter chips on the pages table. "All" clears the filter; the others
+// narrow on a single state. Failed/skipped lead because that's where the
+// admin debugs why a crawl underperformed.
+const PAGE_FILTERS: { key: CrawlPageState | "all"; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "failed", label: "Failed" },
+  { key: "skipped", label: "Skipped" },
+  { key: "done", label: "Done" },
+  { key: "queued", label: "Queued" },
+  { key: "fetching", label: "Fetching" },
+  { key: "uploading", label: "Uploading" },
+  { key: "embedding", label: "Embedding" },
+];
 
 const DEFAULT_OPTIONS: CrawlJobOptions = {
   sameHostOnly: true,
@@ -100,6 +117,8 @@ export default function CrawlTab({
           setSelectedJobId(j.id);
         }}
       />
+
+      <SchedulesPanel slug={slug} writable={writable} />
 
       <JobsList
         jobs={jobs}
@@ -202,7 +221,7 @@ function NewJobForm({
       <h2 style={{ marginTop: 0, fontSize: 14 }}>Start a crawl</h2>
 
       <div className="row" style={{ gap: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
+        <div className="field field-grow">
           <label>Seed URL</label>
           <input
             type="url"
@@ -229,7 +248,7 @@ function NewJobForm({
       </div>
 
       <div className="row" style={{ gap: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
+        <div className="field field-grow">
           <label>Path prefix</label>
           <input
             type="text"
@@ -256,7 +275,7 @@ function NewJobForm({
       </div>
 
       <div className="row" style={{ gap: 12 }}>
-        <div className="field" style={{ flex: 1 }}>
+        <div className="field field-grow">
           <label>Include regex</label>
           <input
             type="text"
@@ -266,7 +285,7 @@ function NewJobForm({
             disabled={creating}
           />
         </div>
-        <div className="field" style={{ flex: 1 }}>
+        <div className="field field-grow">
           <label>Exclude regex</label>
           <input
             type="text"
@@ -385,7 +404,7 @@ function JobsList({
       ) : jobs.length === 0 ? (
         <p className="muted">No crawl jobs yet.</p>
       ) : (
-        <table>
+        <div className="table-scroll"><table>
           <thead>
             <tr>
               <th>Seed URL</th>
@@ -416,12 +435,12 @@ function JobsList({
                   {j.pages_done}✓ {j.pages_skipped}↷ {j.pages_failed}✗ / {j.pages_total}
                 </td>
                 <td className="muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                  {j.created_on ? new Date(j.created_on).toLocaleString() : "—"}
+                  {j.created_at ? new Date(j.created_at).toLocaleString() : "—"}
                 </td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   );
@@ -441,21 +460,37 @@ function JobDetail({
   const [pages, setPages] = useState<CrawlJobPage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<CrawlPageState | "all">("all");
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<Record<CrawlPageState, number> | null>(null);
 
   const isActive = job.status === "running" || job.status === "paused";
 
   const refreshPages = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await api.listCrawlJobPages(slug, job.id, { limit: 500 });
-      setPages(list);
+      const res = await api.listCrawlJobPages(slug, job.id, {
+        limit: PAGE_SIZE,
+        offset,
+        states: filter === "all" ? undefined : [filter],
+      });
+      setPages(res.items);
+      setTotal(res.total);
+      setCounts(res.counts);
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load pages");
     } finally {
       setLoading(false);
     }
-  }, [slug, job.id]);
+  }, [slug, job.id, filter, offset]);
+
+  // Reset to page 1 when the filter flips so the user isn't stranded on
+  // offset=200 in a filter that only has 12 rows.
+  useEffect(() => {
+    setOffset(0);
+  }, [filter, job.id]);
 
   useEffect(() => {
     refreshPages();
@@ -469,6 +504,11 @@ function JobDetail({
     }, POLL_MS);
     return () => clearInterval(id);
   }, [isActive, refreshPages]);
+
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + pages.length, total);
+  const hasPrev = offset > 0;
+  const hasNext = offset + pages.length < total;
 
   async function transition(action: "pause" | "resume" | "cancel") {
     try {
@@ -526,40 +566,96 @@ function JobDetail({
 
       {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
 
+      {counts && (
+        <div className="row" style={{ gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {PAGE_FILTERS.map((f) => {
+            const count =
+              f.key === "all"
+                ? Object.values(counts).reduce((a, b) => a + b, 0)
+                : counts[f.key];
+            if (f.key !== "all" && count === 0) return null;
+            const active = filter === f.key;
+            return (
+              <button
+                key={f.key}
+                className={active ? "" : "ghost"}
+                style={{ fontSize: 12, padding: "2px 8px" }}
+                onClick={() => setFilter(f.key)}
+              >
+                {f.label} <span className="muted">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {loading && pages.length === 0 ? (
         <p className="muted">Loading pages…</p>
       ) : pages.length === 0 ? (
-        <p className="muted">No pages yet.</p>
+        <p className="muted">
+          {filter === "all" ? "No pages yet." : `No pages in "${filter}" state.`}
+        </p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>URL</th>
-              <th style={{ width: 60 }}>Depth</th>
-              <th style={{ width: 110 }}>State</th>
-              <th>Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pages.map((p) => (
-              <tr key={p.id}>
-                <td className="cell-truncate" style={{ maxWidth: 360 }} title={p.url}>
-                  {p.url}
-                </td>
-                <td className="muted">{p.depth}</td>
-                <td>
-                  <span className={`status-pill ${pageStateClass(p.state)}`} title={p.reason ?? undefined}>
-                    {p.state === "embedding" && "⟳ "}
-                    {p.state}
-                  </span>
-                </td>
-                <td className="muted cell-truncate" style={{ maxWidth: 280 }}>
-                  {p.reason ?? ""}
-                </td>
+        <>
+          <div className="table-scroll"><table>
+            <thead>
+              <tr>
+                <th>URL</th>
+                <th style={{ width: 60 }}>Depth</th>
+                <th style={{ width: 110 }}>State</th>
+                <th>Reason</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pages.map((p) => (
+                <tr key={p.id}>
+                  <td className="cell-truncate" style={{ maxWidth: 360 }} title={p.url}>
+                    {p.url}
+                  </td>
+                  <td className="muted">{p.depth}</td>
+                  <td>
+                    <span className={`status-pill ${pageStateClass(p.state)}`} title={p.reason ?? undefined}>
+                      {p.state === "embedding" && "⟳ "}
+                      {p.state}
+                    </span>
+                  </td>
+                  <td className="muted cell-truncate" style={{ maxWidth: 280 }}>
+                    {p.reason ?? ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table></div>
+          <div
+            className="row"
+            style={{
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginTop: 10,
+              fontSize: 12,
+            }}
+          >
+            <span className="muted">
+              {pageStart}–{pageEnd} of {total}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                className="ghost"
+                disabled={!hasPrev}
+                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              >
+                ← Prev
+              </button>
+              <button
+                className="ghost"
+                disabled={!hasNext}
+                onClick={() => setOffset(offset + PAGE_SIZE)}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -606,4 +702,229 @@ function pageStateClass(s: CrawlJobPage["state"]): string {
     default:
       return "pending";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Recurring crawl schedules (§11 T5).
+// ---------------------------------------------------------------------------
+const CADENCE_PRESETS: { value: string; label: string }[] = [
+  { value: "hourly", label: "Every hour" },
+  { value: "daily", label: "Every day" },
+  { value: "weekly", label: "Every week" },
+  { value: "every:6h", label: "Every 6 hours" },
+  { value: "every:12h", label: "Every 12 hours" },
+];
+
+function SchedulesPanel({ slug, writable }: { slug: string; writable: boolean }) {
+  const [schedules, setSchedules] = useState<CrawlSchedule[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [seedUrl, setSeedUrl] = useState("");
+  const [cadence, setCadence] = useState("daily");
+  const [docType, setDocType] = useState<DocumentType>("web_page");
+  const [runNow, setRunNow] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await api.listCrawlSchedules(slug);
+      setSchedules(list);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load schedules");
+    }
+  }, [slug]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  async function onCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!seedUrl.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createCrawlSchedule(slug, {
+        seed_url: seedUrl.trim(),
+        document_type: docType,
+        options: DEFAULT_OPTIONS,
+        cadence,
+        run_immediately: runNow,
+      });
+      setSeedUrl("");
+      setCreating(false);
+      await refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Schedule creation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onToggle(s: CrawlSchedule) {
+    try {
+      await api.patchCrawlSchedule(slug, s.id, !s.enabled);
+      refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Toggle failed");
+    }
+  }
+
+  async function onDelete(s: CrawlSchedule) {
+    if (!confirm(`Delete this schedule for ${s.seed_url}?`)) return;
+    try {
+      await api.deleteCrawlSchedule(slug, s.id);
+      refresh();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", alignItems: "baseline" }}
+      >
+        <h2 style={{ marginTop: 0, fontSize: 14 }}>Recurring schedules</h2>
+        {writable && !creating && (
+          <button className="ghost" onClick={() => setCreating(true)}>
+            + New schedule
+          </button>
+        )}
+      </div>
+      <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+        A schedule fires a fresh crawl job on the cadence below. Disable a
+        schedule to pause it without deleting; the next run picks up where
+        you left off.
+      </p>
+
+      {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {creating && (
+        <form onSubmit={onCreate} style={{ marginBottom: 12 }}>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+            <div className="field" style={{ flex: "2 1 240px", marginBottom: 0 }}>
+              <label style={{ fontSize: 12 }}>Seed URL</label>
+              <input
+                type="url"
+                placeholder="https://example.com"
+                value={seedUrl}
+                onChange={(e) => setSeedUrl(e.target.value)}
+                required
+              />
+            </div>
+            <div className="field" style={{ width: 160, marginBottom: 0 }}>
+              <label style={{ fontSize: 12 }}>Cadence</label>
+              <select value={cadence} onChange={(e) => setCadence(e.target.value)}>
+                {CADENCE_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field" style={{ width: 140, marginBottom: 0 }}>
+              <label style={{ fontSize: 12 }}>Doc type</label>
+              <select
+                value={docType}
+                onChange={(e) => setDocType(e.target.value as DocumentType)}
+              >
+                {DOCUMENT_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t.replace(/_/g, " ")}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="row" style={{ alignItems: "center", marginTop: 8, gap: 12 }}>
+            <label style={{ fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={runNow}
+                onChange={(e) => setRunNow(e.target.checked)}
+              />{" "}
+              Run immediately as well as on schedule
+            </label>
+            <div style={{ flex: 1 }} />
+            <button className="ghost" type="button" onClick={() => setCreating(false)} disabled={busy}>
+              Cancel
+            </button>
+            <button type="submit" disabled={busy || !seedUrl.trim()}>
+              {busy ? "Creating…" : "Create schedule"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {schedules === null ? (
+        <p className="muted">Loading schedules…</p>
+      ) : schedules.length === 0 ? (
+        <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+          No recurring schedules yet. Use the form above to set one up.
+        </p>
+      ) : (
+        <div className="table-scroll"><table>
+          <thead>
+            <tr>
+              <th>Seed URL</th>
+              <th>Cadence</th>
+              <th>Next run</th>
+              <th>Last run</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedules.map((s) => (
+              <tr key={s.id}>
+                <td
+                  className="cell-truncate"
+                  style={{ maxWidth: 280 }}
+                  title={s.seed_url}
+                >
+                  {s.seed_url}
+                </td>
+                <td className="muted">
+                  {CADENCE_PRESETS.find((p) => p.value === s.cadence)?.label ?? s.cadence}
+                </td>
+                <td
+                  className="muted"
+                  style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                >
+                  {s.next_run_at ? new Date(s.next_run_at).toLocaleString() : "—"}
+                </td>
+                <td
+                  className="muted"
+                  style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                >
+                  {s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "—"}
+                </td>
+                <td>
+                  <span
+                    className={`status-pill ${s.enabled ? "embedded" : "pending"}`}
+                  >
+                    {s.enabled ? "active" : "paused"}
+                  </span>
+                </td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  {writable && (
+                    <>
+                      <button className="ghost" onClick={() => onToggle(s)}>
+                        {s.enabled ? "Pause" : "Resume"}
+                      </button>{" "}
+                      <button className="ghost" onClick={() => onDelete(s)}>
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
+    </div>
+  );
 }

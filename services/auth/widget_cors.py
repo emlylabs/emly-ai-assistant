@@ -36,8 +36,8 @@ from starlette.responses import JSONResponse, Response
 log = logging.getLogger(__name__)
 
 _WIDGET_PREFIX = "/widget/"
-_DEFAULT_PREFLIGHT_HEADERS = "Content-Type, Authorization, X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID, X-Emly-BotID, X-Request-ID"
-_EXPOSE_HEADERS = "X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID, X-Emly-BotID"
+_DEFAULT_PREFLIGHT_HEADERS = "Content-Type, Authorization, X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID, X-Request-ID"
+_EXPOSE_HEADERS = "X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID"
 _PREFLIGHT_MAX_AGE = "600"
 
 # Per-bot config lookups happen on every widget request. A 30s TTL cache

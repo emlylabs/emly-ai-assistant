@@ -45,9 +45,9 @@ class CrawlJob(pw.Model):
     pages_failed = pw.IntegerField(default=0)
     document_type = pw.CharField(max_length=64, default="web_page")
     created_by_admin_id = pw.CharField(max_length=255, null=True)
-    created_on = pw.DateTimeField()
-    updated_on = pw.DateTimeField()
-    completed_on = pw.DateTimeField(null=True)
+    created_at = pw.DateTimeField()
+    updated_at = pw.DateTimeField()
+    completed_at = pw.DateTimeField(null=True)
     error_message = pw.TextField(null=True)
 
     class Meta:
@@ -63,8 +63,8 @@ class CrawlJobPage(pw.Model):
     state = pw.CharField(max_length=32, default=PAGE_QUEUED)
     reason = pw.TextField(null=True)
     file_id = pw.CharField(max_length=255, null=True)
-    created_on = pw.DateTimeField()
-    updated_on = pw.DateTimeField()
+    created_at = pw.DateTimeField()
+    updated_at = pw.DateTimeField()
 
     class Meta:
         database = DB
@@ -84,9 +84,9 @@ def _job_to_dict(row: CrawlJob) -> dict:
         "pages_failed": row.pages_failed,
         "document_type": row.document_type,
         "created_by_admin_id": row.created_by_admin_id,
-        "created_on": row.created_on.isoformat() if row.created_on else None,
-        "updated_on": row.updated_on.isoformat() if row.updated_on else None,
-        "completed_on": row.completed_on.isoformat() if row.completed_on else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "error_message": row.error_message,
     }
 
@@ -100,8 +100,8 @@ def _page_to_dict(row: CrawlJobPage) -> dict:
         "state": row.state,
         "reason": row.reason,
         "file_id": row.file_id,
-        "created_on": row.created_on.isoformat() if row.created_on else None,
-        "updated_on": row.updated_on.isoformat() if row.updated_on else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
 
@@ -128,8 +128,8 @@ class CrawlJobsTable:
             status=JOB_STATUS_RUNNING,
             document_type=document_type,
             created_by_admin_id=created_by_admin_id,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
         )
         return _job_to_dict(row)
 
@@ -150,7 +150,7 @@ class CrawlJobsTable:
         rows = (
             CrawlJob.select()
             .where(CrawlJob.bot_id == bot_id)
-            .order_by(CrawlJob.created_on.desc())
+            .order_by(CrawlJob.created_at.desc())
             .limit(limit)
         )
         return [_job_to_dict(r) for r in rows]
@@ -158,6 +158,54 @@ class CrawlJobsTable:
     def list_running(self) -> List[dict]:
         rows = CrawlJob.select().where(CrawlJob.status == JOB_STATUS_RUNNING)
         return [_job_to_dict(r) for r in rows]
+
+    def list_for_bots(
+        self,
+        bot_ids: List[str],
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[dict]:
+        """Workspace-wide jobs across a caller-scoped bot id set.
+
+        Used by ``GET /api/admin/crawl-jobs`` so an admin can see every
+        in-flight or recent crawl across every bot they can read,
+        instead of clicking through 24 Crawl tabs.
+        """
+        if not bot_ids:
+            return []
+        rows = (
+            CrawlJob.select()
+            .where(CrawlJob.bot_id.in_(bot_ids))
+            .order_by(CrawlJob.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return [_job_to_dict(r) for r in rows]
+
+    def count_for_bots(self, bot_ids: List[str]) -> int:
+        if not bot_ids:
+            return 0
+        return CrawlJob.select().where(CrawlJob.bot_id.in_(bot_ids)).count()
+
+    def purge_older_than(self, cutoff: datetime) -> int:
+        """Hard-delete jobs (and their page rows) older than ``cutoff``.
+
+        ``crawl_jobs`` grew unbounded — every crawl ever run lived
+        forever. 90 days is the default retention in the supervisor.
+        Returns the number of jobs deleted; pages cascade via job_id.
+        """
+        # Two-step delete: collect ids that match, then delete pages
+        # before deleting parents so a partial failure leaves orphans
+        # rather than referential breakage.
+        stale = list(
+            CrawlJob.select(CrawlJob.id)
+            .where(CrawlJob.completed_at.is_null(False) & (CrawlJob.completed_at < cutoff))
+        )
+        if not stale:
+            return 0
+        ids = [r.id for r in stale]
+        CrawlJobPage.delete().where(CrawlJobPage.job_id.in_(ids)).execute()
+        return CrawlJob.delete().where(CrawlJob.id.in_(ids)).execute()
 
     def update_status(
         self,
@@ -167,11 +215,11 @@ class CrawlJobsTable:
         completed: bool = False,
     ) -> bool:
         now = datetime.now()
-        updates: dict = {"status": new_status, "updated_on": now}
+        updates: dict = {"status": new_status, "updated_at": now}
         if error_message is not None:
             updates["error_message"] = error_message
         if completed or new_status in JOB_TERMINAL_STATUSES:
-            updates["completed_on"] = now
+            updates["completed_at"] = now
         return CrawlJob.update(**updates).where(CrawlJob.id == job_id).execute() > 0
 
     def bump_counters(
@@ -183,7 +231,7 @@ class CrawlJobsTable:
         delta_failed: int = 0,
     ) -> None:
         # SQL-level increments to avoid read-modify-write races between workers.
-        updates: dict = {"updated_on": datetime.now()}
+        updates: dict = {"updated_at": datetime.now()}
         if delta_total:
             updates["pages_total"] = CrawlJob.pages_total + delta_total
         if delta_done:
@@ -210,8 +258,8 @@ class CrawlJobsTable:
             url=url,
             depth=depth,
             state=PAGE_QUEUED,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
         )
         return True
 
@@ -222,7 +270,7 @@ class CrawlJobsTable:
         reason: Optional[str] = None,
         file_id: Optional[str] = None,
     ) -> bool:
-        updates: dict = {"state": state, "updated_on": datetime.now()}
+        updates: dict = {"state": state, "updated_at": datetime.now()}
         if reason is not None:
             updates["reason"] = reason
         if file_id is not None:
@@ -244,7 +292,7 @@ class CrawlJobsTable:
         if candidate is None:
             return None
         rows = (
-            CrawlJobPage.update(state=PAGE_FETCHING, updated_on=datetime.now())
+            CrawlJobPage.update(state=PAGE_FETCHING, updated_at=datetime.now())
             .where((CrawlJobPage.id == candidate.id) & (CrawlJobPage.state == PAGE_QUEUED))
             .execute()
         )
@@ -277,7 +325,7 @@ class CrawlJobsTable:
         Crash recovery — without this, restarting the pod would orphan
         those pages forever."""
         rows = (
-            CrawlJobPage.update(state=PAGE_QUEUED, updated_on=datetime.now())
+            CrawlJobPage.update(state=PAGE_QUEUED, updated_at=datetime.now())
             .where(
                 (CrawlJobPage.job_id == job_id)
                 & CrawlJobPage.state.in_([PAGE_FETCHING, PAGE_UPLOADING, PAGE_EMBEDDING])

@@ -10,8 +10,10 @@ Endpoints:
 - ``GET /.well-known/jwks.json`` — public JWKS from the keystore.
 - ``GET  /api/auth/local/authorize`` — minimal HTML login form.
 - ``POST /api/auth/local/authorize`` — verify creds, mint code, redirect.
-- ``POST /api/auth/local/token`` — exchange code for access + id tokens.
-- ``POST /api/auth/local/logout`` — issuer-side logout (no-op for stateless tokens).
+- ``POST /api/auth/local/token`` — exchange code for access + id tokens;
+  also accepts ``grant_type=refresh_token`` for BFF silent renewal.
+- ``POST /api/auth/local/logout`` — issuer-side logout. Accepts an
+  optional ``refresh_token`` form field to revoke the BFF token.
 
 Password-reset, email-verify, and forced-password-change endpoints are
 deferred to Phase 2c (still in scope for Phase 2 but separately committed).
@@ -20,7 +22,8 @@ deferred to Phase 2c (still in scope for Phase 2 but separately committed).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from urllib.parse import urlencode
 
@@ -36,9 +39,11 @@ from services.auth.issuer.factory import (
     configured_client_id,
     get_code_store,
     get_keystore,
+    get_refresh_store,
     issuer_url,
     lockout_duration_seconds,
     lockout_threshold,
+    refresh_token_ttl_seconds,
 )
 from services.auth.issuer.flows import (
     CodeExchangeError,
@@ -48,10 +53,12 @@ from services.auth.issuer.flows import (
     UnknownClientError,
     check_client,
     consume_code,
+    consume_refresh_token,
     issue_code,
+    issue_refresh_token,
     parse_authorize_request,
 )
-from services.auth.issuer.passwords import verify_password
+from services.auth.issuer.passwords import hash_password, needs_rehash, verify_password
 from services.auth.issuer.tokens import mint_access_token, mint_id_token
 
 log = logging.getLogger(__name__)
@@ -72,10 +79,10 @@ async def openid_configuration(request: Request) -> JSONResponse:
         "jwks_uri": f"{base}/.well-known/jwks.json",
         "end_session_endpoint": f"{base}/api/auth/local/logout",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "subject_types_supported": ["public"],
         "id_token_signing_alg_values_supported": ["RS256"],
-        "scopes_supported": ["openid", "email", "profile"],
+        "scopes_supported": ["openid", "email", "profile", "offline_access"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
         "code_challenge_methods_supported": ["S256"],
     }
@@ -405,6 +412,39 @@ async def authorize_post(
         )
         return _render_authorize_form(params=params, error="Invalid email or password")
 
+    # Opportunistic Argon2 parameter upgrade. If the stored hash uses
+    # outdated cost parameters, transparently rehash on this successful
+    # login so the next attempt verifies against the bumped values.
+    if needs_rehash(pw_hash):
+        try:
+            LocalCredentials.rehash_password(credential_key, hash_password(password))
+        except Exception:
+            log.exception("opportunistic rehash failed for %s", credential_key)
+
+    # Optional ``must_change`` enforcement. By design ``must_change=True``
+    # is set on the bootstrap-seeded credential to signal "rotate me on
+    # first login." The rotate-password endpoint is Phase 2c future work,
+    # so out of the box this flag is informational — flipping it to a
+    # hard gate would lock out any deployment whose admin was bootstrapped
+    # before a rotate-flow exists. Operators with an out-of-band rotate
+    # path can opt in via ``AUTH_LOCAL_ENFORCE_MUST_CHANGE=true``; the
+    # bootstrap sentinel itself is always exempt so the very first login
+    # can complete and migrate to a real admin row.
+    if (
+        os.environ.get("AUTH_LOCAL_ENFORCE_MUST_CHANGE", "").strip().lower()
+        in ("1", "true", "yes", "on")
+        and not credential_key.startswith("bootstrap:")
+    ):
+        cred = LocalCredentials.get(credential_key)
+        if cred is not None and cred.must_change:
+            return _render_authorize_form(
+                params=params,
+                error=(
+                    "This account must change its password before it can sign in. "
+                    "Contact your administrator."
+                ),
+            )
+
     LocalCredentials.record_success(credential_key)
 
     code = issue_code(
@@ -422,74 +462,177 @@ async def authorize_post(
 # -------- token --------
 
 
-@router.post("/api/auth/local/token", include_in_schema=False)
-async def token(
-    grant_type: str = Form(...),
-    code: str = Form(...),
-    redirect_uri: str = Form(...),
-    code_verifier: str = Form(...),
-    client_id: str = Form(...),
-    client_secret: str | None = Form(None),
-):
-    if grant_type != "authorization_code":
-        return _4xx(f"unsupported grant_type: {grant_type!r}")
-    if client_id != configured_client_id():
-        return _4xx("unknown client_id")
-
-    try:
-        record = consume_code(
-            code_store=get_code_store(),
-            code=code,
-            code_verifier=code_verifier,
-            redirect_uri=redirect_uri,
-        )
-    except CodeExchangeError as e:
-        return _4xx(str(e))
-
-    keystore = get_keystore()
-    # The token endpoint is hit by the verifier's loopback httpx client, so
-    # request-derived URLs would all be ``http://127.0.0.1:8080`` anyway. We
-    # use the env/localhost value explicitly so the ``iss`` claim matches the
-    # verifier's expected issuer regardless of how exchange_code reached us.
-    issuer = issuer_url(None)
-    audience = configured_audience()
-    ttl = access_token_ttl_seconds()
-
+def _mint_token_set(
+    *,
+    keystore,
+    issuer: str,
+    audience: str,
+    admin_id: str,
+    email: str,
+    email_verified: bool,
+    name: str | None,
+    nonce: str | None,
+    ttl: int,
+) -> tuple[str, str]:
+    """Mint access + id tokens for the given identity. Centralised so the
+    initial ``authorization_code`` exchange and the ``refresh_token`` grant
+    produce identical claims.
+    """
     access = mint_access_token(
         keystore=keystore,
         issuer=issuer,
         audience=audience,
-        subject=record.admin_id,
-        email=record.email,
-        email_verified=record.email_verified,
+        subject=admin_id,
+        email=email,
+        email_verified=email_verified,
         ttl_seconds=ttl,
     )
     id_token = mint_id_token(
         keystore=keystore,
         issuer=issuer,
         audience=audience,
-        subject=record.admin_id,
-        email=record.email,
-        email_verified=record.email_verified,
-        nonce=record.nonce,
+        subject=admin_id,
+        email=email,
+        email_verified=email_verified,
+        nonce=nonce,
         ttl_seconds=ttl,
-        name=record.name,
+        name=name,
     )
-    return JSONResponse(
-        {
+    return access, id_token
+
+
+@router.post("/api/auth/local/token", include_in_schema=False)
+async def token(
+    request: Request,
+    grant_type: str = Form(...),
+    code: str | None = Form(None),
+    redirect_uri: str | None = Form(None),
+    code_verifier: str | None = Form(None),
+    refresh_token: str | None = Form(None),
+    client_id: str = Form(...),
+    client_secret: str | None = Form(None),
+    scope: str | None = Form(None),
+):
+    if client_id != configured_client_id():
+        return _4xx("unknown client_id")
+
+    keystore = get_keystore()
+    issuer = issuer_url(None)
+    audience = configured_audience()
+    ttl = access_token_ttl_seconds()
+
+    if grant_type == "authorization_code":
+        if not code or not code_verifier or not redirect_uri:
+            return _4xx("missing code, code_verifier, or redirect_uri")
+        try:
+            record = consume_code(
+                code_store=get_code_store(),
+                code=code,
+                code_verifier=code_verifier,
+                redirect_uri=redirect_uri,
+            )
+        except CodeExchangeError as e:
+            return _4xx(str(e))
+
+        access, id_token = _mint_token_set(
+            keystore=keystore,
+            issuer=issuer,
+            audience=audience,
+            admin_id=record.admin_id,
+            email=record.email,
+            email_verified=record.email_verified,
+            name=record.name,
+            nonce=record.nonce,
+            ttl=ttl,
+        )
+        body: dict = {
             "access_token": access,
             "id_token": id_token,
             "token_type": "Bearer",
             "expires_in": ttl,
             "scope": record.scope,
         }
-    )
+        # Mint a refresh_token only when the granted scope included
+        # ``offline_access`` (OIDC §11). The BFF stores this opaque
+        # token in the encrypted refresh cookie for silent renewal.
+        if "offline_access" in (record.scope or "").split():
+            body["refresh_token"] = issue_refresh_token(
+                refresh_store=get_refresh_store(),
+                admin_id=record.admin_id,
+                email=record.email,
+                email_verified=record.email_verified,
+                name=record.name,
+                scope=record.scope,
+                ttl=timedelta(seconds=refresh_token_ttl_seconds()),
+            )
+        return JSONResponse(body)
+
+    if grant_type == "refresh_token":
+        if not refresh_token:
+            return _4xx("missing refresh_token")
+        try:
+            record = consume_refresh_token(
+                refresh_store=get_refresh_store(),
+                refresh_token=refresh_token,
+            )
+        except CodeExchangeError as e:
+            return _4xx(str(e))
+
+        # Single-use semantics: the consumed token is invalidated by
+        # ``pop`` above. The response carries a freshly-minted
+        # refresh_token so the BFF can roll the cookie forward without
+        # losing the silent-renewal chain.
+        access, id_token = _mint_token_set(
+            keystore=keystore,
+            issuer=issuer,
+            audience=audience,
+            admin_id=record.admin_id,
+            email=record.email,
+            email_verified=record.email_verified,
+            name=record.name,
+            nonce=None,
+            ttl=ttl,
+        )
+        new_refresh_token = issue_refresh_token(
+            refresh_store=get_refresh_store(),
+            admin_id=record.admin_id,
+            email=record.email,
+            email_verified=record.email_verified,
+            name=record.name,
+            scope=record.scope,
+            ttl=timedelta(seconds=refresh_token_ttl_seconds()),
+        )
+        return JSONResponse(
+            {
+                "access_token": access,
+                "id_token": id_token,
+                "token_type": "Bearer",
+                "expires_in": ttl,
+                "scope": record.scope,
+                "refresh_token": new_refresh_token,
+            }
+        )
+
+    return _4xx(f"unsupported grant_type: {grant_type!r}")
 
 
 # -------- logout --------
 
 
 @router.post("/api/auth/local/logout", include_in_schema=False)
-async def logout() -> JSONResponse:
-    """Issuer-side logout. Tokens are stateless until Phase 12 adds revocation."""
+async def logout(refresh_token: str | None = Form(None)) -> JSONResponse:
+    """Issuer-side logout.
+
+    For Phase 11's stateless access tokens this is a no-op; the BFF
+    clears the session cookies on its end. If a ``refresh_token`` is
+    provided (BFF logout passes it back so we can revoke at the IdP),
+    we drop it from the refresh store so a stolen-token replay after
+    logout fails.
+    """
+    if refresh_token:
+        get_refresh_store().revoke(refresh_token)
     return JSONResponse({"ok": True})
+
+
+# (the second `logout` route was the original; it has been replaced
+#  by the refresh-token-aware version above)

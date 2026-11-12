@@ -5,7 +5,7 @@ without having to author topics / prompts / RAG knobs by hand. The
 "blank" template preserves the empty-config flow for power users.
 
 Templates are pure code (not DB rows) — easy to ship, version, and
-type-check. Each template returns a `BotConfigV1`-compatible dict that
+type-check. Each template returns a `BotConfig`-compatible dict that
 gets written into `bots.config_json` at create time.
 """
 from __future__ import annotations
@@ -62,7 +62,11 @@ def _support_faq_config(slug: str, name: str) -> Dict[str, Any]:
             "error_message": "Sorry, something went wrong. Please try again.",
         },
         "c_forms_selected": [],
-        "llm": {"model_type": "openai", "model": "gpt-4o-mini"},
+        "llm": {
+            "model_type": "openai",
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+        },
         "rag": {"top_k": 5, "chunk_size": 2048, "chunk_overlap": 256, "enable_hybrid_search": False, "embedding_threshold": 0.20},
         "limits": {"max_file_size_mb": 50, "file_count_cap": 10000},
     }
@@ -101,7 +105,11 @@ def _lead_capture_config(slug: str, name: str) -> Dict[str, Any]:
             "error_message": "Sorry, something went wrong. Please try again.",
         },
         "c_forms_selected": [],
-        "llm": {"model_type": "openai", "model": "gpt-4o-mini"},
+        "llm": {
+            "model_type": "openai",
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+        },
         "rag": {"top_k": 5, "chunk_size": 2048, "chunk_overlap": 256, "enable_hybrid_search": False, "embedding_threshold": 0.20},
         "limits": {"max_file_size_mb": 50, "file_count_cap": 10000},
     }
@@ -136,7 +144,11 @@ def _internal_kb_config(slug: str, name: str) -> Dict[str, Any]:
             "error_message": "Sorry, something went wrong. Please try again.",
         },
         "c_forms_selected": [],
-        "llm": {"model_type": "openai", "model": "gpt-4o-mini"},
+        "llm": {
+            "model_type": "openai",
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+        },
         "rag": {"top_k": 5, "chunk_size": 2048, "chunk_overlap": 256, "enable_hybrid_search": False, "embedding_threshold": 0.20},
         "limits": {"max_file_size_mb": 50, "file_count_cap": 10000},
     }
@@ -148,7 +160,11 @@ def _blank_config(slug: str, name: str) -> Dict[str, Any]:
         "topics": {},
         "global_prompts": {},
         "c_forms_selected": [],
-        "llm": {"model_type": "openai"},
+        "llm": {
+            "model_type": "openai",
+            "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "api_endpoint": "https://openrouter.ai/api/v1",
+        },
         "rag": {},
         "limits": {},
     }

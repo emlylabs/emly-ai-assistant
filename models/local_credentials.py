@@ -72,7 +72,6 @@ def _to_pydantic(row: LocalCredential) -> LocalCredentialModel:
 class LocalCredentialsTable:
     def __init__(self, db):
         self.db = db
-        self.db.create_tables([LocalCredential])
 
     def upsert(
         self,
@@ -139,6 +138,18 @@ class LocalCredentialsTable:
     def record_success(self, admin_id: str) -> bool:
         rows = (
             LocalCredential.update(failed_attempts=0, locked_until=None)
+            .where(LocalCredential.admin_id == admin_id)
+            .execute()
+        )
+        return rows > 0
+
+    def rehash_password(self, admin_id: str, password_hash: str) -> bool:
+        """Replace the stored hash with an upgraded one (Argon2 parameter
+        bump). Does not reset ``failed_attempts`` / ``locked_until`` or
+        ``password_set_at`` — this is a hash-format upgrade, not a
+        password rotation."""
+        rows = (
+            LocalCredential.update(password_hash=password_hash)
             .where(LocalCredential.admin_id == admin_id)
             .execute()
         )

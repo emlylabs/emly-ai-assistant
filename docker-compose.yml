@@ -65,7 +65,7 @@ services:
   app:
     build:
       context: .
-    image: emly-ai-assistant:dev
+    image: emly-ai-assistant:${APP_VERSION:-dev}
     restart: unless-stopped
     env_file: .env
     environment:

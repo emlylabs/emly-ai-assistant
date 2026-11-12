@@ -1,51 +1,21 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { ArrowRight } from "lucide-react";
-import { api, loginUrl } from "@/lib/api";
-
-const ERROR_MESSAGES: Record<string, string> = {
-  callback_state_invalid_or_expired:
-    "Your login attempt timed out. Please try signing in again.",
-  idp_error: "Authentication was cancelled or failed at the identity provider.",
-  missing_state_or_code: "Something went wrong during sign-in. Please try again.",
-  code_exchange_failed: "Token exchange failed. Please try signing in again.",
-};
+import { loginUrl } from "@/lib/api";
 
 function Inner() {
-  const router = useRouter();
   const params = useSearchParams();
   const returnTo = params.get("return_to") || "/bots";
-  const errorCode = params.get("error");
-  const [checking, setChecking] = useState(true);
 
-  // If we already have a valid session cookie, skip the sign-in screen.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .me()
-      .then(() => {
-        if (!cancelled) router.replace(returnTo);
-      })
-      .catch(() => {
-        if (!cancelled) setChecking(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [router, returnTo]);
-
-  if (checking) {
-    return (
-      <div className="center">
-        <p className="muted">Checking session…</p>
-      </div>
-    );
-  }
-
-  const errorMsg = errorCode ? (ERROR_MESSAGES[errorCode] ?? "Sign-in failed. Please try again.") : null;
-
+  // No client-side `me()` probe. The middleware (and the FastAPI
+  // catchall in static-export prod) handles "you need a session"
+  // for the protected paths; `/login` is intentionally public so a
+  // user with an expired or missing cookie can reach it. If they
+  // happen to be already signed in and land here anyway, the IdP
+  // round-trip on click is harmless (it'll mint fresh cookies and
+  // forward to `return_to`).
   return (
     <div className="center">
       <div className="card narrow">
@@ -54,11 +24,6 @@ function Inner() {
         <p className="muted" style={{ marginTop: 12 }}>
           Sign in via your configured identity provider.
         </p>
-        {errorMsg && (
-          <p style={{ marginTop: 12, color: "var(--danger, #e53e3e)", fontSize: 14 }}>
-            {errorMsg}
-          </p>
-        )}
         <a
           href={loginUrl(returnTo)}
           style={{

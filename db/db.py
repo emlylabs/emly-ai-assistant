@@ -30,6 +30,19 @@ else:
 
 DB = connect(DATABASE_URL)
 log.info(f"Connected to a {DB.__class__.__name__} database.")
+
+# SQLite concurrency: the chat path holds a write transaction while
+# streaming an LLM response, which can easily exceed the 5s default
+# `busy_timeout` and starve concurrent admin reads with `database is
+# locked` errors that surface as opaque 500s. WAL lets readers proceed
+# alongside the writer, and a longer busy_timeout absorbs the rest.
+# `permanent=True` re-applies on every new thread-local connection
+# (peewee opens one per worker thread under FastAPI's threadpool).
+if DATABASE_URL.startswith("sqlite"):
+    DB.pragma("journal_mode", "wal", permanent=True)
+    DB.pragma("synchronous", "normal", permanent=True)
+    DB.pragma("busy_timeout", 30000, permanent=True)
+
 router = Router(
     DB,
     migrate_dir=BACKEND_DIR / "migrations",

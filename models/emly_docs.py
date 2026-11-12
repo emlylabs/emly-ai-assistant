@@ -24,8 +24,8 @@ class EMLYDocs(pw.Model):
     bot = pw.ForeignKeyField(Bot, field="id", on_delete="CASCADE", backref="docs")
     name = pw.CharField(max_length=255)
     content_hash = pw.TextField(null=True)
-    created_on = pw.DateTimeField(null=True)
-    updated_on = pw.DateTimeField(null=True)
+    created_at = pw.DateTimeField(null=True)
+    updated_at = pw.DateTimeField(null=True)
 
     class Meta:
         database = DB
@@ -38,8 +38,8 @@ class EMLYDocsModel(BaseModel):
     bot_id: str
     name: str
     content_hash: Optional[str] = None
-    created_on: Optional[datetime] = None
-    updated_on: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 def _row_to_model(row: EMLYDocs) -> EMLYDocsModel:
@@ -48,8 +48,8 @@ def _row_to_model(row: EMLYDocs) -> EMLYDocsModel:
         bot_id=row.bot_id,
         name=row.name,
         content_hash=row.content_hash,
-        created_on=row.created_on,
-        updated_on=row.updated_on,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -70,8 +70,8 @@ class EMLYDocsTable:
             bot=bot_id,
             name=name,
             content_hash=content_hash,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
         )
         return _row_to_model(row) if row else None
 
@@ -119,7 +119,7 @@ class EMLYDocsTable:
                     row.name = value
                 elif lower == "content_hash":
                     row.content_hash = value
-            row.updated_on = datetime.now()
+            row.updated_at = datetime.now()
             row.save()
             return _row_to_model(row)
         except pw.DoesNotExist:

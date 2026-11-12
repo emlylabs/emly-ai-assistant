@@ -49,7 +49,7 @@ export default function BotUsersPage() {
         <p className="muted">No end users yet.</p>
       ) : (
         <>
-          <table>
+          <div className="table-scroll"><table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -69,12 +69,12 @@ export default function BotUsersPage() {
                   <td>{u.phone ?? "—"}</td>
                   <td className="muted">{u.country ?? "—"}</td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>
-                    {u.created_on ? new Date(u.created_on).toLocaleString() : "—"}
+                    {u.created_at ? new Date(u.created_at).toLocaleString() : "—"}
                   </td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
           <div className="pagination">
             <span className="muted">
               Showing {items.length === 0 ? 0 : skip + 1}–{skip + items.length} of {total}

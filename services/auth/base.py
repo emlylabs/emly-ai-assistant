@@ -84,17 +84,8 @@ class AuthProvider(Protocol):
     def verify_token(self, token: str) -> Principal:
         """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure."""
 
-    def authorize_url(
-        self,
-        oauth_state: OAuthState,
-        redirect_uri: str,
-        state_override: str | None = None,
-    ) -> str:
-        """Build the IdP authorize URL the browser should redirect to.
-
-        If *state_override* is supplied it replaces the raw ``oauth_state.state``
-        value in the generated URL (used when a gateway envelope wraps the
-        inner state)."""
+    def authorize_url(self, oauth_state: OAuthState, redirect_uri: str) -> str:
+        """Build the IdP authorize URL the browser should redirect to."""
 
     def exchange_code(
         self,
@@ -106,6 +97,14 @@ class AuthProvider(Protocol):
 
         Implementations MUST validate the id_token's ``nonce`` against
         ``oauth_state.nonce`` before returning.
+        """
+
+    def refresh_tokens(self, refresh_token: str) -> TokenSet:
+        """Use a refresh_token to mint a new TokenSet from the IdP.
+
+        Raises ``InvalidTokenError`` on any failure (bad/expired
+        refresh_token, IdP-down, etc.). The id_token on the returned
+        TokenSet MUST be verified by the implementation before returning.
         """
 
     def logout_url(self, redirect_uri: str | None) -> str | None:

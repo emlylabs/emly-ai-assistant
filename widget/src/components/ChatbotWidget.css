@@ -34,11 +34,19 @@
     box-shadow: 0 22px 50px rgba(15, 23, 42, 0.26);
 }
 
+/* Kill the iOS 300ms double-tap-to-zoom delay on widget controls.
+   `manipulation` keeps pinch-zoom but suppresses the wait. */
+.emls-chatbot-widget button,
+.emls-chatbot-widget [role="button"],
+.chat-icon {
+    touch-action: manipulation;
+}
+
 .emls-chatbot-widget {
     position: fixed;
     bottom: 20px;
     right: 20px;
-    width: 380px;
+    width: min(380px, calc(100vw - 24px));
     height: 550px;
     border-radius: var(--cb-radius, 20px);
     overflow: hidden;
@@ -65,6 +73,7 @@
     transform: translateX(-50%);
     width: 96%;
     height: calc(100vh - 40px);
+    height: calc(100dvh - 40px);
 }
 
 .emls-chatbot-widget .header {
@@ -594,6 +603,11 @@
     padding: 16px;
     flex: 1;
     overflow-y: auto;
+    /* Keep rubber-band scrolling inside the widget; prevent the host
+       page from rubber-banding underneath. iOS momentum hint kept for
+       older Safari versions that ignore the modern overscroll rule. */
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     width: 100%;
     box-sizing: border-box;
     background: var(--cb-body-bg, var(--body-background, #f8fafc));
@@ -1106,7 +1120,13 @@
 
 @media (max-width: 768px) {
 
+    /* The `--left`/`--right` modifier classes (defined later in the
+       cascade) pin the floating panel to one side at desktop sizes.
+       On mobile the panel is full-screen, so re-zero both edges with
+       matching specificity to defeat those modifiers. */
     .emls-chatbot-widget,
+    .emls-chatbot-widget.emls-chatbot-widget--left,
+    .emls-chatbot-widget.emls-chatbot-widget--right,
     .emls-chatbot-widget.emls-chatbot-widget-maximized {
         top: 0;
         bottom: 0;
@@ -1114,18 +1134,71 @@
         left: 0;
         width: 100vw;
         height: 100vh;
+        /* `dvh` accounts for the iOS/Android browser chrome and the
+           on-screen keyboard. Old browsers fall back to `vh` above. */
+        height: 100dvh;
         transform: none;
         border-radius: 0;
         max-width: 100vw;
         max-height: 100vh;
+        max-height: 100dvh;
     }
 
     .emls-chatbot-widget .header {
         border-radius: 0;
+        /* Sit below the notch when the host page opts into
+           `viewport-fit=cover`. No-op on devices without a notch. */
+        padding-top: calc(14px + env(safe-area-inset-top));
+    }
+
+    .emls-chatbot-widget .footer {
+        /* Keep the textarea above the iOS home-indicator gesture area. */
+        padding-bottom: calc(10px + env(safe-area-inset-bottom));
     }
 
     .emls-chatbot-widget .header .header-icons .maximize-icon {
         display: none;
+    }
+
+    /* WCAG 2.5.5 + Apple HIG: every header button reaches a 44×44 hit
+       target on touch. `min-width`/`min-height` enlarge the entire pill
+       (background + border) on mobile — a deliberate trade since the
+       desktop visual stays unaffected and a slightly bigger pill is
+       easier to land than the desktop 34px target. */
+    .emls-chatbot-widget .header .session-icon,
+    .emls-chatbot-widget .header .header-icons > button,
+    .emls-chatbot-widget .header .header-icons > div {
+        min-width: 44px;
+        min-height: 44px;
+        box-sizing: border-box;
+    }
+}
+
+/* Narrow phones (≤480px). Tighten the header so a long title doesn't
+   wrap under the icon cluster — truncate it instead. */
+@media (max-width: 480px) {
+    .emls-chatbot-widget .header {
+        gap: 6px;
+        padding: 12px 12px 10px;
+    }
+
+    .emls-chatbot-widget .header .avatar {
+        width: 30px;
+        height: 30px;
+        margin-right: 8px;
+    }
+
+    .emls-chatbot-widget .header .header-text {
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .emls-chatbot-widget .header .header-text p {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 }
 
@@ -1614,8 +1687,14 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 240px;
-  max-width: 320px;
+  min-width: 0;
+  max-width: min(320px, calc(100% - 24px));
+}
+.emls-chatbot-widget .emw-form-row input,
+.emls-chatbot-widget .emw-form-row select,
+.emls-chatbot-widget .emw-form-row textarea {
+  width: 100%;
+  box-sizing: border-box;
 }
 .emls-chatbot-widget .emw-form { display: flex; flex-direction: column; gap: 8px; }
 .emls-chatbot-widget .emw-form-title { font-size: 14px; font-weight: 700; color: var(--cb-ink, #0f172a); }

@@ -3,15 +3,14 @@ import logging
 import os
 import secrets
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from routes import (
-    actions,
-    admin,
     admin_audit,
     admin_bot_channels,
     admin_bot_dashboard,
@@ -19,21 +18,24 @@ from routes import (
     admin_bot_realtime,
     admin_bot_sessions,
     admin_bots,
-    admin_dashboard,
+    admin_widget,
     admin_admins,
     auth as auth_routes,
     auth_issuer,
+    bff_auth,
     channels as channels_route,
     chat,
     widget,
+    workspace as workspace_routes,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from models.admin_users import AdminUsers
 from services.bot_purge import PURGE_GRACE, purge_all_pending
+from services.scheduler import start_scheduler
 from utils import logging_context
-from utils.utils import create_emly_user
+from version import APP_VERSION, BUILT_AT, GIT_SHA, info as version_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,6 +103,17 @@ def _assert_runtime_topology() -> None:
             "is not supported on a non-shared filesystem. Either point AUTH_LOCAL_KEYS_DIR at a "
             "shared volume, set AUTH_LOCAL_ISSUER_ENABLED=false (delegate identity to an external "
             "OIDC IdP), or stay single-replica. DB-backed key storage is Phase 11 future work."
+        )
+    # Refuse to boot in production-like modes without an explicit APP_BASE_URL.
+    # Falling back to ``request.url.netloc`` (Host header) for the OIDC redirect
+    # / post-login normalization opens a Host-spoof window where return_to
+    # could resolve to an attacker-controlled origin.
+    mode = (os.environ.get("MODE") or "").strip().lower()
+    if mode in ("prod", "production", "preprod", "stage", "staging") and not os.environ.get("APP_BASE_URL"):
+        raise RuntimeError(
+            f"MODE={mode!r} requires APP_BASE_URL to be set (the public-facing origin of this app). "
+            "Without it the OIDC callback redirect derives from the Host header, which is "
+            "user-controllable and unsafe for production deploys."
         )
 
 
@@ -277,34 +290,22 @@ class CustomMiddleware(BaseHTTPMiddleware):
             user_id = request.headers.get("X-Emly-UserID")
             session_id = request.headers.get("X-Emly-SessionID")
             page_id = request.headers.get("X-Emly-PageID")
-            bot_id = request.headers.get("X-Emly-BotID")
-            if bot_id:
-                logging_context.bot_id_var.set(bot_id)
-                request.state.bot_id = bot_id
             if user_id:
                 logging_context.user_id_var.set(user_id)
             if session_id:
                 logging_context.session_id_var.set(session_id)
-            # Match the exact widget shape: ``/widget/{ref}/{action}``
-            # (three trailing segments). Anything deeper or shorter is
-            # not a widget route and shouldn't bypass the helper.
+            # Body fallback for ``/widget/{ref}/chat`` only — the widget's
+            # localStorage-backed identity init can race with the first
+            # chat fetch, so fall back to body fields or generate fresh
+            # IDs. Response headers echo the resolved IDs so the widget
+            # can adopt them.
             _path_parts = request.url.path.split("/")
-            _is_widget_route = (
-                len(_path_parts) == 4 and _path_parts[1] == "widget" and _path_parts[3] != ""
+            _is_widget_chat = (
+                len(_path_parts) == 4
+                and _path_parts[1] == "widget"
+                and _path_parts[3] == "chat"
             )
-            _is_widget_chat = _is_widget_route and _path_parts[3] == "chat"
-            # Auto-create an end-user for legacy /emly/* surfaces. Widget routes
-            # do their own bot-scoped upsert in `routes/widget.py`, so we skip
-            # the helper there to avoid double-inserting the row.
-            if request.url.path.startswith("/emly/") and not _is_widget_route and bot_id:
-                create_emly_user(request, bot_id)
-            # Inject identity headers into the body for both chat surfaces:
-            # - legacy `/emly/api/chat` (requires X-Emly-BotID)
-            # - path-scoped `/widget/{bot_slug-or-id}/chat` (bot from URL)
-            is_chat = request.url.path == "/emly/api/chat" or _is_widget_chat
-            if is_chat:
-                # Read the body once; the widget-chat fallback path needs to
-                # peek at it before deciding whether to 400.
+            if _is_widget_chat:
                 body = await request.body()
                 body_str = body.decode("utf-8")
                 try:
@@ -314,47 +315,23 @@ class CustomMiddleware(BaseHTTPMiddleware):
                 if not isinstance(data, dict):
                     return JSONResponse(status_code=400, content={"message": "Body must be a JSON object"})
 
-                if _is_widget_chat:
-                    # The path-scoped widget endpoint identifies the bot via
-                    # the URL and the AgentRequest body already carries
-                    # ``user_id``/``session_id``. The legacy widget bundle
-                    # has a race where the chat fetch can fire before its
-                    # localStorage-backed identity init populates the
-                    # ``X-Emly-UserID``/``X-Emly-SessionID`` headers — fall
-                    # back to body fields, generating fresh IDs only as a
-                    # last resort. The response still echoes the resolved
-                    # IDs in the response headers so the widget can adopt
-                    # them for subsequent calls.
-                    body_user = data.get("user_id") if isinstance(data.get("user_id"), str) else None
-                    body_session = data.get("session_id") if isinstance(data.get("session_id"), str) else None
-                    user_id = user_id or body_user or f"emly-gs-{uuid.uuid4()}"
-                    session_id = session_id or body_session or f"session-{uuid.uuid4()}"
-                else:
-                    # Legacy /emly/api/chat keeps the strict header
-                    # contract — its callers always set X-Emly-* headers
-                    # and a silent fallback would mask integration bugs.
-                    if not user_id:
-                        return JSONResponse(status_code=400, content={"message": "User ID is required"})
-                    if not session_id:
-                        return JSONResponse(status_code=400, content={"message": "Session ID is required"})
-                    if not bot_id:
-                        return JSONResponse(status_code=400, content={"message": "Bot ID is required (X-Emly-BotID header)"})
+                body_user = data.get("user_id") if isinstance(data.get("user_id"), str) else None
+                body_session = data.get("session_id") if isinstance(data.get("session_id"), str) else None
+                user_id = user_id or body_user or f"emly-gs-{uuid.uuid4()}"
+                session_id = session_id or body_session or f"session-{uuid.uuid4()}"
 
                 data["user_id"] = user_id
                 data["session_id"] = session_id
                 data["timestamp"] = int(time.time())
                 data["page_id"] = page_id
-                if bot_id:
-                    data["bot_id"] = bot_id
                 request._body = json.dumps(data).encode("utf-8")
+
             response = await call_next(request)
             if user_id:
                 response.headers["X-Emly-UserID"] = user_id
             if session_id:
                 response.headers["X-Emly-SessionID"] = session_id
-            if bot_id:
-                response.headers["X-Emly-BotID"] = bot_id
-            response.headers["Access-Control-Expose-Headers"] = "X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID, X-Emly-BotID"
+            response.headers["Access-Control-Expose-Headers"] = "X-Emly-UserID, X-Emly-SessionID, X-Emly-PageID"
             return response
         except Exception:
             logging.exception("Unhandled exception in CustomMiddleware")
@@ -375,18 +352,10 @@ app.add_middleware(SlowAPIMiddleware)
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_exceeded_handler(request, exc: RateLimitExceeded):
     return JSONResponse({"detail": {"code": "rate_limited", "limit": str(exc.detail)}}, status_code=429)
-app.include_router(chat.router, prefix="/emly", tags=["chat"])
-# Phase 4: path-scoped widget endpoint at /widget/{bot_slug}/chat. Same
-# router; the route itself fully qualifies the URL so a second include
-# under "" exposes ``/widget/...`` without re-prefixing the legacy
-# ``/emly/...`` paths. (FastAPI resolves on full path, so the duplicate
-# include doesn't shadow the legacy router.)
 app.include_router(chat.router, prefix="", tags=["widget"], include_in_schema=False)
-app.include_router(actions.router, prefix="/emly", tags=["actions"])
-app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
 app.include_router(admin_admins.router, prefix="/api/admin", tags=["admin-mgmt"])
-app.include_router(admin_dashboard.router, prefix="/api/admin", tags=["admin-dashboard"])
 app.include_router(admin_bots.router, prefix="/api/admin", tags=["admin-bots"])
+app.include_router(admin_widget.router, prefix="/api/admin", tags=["admin-widget"])
 app.include_router(admin_bot_files.router, prefix="/api/admin", tags=["admin-bot-files"])
 app.include_router(admin_bot_dashboard.router, prefix="/api/admin", tags=["admin-bot-dashboard"])
 app.include_router(admin_bot_channels.router, prefix="/api/admin", tags=["admin-bot-channels"])
@@ -395,9 +364,17 @@ app.include_router(admin_bot_sessions.router, prefix="/api/admin", tags=["admin-
 app.include_router(admin_audit.router, prefix="/api/admin", tags=["admin-audit"])
 # Phase 9 backend-backfill: SSE live conversation feed (single-replica only).
 app.include_router(admin_bot_realtime.router, prefix="/api/admin", tags=["admin-bot-realtime"])
+# Workspace-scoped admin (§6): defaults, saved templates, bulk bot actions.
+app.include_router(workspace_routes.router, prefix="/api/admin", tags=["workspace"])
 app.include_router(channels_route.router, prefix="", tags=["channels"])
 # New OIDC admin client — login/callback/logout/me. Always mounted.
 app.include_router(auth_routes.router, prefix="/api/admin", tags=["admin-auth-oidc"])
+# BFF (Backend-for-Frontend) auth surface — silent refresh + refresh-claims
+# endpoints that the JS proactive-refresh interceptor calls. Mounted at
+# /api/auth (NOT /api/admin) so the embedded issuer's loopback discovery
+# and the public `session_expires_at` cookie stay clearly separated from
+# the admin-only surface.
+app.include_router(bff_auth.router, prefix="", tags=["bff-auth"])
 # Embedded OIDC issuer — mounted only when AUTH_LOCAL_ISSUER_ENABLED=true (default).
 # Endpoints are at /.well-known/* and /api/auth/local/*.
 from services.auth.issuer.factory import is_local_issuer_enabled  # noqa: E402
@@ -430,6 +407,47 @@ app.add_middleware(
 # wide-open ``*`` on actual responses with the resolved per-bot origin.
 from services.auth.widget_cors import WidgetCORSMiddleware  # noqa: E402
 app.add_middleware(WidgetCORSMiddleware)
+
+
+@app.on_event("startup")
+def _log_version_banner() -> None:
+    logging.info(
+        "emly-ai-assistant version=%s sha=%s built_at=%s",
+        APP_VERSION, GIT_SHA, BUILT_AT,
+    )
+
+
+@app.on_event("startup")
+def _boot_scheduler() -> None:
+    start_scheduler()
+
+
+@app.on_event("startup")
+def _register_invite_expiry_sweep() -> None:
+    """Hourly sweep that promotes any ``pending`` ``pending_admin`` row whose
+    ``expires_at`` is in the past to ``status='expired'``. Idempotent; the
+    accept route also re-checks expiry per-row before granting access."""
+    try:
+        from models.pending_admins import PendingAdmins
+        from services.scheduler import scheduler
+
+        def _sweep() -> None:
+            try:
+                n = PendingAdmins.mark_expired_sweep()
+                if n:
+                    logging.info("Marked %d invite(s) expired by sweep", n)
+            except Exception:
+                logging.exception("invite expiry sweep failed")
+
+        scheduler.add_job(
+            _sweep,
+            "interval",
+            hours=1,
+            id="invite_expiry_sweep",
+            replace_existing=True,
+        )
+    except Exception:
+        logging.exception("failed to register invite expiry sweep")
 
 
 @app.on_event("startup")
@@ -481,6 +499,17 @@ async def _stop_enrichment_worker() -> None:
 async def health():
     """Legacy alias for ``/api/livez`` — kept so existing dashboards keep working."""
     return JSONResponse(status_code=200, content={"message": "Bot is running"})
+
+
+@app.get("/api/version")
+async def version():
+    """Build provenance for the running container.
+
+    Returns ``{version, git_sha, built_at}`` from values baked in by the
+    Dockerfile (``APP_VERSION`` / ``GIT_SHA`` / ``BUILT_AT`` build args).
+    No auth — health-adjacent and useful for incident triage.
+    """
+    return JSONResponse(status_code=200, content=version_info())
 
 
 @app.get("/api/livez")
@@ -572,18 +601,108 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
 # We register a catch-all *last* so all explicit /emly, /api, /api/v1 routes
 # above take precedence. Unknown paths fall back to index.html so the SPA
 # can handle client-side routing (/login, /admins, /accept-invite, etc.).
+#
+# BFF server-side gate: the catchall also acts as the "middleware.ts"
+# for the static-export build. Next.js's runtime middleware is excluded
+# by `output: "export"`, so this is the only place the SPA's auth
+# redirect can be enforced server-side. The companion `ui/middleware.ts`
+# is kept for dev parity (and any future server-side deployment); the
+# runtime enforcement lives here in production.
 # ----------------------------------------------------------------------------
 _UI_DIR = Path(__file__).parent / "ui" / "out"
 if (_UI_DIR / "_next").exists():
     app.mount("/_next", StaticFiles(directory=_UI_DIR / "_next"), name="next-assets")
 
 
-def _serve_ui_path(rel_path: str) -> Response:
+# UI paths that require a session cookie. Anything outside this set is
+# public (login, request-access, the root index which does its own
+# client-side redirect). The set is deliberately narrow — we'd rather
+# over-serve a public page than under-serve a protected one, because
+# each protected page has its own client-side `me()` check that
+# double-gates against a missing/expired id_token.
+_PROTECTED_UI_PREFIXES = (
+    "/bots/",
+    "/admins",
+    "/workspace/",
+    "/accept-invite",
+    "/users",
+    "/conversations",
+    "/dashboard",
+    "/config",
+)
+
+
+def _session_cookie_name() -> str:
+    return os.environ.get("AUTH_COOKIE_NAME", "emly_admin_session")
+
+
+def _is_protected_ui_path(rel_path: str) -> bool:
+    """Does the requested UI path need a session cookie?
+
+    Only matches exact prefixes that map to a protected page in the
+    Next.js app/. We compare against the *path* (no query string)
+    so ``/bots?new=1`` is still treated as protected. The FastAPI
+    ``{full_path:path}`` route strips the leading ``/`` so we
+    normalise both sides here.
+    """
+    if not rel_path:
+        return False  # root is the public landing
+    normalised = "/" + rel_path.lstrip("/")
+    for prefix in _PROTECTED_UI_PREFIXES:
+        if normalised == prefix.rstrip("/") or normalised.startswith(prefix):
+            return True
+    return False
+
+
+def _login_redirect_target(request: Request) -> str:
+    """Build ``/api/admin/auth/login?return_to=...`` for the current request.
+
+    The ``return_to`` is a same-origin absolute path so the IdP
+    callback (or its host-relative post-login redirect) lands the user
+    back where they started. ``urlparse`` guards against any future
+    operator who tries to inject an offsite target.
+    """
+    app_base = _app_base_url_from_request(request)
+    raw = request.url.path
+    if not raw.startswith("/") or raw.startswith("//"):
+        return f"{app_base}/api/admin/auth/login"
+    return f"{app_base}/api/admin/auth/login?return_to={urllib.parse.quote(raw, safe='/?&=')}"
+
+
+def _app_base_url_from_request(request: Request) -> str:
+    """Mirror of ``_app_base_url`` in routes/auth.py but without the
+    cross-module import — kept local so the catchall can stay
+    self-contained."""
+    explicit = os.environ.get("APP_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    netloc = request.url.netloc or request.headers.get("host")
+    if netloc:
+        return f"{request.url.scheme}://{netloc}".rstrip("/")
+    return "http://localhost:8080"
+
+
+def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     if not _UI_DIR.exists():
         return JSONResponse(
             status_code=503,
             content={"message": "UI not built. Run `npm install && npm run build` in /ui."},
         )
+
+    # BFF server-side gate: when the requested path is a protected UI
+    # route and no session cookie is present, 302 to the IdP login
+    # flow with the original path stashed in ``return_to``. We do a
+    # presence check only (no JWT verification) so the catchall stays
+    # cheap on the hot path; the per-page `me()` probe in the React
+    # shell catches the "expired cookie" case and the JS proactive
+    # refresh keeps that from happening in practice. This mirrors the
+    # `ui/middleware.ts` redirect for dev / non-static-export deploys.
+    if request is not None and _is_protected_ui_path(rel_path):
+        if not request.cookies.get(_session_cookie_name()):
+            return RedirectResponse(
+                url=_login_redirect_target(request),
+                status_code=302,
+            )
 
     # Try the literal path first (handles /favicon.ico, /file.svg, etc.).
     candidate = (_UI_DIR / rel_path).resolve()
@@ -599,12 +718,19 @@ def _serve_ui_path(rel_path: str) -> Response:
     # Per-bot routes — `/bots/<slug>/<tab>` — are statically exported
     # under a placeholder slug `_` (Next.js requires `generateStaticParams`
     # under `output: "export"`; runtime slugs aren't known at build
-    # time). Substitute `_` for the actual slug and serve that scaffold;
-    # the client-side router reads the real slug from `useParams`.
+    # time). Substitute `_` for the actual slug and serve whatever the
+    # build emitted — both the `.html` scaffold AND the App Router's
+    # per-segment RSC payloads (`__next.bots.$d$slug.<tab>.__PAGE__.txt`,
+    # `<tab>.txt`, ...). Without this, RSC fetches during client-side
+    # navigation fall through to index.html, Next gives up on the soft
+    # nav, and the whole shell remounts on every menu click.
     parts = rel_path.split("/") if rel_path else []
     if len(parts) >= 3 and parts[0] == "bots":
-        placeholder = ["bots", "_", *parts[2:]]
-        scaffold = (_UI_DIR / f"{'/'.join(placeholder)}.html").resolve()
+        rewritten = "/".join(["bots", "_", *parts[2:]])
+        literal = (_UI_DIR / rewritten).resolve()
+        if _UI_DIR.resolve() in literal.parents and literal.is_file():
+            return FileResponse(literal)
+        scaffold = (_UI_DIR / f"{rewritten}.html").resolve()
         if _UI_DIR.resolve() in scaffold.parents and scaffold.is_file():
             return FileResponse(scaffold)
 
@@ -615,11 +741,11 @@ def _serve_ui_path(rel_path: str) -> Response:
     return JSONResponse(status_code=404, content={"message": "Not found"})
 
 
-@app.get("/")
-async def ui_root():
-    return _serve_ui_path("")
+@app.api_route("/", methods=["GET", "HEAD"])
+async def ui_root(request: Request):
+    return _serve_ui_path(request, "")
 
 
-@app.get("/{full_path:path}")
-async def ui_catchall(full_path: str):
-    return _serve_ui_path(full_path)
+@app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
+async def ui_catchall(request: Request, full_path: str):
+    return _serve_ui_path(request, full_path)

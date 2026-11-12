@@ -4,9 +4,11 @@ The admin UI hits ``/api/admin/auth/login`` to start the flow. The route
 generates ``state`` / ``code_verifier`` / ``nonce``, stashes them server-side,
 and 302s to the configured IdP's authorize URL. The IdP redirects back to
 ``/api/admin/auth/callback?code=...&state=...``; we exchange the code, verify
-the resulting id_token's nonce, resolve/create the admin row, and set an
-httpOnly session cookie carrying the access token. Logout clears the cookie
-and surfaces the IdP's end-session URL so the UI can redirect there.
+the resulting id_token's nonce, resolve/create the admin row, and set the
+BFF session-cookie trio (``emly_admin_session`` id_token,
+``emly_admin_refresh`` encrypted refresh_token, and the public
+``session_expires_at`` Unix timestamp). Logout clears all three and
+surfaces the IdP's end-session URL so the UI can redirect there.
 
 This file is provider-agnostic. Whether ``AUTH_OIDC_ISSUER`` points at the
 embedded issuer (``${APP_BASE_URL}``) or at Auth0/Clerk/Keycloak/Cognito is
@@ -21,7 +23,7 @@ import hmac
 import logging
 import os
 from datetime import datetime, timezone
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -38,6 +40,7 @@ from services.auth.dependencies import get_admin, get_auth_provider
 from services.auth.factory import get_state_store
 from services.auth.oidc import generate_nonce, generate_pkce_verifier, generate_state
 from services.auth.ratelimit import limit_for, limiter
+from services.secrets import encrypt_session_cookie
 
 log = logging.getLogger(__name__)
 
@@ -52,18 +55,16 @@ def _app_base_url(request: Request | None = None) -> str:
 
     Resolution order:
       1. ``APP_BASE_URL`` env (the operator's contract — set this in prod).
-      2. ``PUBLIC_BASE_URL`` env (common alias used in deploy configs).
-      3. The incoming request's scheme + host. uvicorn runs with
+      2. The incoming request's scheme + host. uvicorn runs with
          ``--forwarded-allow-ips '*'`` (see ``start.sh``), so behind a
          reverse proxy ``request.url`` already reflects ``X-Forwarded-Proto``
          / ``X-Forwarded-Host``.
-      4. ``http://localhost:8080`` — last-resort fallback for code paths
+      3. ``http://localhost:8080`` — last-resort fallback for code paths
          that don't have a request in scope.
     """
-    for env_key in ("APP_BASE_URL", "PUBLIC_BASE_URL"):
-        explicit = os.environ.get(env_key, "").strip()
-        if explicit:
-            return explicit.rstrip("/")
+    explicit = os.environ.get("APP_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
     if request is not None:
         # Starlette exposes request.url.netloc which already includes the
         # port when non-standard. Scheme reflects the proxy's
@@ -154,16 +155,116 @@ def _cookie_name() -> str:
     return os.environ.get("AUTH_COOKIE_NAME", "emly_admin_session")
 
 
+def _refresh_cookie_name() -> str:
+    """Cookie carrying the encrypted refresh_token. httpOnly + secure +
+    samesite=lax; the JS surface never sees the value (the BFF's
+    ``/api/auth/refresh`` is the only consumer)."""
+    return os.environ.get("AUTH_REFRESH_COOKIE_NAME", "emly_admin_refresh")
+
+
+def _expires_cookie_name() -> str:
+    """Public cookie carrying the id_token's expiry as a Unix timestamp.
+
+    ``httpOnly=False`` so the JS proactive-refresh interceptor can read
+    it (the value is non-sensitive — it's the same expiry that's
+    trivially recoverable by parsing the JWT, but the JWT itself is in
+    the httpOnly sibling and the JS can't see that one).
+    """
+    return os.environ.get("AUTH_EXPIRES_COOKIE_NAME", "session_expires_at")
+
+
+def _max_age_seconds(expires_at: datetime) -> int:
+    """Cookie max-age aligned to the id_token's remaining lifetime.
+    Clamped to a minimum of 60s to avoid a 0-max-age cookie that some
+    browsers immediately discard."""
+    delta = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    return max(delta, 60)
+
+
+def _set_session_cookies(response, request: Request, *, id_token: str, refresh_token: str | None, expires_at: datetime) -> None:
+    """Set the trio of session cookies. Mirrors the inverse
+    ``_clear_session_cookies`` so the browser attributes match."""
+    max_age = _max_age_seconds(expires_at)
+    response.set_cookie(
+        key=_cookie_name(),
+        value=id_token,
+        max_age=max_age,
+        path="/",
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite=_cookie_samesite(),
+        domain=_cookie_domain(),
+    )
+    if refresh_token:
+        response.set_cookie(
+            key=_refresh_cookie_name(),
+            value=encrypt_session_cookie(refresh_token) or "",
+            max_age=max_age,
+            path="/",
+            secure=_cookie_secure(request),
+            httponly=True,
+            samesite=_cookie_samesite(),
+            domain=_cookie_domain(),
+        )
+    response.set_cookie(
+        key=_expires_cookie_name(),
+        value=str(int(expires_at.timestamp())),
+        max_age=max_age,
+        path="/",
+        secure=_cookie_secure(request),
+        httponly=False,
+        samesite=_cookie_samesite(),
+        domain=_cookie_domain(),
+    )
+
+
+def _clear_session_cookies(response, request: Request) -> None:
+    """Delete the trio of session cookies. Mirror attributes are required
+    so the browser actually drops them (delete_cookie must match the
+    path/domain/samesite used at set time)."""
+    for name in (_cookie_name(), _refresh_cookie_name(), _expires_cookie_name()):
+        response.delete_cookie(
+            key=name,
+            path="/",
+            secure=_cookie_secure(request),
+            samesite=_cookie_samesite(),
+            domain=_cookie_domain(),
+            httponly=(name != _expires_cookie_name()),
+        )
+
+
 def _cookie_secure(request: Request | None = None) -> bool:
-    """Default to True for HTTPS deploys, False when the resolved base URL is
-    plain HTTP (typically ``http://localhost``). Override explicitly with
-    ``AUTH_COOKIE_SECURE=true|false`` if the deploy fronts an HTTPS terminator
-    while the app talks plain HTTP behind it.
+    """Decide the ``Secure`` cookie attribute.
+
+    The browser silently drops a ``Secure`` cookie when the response is
+    served over plain HTTP, so the attribute must reflect the
+    **actual** request scheme — not the configured ``APP_BASE_URL``.
+    Otherwise a dev session whose ``APP_BASE_URL=https://example.com``
+    points at production would fail to set cookies on ``http://localhost``,
+    the catchall would see no session, and the user would get
+    rate-limited bouncing between the catchall and ``/api/admin/auth/login``.
+
+    Precedence:
+    1. Explicit override via ``AUTH_COOKIE_SECURE=true|false`` (for
+       deploys that front an HTTPS terminator while the app talks
+       plain HTTP behind it).
+    2. The request's actual ``url.scheme`` (HTTPS → True, HTTP → False).
+       This is correct in every topology we care about:
+       - Direct HTTPS: scheme is https.
+       - HTTP localhost: scheme is http.
+       - Reverse proxy (TLS terminated upstream): scheme is http
+         but the cookie is set on the user's HTTPS browser, so the
+         browser stores it just fine.
+    3. Fallback when ``request`` is unavailable (module-init): default
+       to ``False`` (the safe-ish choice — easier to debug a "cookie
+       didn't set" than a "cookie silently dropped").
     """
     explicit = os.environ.get("AUTH_COOKIE_SECURE")
     if explicit is not None:
         return explicit.strip().lower() in ("1", "true", "yes", "on")
-    return _app_base_url(request).lower().startswith("https://")
+    if request is not None:
+        return request.url.scheme.lower() == "https"
+    return (os.environ.get("APP_BASE_URL", "").lower().startswith("https://"))
 
 
 def _cookie_samesite() -> str:
@@ -250,28 +351,26 @@ async def callback(
     code = request.query_params.get("code")
     error = request.query_params.get("error")
 
-    _login_base = f"{_app_base_url(request)}/login"
-
     if error:
         log.warning("OIDC callback returned error=%s description=%s", error, request.query_params.get("error_description"))
         audit("auth.idp_error", request=request, success=False, payload={"error": error})
-        return RedirectResponse(
-            f"{_login_base}?error=idp_error&detail={quote(error)}",
-            status_code=status.HTTP_302_FOUND,
+        return JSONResponse(
+            {"detail": {"code": "idp_error", "error": error}},
+            status_code=400,
         )
     if not state_token or not code:
         audit("auth.callback_invalid", request=request, success=False, payload={"reason": "missing_state_or_code"})
-        return RedirectResponse(
-            f"{_login_base}?error=missing_state_or_code",
-            status_code=status.HTTP_302_FOUND,
+        return JSONResponse(
+            {"detail": {"code": "missing_state_or_code"}},
+            status_code=400,
         )
 
     oauth_state = get_state_store().pop(state_token)
     if oauth_state is None:
         audit("auth.callback_state_invalid", request=request, success=False)
-        return RedirectResponse(
-            f"{_login_base}?error=callback_state_invalid_or_expired",
-            status_code=status.HTTP_302_FOUND,
+        return JSONResponse(
+            {"detail": {"code": "callback_state_invalid_or_expired"}},
+            status_code=400,
         )
 
     try:
@@ -286,16 +385,13 @@ async def callback(
     except InvalidTokenError as e:
         log.warning("OIDC code exchange failed: %s", e)
         audit("auth.code_exchange_failed", request=request, success=False, payload={"err": str(e)})
-        return RedirectResponse(
-            f"{_login_base}?error=code_exchange_failed",
-            status_code=status.HTTP_302_FOUND,
+        return JSONResponse(
+            {"detail": {"code": "code_exchange_failed", "message": str(e)}},
+            status_code=400,
         )
     except AuthError as e:
         audit("auth.idp_error", request=request, success=False, payload={"err": str(e)})
-        return RedirectResponse(
-            f"{_login_base}?error=idp_error",
-            status_code=status.HTTP_302_FOUND,
-        )
+        return JSONResponse({"detail": {"code": "idp_error", "message": str(e)}}, status_code=400)
 
     # Resolve / create the admin row. AdminNotProvisioned etc. are mapped here
     # to a redirect at the UI; we render a plain JSON body and let the UI
@@ -363,25 +459,25 @@ async def callback(
         target = f"{_app_base_url(request)}{target}"
 
     response = RedirectResponse(target, status_code=status.HTTP_302_FOUND)
-    max_age = max(int((token_set.expires_at - datetime.now(timezone.utc)).total_seconds()), 60)
+    max_age = _max_age_seconds(token_set.expires_at)
     # Persist the id_token, not the access_token. The id_token is the
     # OIDC artifact that carries identity claims (sub/email/nonce); some
     # IdPs return opaque access_tokens with the wrong audience that
     # would fail subsequent verify_token() calls.
     session_token = token_set.id_token or token_set.access_token
-    response.set_cookie(
-        key=_cookie_name(),
-        value=session_token,
-        max_age=max_age,
-        path="/",
-        secure=_cookie_secure(request),
-        httponly=True,
-        samesite=_cookie_samesite(),
-        domain=_cookie_domain(),
+    _set_session_cookies(
+        response, request,
+        id_token=session_token,
+        refresh_token=token_set.refresh_token,
+        expires_at=token_set.expires_at,
     )
-    log.info("Admin %s signed in via %s (max_age=%ds)", admin.id, principal.issuer, max_age)
+    log.info(
+        "Admin %s signed in via %s (max_age=%ds, refresh_token=%s)",
+        admin.id, principal.issuer, max_age,
+        "yes" if token_set.refresh_token else "no",
+    )
     audit("auth.login", admin_id=admin.id, request=request, success=True,
-          payload={"issuer": principal.issuer})
+          payload={"issuer": principal.issuer, "has_refresh_token": bool(token_set.refresh_token)})
     return response
 
 
@@ -390,21 +486,52 @@ async def logout(
     request: Request,
     provider: AuthProvider = Depends(get_auth_provider),
 ):
-    """Clear the cookie. Returns the IdP's end-session URL (if any) so the UI
-    can redirect there for global logout. Note: until refresh-token revocation
-    lands (Phase 11), the access token remains valid until ``exp`` for any
-    party that captured it. See ``docs/auth.md`` security notes."""
+    """Clear all session cookies and revoke the refresh_token at the IdP.
+
+    Returns the IdP's end-session URL (if any) so the UI can redirect
+    there for global logout. Note: the access_token itself remains
+    valid until ``exp`` for any party that captured it — full
+    revocation is a Phase 11 future-item (Redis-backed jti
+    blacklisting). With the BFF refresh tokens now in play, the
+    worst-case replay window is the access-token TTL (default 1h
+    for the embedded issuer) and the lost-the-cookie path triggers
+    a hard redirect-to-IdP on the next API call anyway.
+    """
     response = JSONResponse(
         {"provider_logout_url": provider.logout_url(_app_base_url(request))}
     )
-    response.delete_cookie(
-        key=_cookie_name(),
-        path="/",
-        secure=_cookie_secure(request),
-        httponly=True,
-        samesite=_cookie_samesite(),
-        domain=_cookie_domain(),
-    )
+    _clear_session_cookies(response, request)
+
+    # If the BFF still has the refresh_token in memory, hand it to the
+    # embedded issuer so the store-side entry is dropped. External IdPs
+    # (Auth0, Clerk, etc.) don't expose this surface in our Protocol —
+    # they treat logout as "stop using it" and the cookie clear is
+    # what blocks replay from this browser.
+    try:
+        from services.secrets import decrypt_session_cookie
+        from services.auth.issuer.factory import is_local_issuer_enabled
+        if is_local_issuer_enabled():
+            raw = request.cookies.get(_refresh_cookie_name())
+            if raw:
+                rt = decrypt_session_cookie(raw)
+                if rt:
+                    # Fire-and-forget: the issuer's /logout endpoint
+                    # is the only path that takes a refresh_token.
+                    # The store revoke is best-effort — if the IdP
+                    # is unreachable the cookie clear is still
+                    # what protects the user.
+                    import httpx
+                    try:
+                        httpx.post(
+                            f"{_app_base_url(request)}/api/auth/local/logout",
+                            data={"refresh_token": rt},
+                            timeout=2.0,
+                        )
+                    except Exception:
+                        log.debug("BFF logout: embedded-issuer revoke failed (non-fatal)")
+    except Exception:
+        log.debug("BFF logout: refresh-token cleanup skipped", exc_info=True)
+
     audit("auth.logout", request=request, success=True)
     return response
 

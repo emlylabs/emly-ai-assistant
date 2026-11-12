@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CircleCheck,
   CircleX,
@@ -14,17 +14,30 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { useBot } from "@/components/BotShell";
-import { ApiError, BotFile, DOCUMENT_TYPES, DocumentType, Role, api } from "@/lib/api";
+import {
+  ApiError,
+  BotFile,
+  BotFileListResponse,
+  BotFileStatusBucket,
+  DOCUMENT_TYPES,
+  DocumentType,
+  Role,
+  api,
+} from "@/lib/api";
 import CrawlTab from "./CrawlTab";
 import CollectionsRail, {
   type CollectionKey,
-  matchCollection,
+  collectionDocumentTypes,
 } from "@/components/files/CollectionsRail";
 
 type FilesTab = "uploads" | "crawl";
 
 const POLL_MS = 3500;
 const MAX_PARALLEL_UPLOADS = 3;
+const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 300;
+
+type StatusFilter = "all" | BotFileStatusBucket;
 
 type LocalUpload = {
   key: string;
@@ -53,7 +66,7 @@ export default function BotFilesPage() {
   const slug = bot.slug;
   const writable = canWrite(currentRole);
 
-  const [files, setFiles] = useState<BotFile[]>([]);
+  const [data, setData] = useState<BotFileListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploads, setUploads] = useState<LocalUpload[]>([]);
@@ -62,87 +75,64 @@ export default function BotFilesPage() {
   const [uploadType, setUploadType] = useState<DocumentType>("document");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Knowledge collections rail (Phase 6) — UI-only grouping over the
-  // existing `document_type`. Both filters are client-side; the file list
-  // never re-fetches when they change.
+  // Filters — all pushed through to the backend now. Changes refetch
+  // page 1 of the new result set.
   const [selectedCollection, setSelectedCollection] = useState<CollectionKey>("all");
-  type StatusFilter = "all" | "indexed" | "in_progress" | "errors";
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [fileQuery, setFileQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [page, setPage] = useState(1);
 
-  // Filtered file list driving the table render below.
-  const visibleFiles = useMemo(() => {
-    const q = fileQuery.trim().toLowerCase();
-    return files.filter((f) => {
-      if (!matchCollection(selectedCollection, f)) return false;
-      if (statusFilter === "indexed" && f.embedding_status !== "embedded") return false;
-      if (
-        statusFilter === "in_progress" &&
-        f.embedding_status !== "pending" &&
-        f.embedding_status !== "embedding"
-      )
-        return false;
-      if (statusFilter === "errors" && f.embedding_status !== "failed") return false;
-      if (q) {
-        const hit =
-          f.file_name.toLowerCase().includes(q) ||
-          (f.mime_type ?? "").toLowerCase().includes(q);
-        if (!hit) return false;
-      }
-      return true;
-    });
-  }, [files, selectedCollection, statusFilter, fileQuery]);
+  // Debounce the search box so we don't flood the API on every keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(fileQuery.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [fileQuery]);
 
-  const statusCounts = useMemo(() => {
-    const inCollection = files.filter((f) => matchCollection(selectedCollection, f));
-    return {
-      all: inCollection.length,
-      indexed: inCollection.filter((f) => f.embedding_status === "embedded").length,
-      in_progress: inCollection.filter(
-        (f) => f.embedding_status === "pending" || f.embedding_status === "embedding",
-      ).length,
-      errors: inCollection.filter((f) => f.embedding_status === "failed").length,
-    };
-  }, [files, selectedCollection]);
-
-  // Most recent `updated_on` across all files — used by the rail's
-  // "Last update" line.
-  const lastSyncedAt = useMemo(() => {
-    let best: string | null = null;
-    for (const f of files) {
-      const ts = f.updated_on ?? f.created_on;
-      if (!ts) continue;
-      if (!best || ts > best) best = ts;
-    }
-    return best;
-  }, [files]);
+  // Filter changes always snap back to page 1 — page 5 of a 12-row result
+  // would be empty.
+  useEffect(() => {
+    setPage(1);
+  }, [selectedCollection, statusFilter, debouncedQuery]);
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.listBotFiles(slug);
-      setFiles(list);
+      const documentTypes = collectionDocumentTypes(selectedCollection);
+      const res = await api.listBotFiles(slug, {
+        page,
+        pageSize: PAGE_SIZE,
+        documentTypes: documentTypes.length > 0 ? documentTypes : undefined,
+        status: statusFilter === "all" ? undefined : statusFilter,
+        q: debouncedQuery || undefined,
+      });
+      setData(res);
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load files");
     } finally {
       setLoading(false);
     }
-  }, [slug]);
+  }, [slug, page, selectedCollection, statusFilter, debouncedQuery]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Poll while anything is in pending/embedding. Pause when the tab is hidden.
+  // Poll while any file *on the current page* is mid-embed. The grand
+  // totals come back in the same response, so the rail and chips update
+  // too. Pause when the tab is hidden. Depend on `data` (the stable
+  // state reference), not a derived array — otherwise every render
+  // resets the interval and the tick never fires.
+  const items = data?.items ?? [];
   useEffect(() => {
-    const anyInFlight = files.some(
+    const anyInFlight = (data?.items ?? []).some(
       (f) => f.embedding_status === "pending" || f.embedding_status === "embedding"
     );
     if (!anyInFlight) return;
     let inFlight = false;
     const tick = async () => {
       if (document.visibilityState !== "visible") return;
-      if (inFlight) return; // don't queue if previous fetch outstanding
+      if (inFlight) return;
       inFlight = true;
       try {
         await refresh();
@@ -152,7 +142,7 @@ export default function BotFilesPage() {
     };
     const id = setInterval(tick, POLL_MS);
     return () => clearInterval(id);
-  }, [files, refresh]);
+  }, [data, refresh]);
 
   // Concurrent-upload throttle: drain the queue with at most N in flight.
   // Pass the upload object directly to startUpload — no stale-ref race.
@@ -246,8 +236,10 @@ export default function BotFilesPage() {
 
   async function onChangeType(file: BotFile, document_type: DocumentType) {
     try {
-      const updated = await api.patchBotFile(slug, file.id, { document_type });
-      setFiles((prev) => prev.map((f) => (f.id === file.id ? updated : f)));
+      await api.patchBotFile(slug, file.id, { document_type });
+      // Changing the doc type can move the row between collections, so
+      // refetch instead of patching one item locally.
+      refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Type update failed");
     }
@@ -268,8 +260,18 @@ export default function BotFilesPage() {
     }
   }
 
-  // Storage usage
-  const totalBytes = files.reduce((acc, f) => acc + (f.size_bytes ?? 0), 0);
+  // Aggregates from the server. Default to zero/empty while loading so
+  // the chips and rail don't flash with stale numbers.
+  const total = data?.total ?? 0;
+  const grandTotal = data?.grand_total ?? 0;
+  const totalBytes = data?.total_bytes ?? 0;
+  const statusCounts = data?.status_counts ?? { indexed: 0, in_progress: 0, errors: 0 };
+  const documentTypeCounts = data?.document_type_counts ?? {};
+  const lastSyncedAt = data?.last_updated_at ?? null;
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const pageEnd = Math.min(page * PAGE_SIZE, total);
 
   return (
     <>
@@ -402,7 +404,7 @@ export default function BotFilesPage() {
       {uploads.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <h2 style={{ marginTop: 0, fontSize: 14 }}>Uploads</h2>
-          <table>
+          <div className="table-scroll"><table>
             <thead>
               <tr>
                 <th>File</th>
@@ -485,7 +487,7 @@ export default function BotFilesPage() {
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
 
@@ -493,7 +495,8 @@ export default function BotFilesPage() {
 
       <div className="kb-grid" style={{ marginTop: 24 }}>
         <CollectionsRail
-          files={files}
+          documentTypeCounts={documentTypeCounts}
+          grandTotal={grandTotal}
           selected={selectedCollection}
           onSelect={(k) => {
             setSelectedCollection(k);
@@ -519,7 +522,7 @@ export default function BotFilesPage() {
                 {selectedCollection === "all" ? "All files" : `Files · ${selectedCollection}`}
               </div>
               <div className="muted" style={{ fontSize: 11.5 }}>
-                {visibleFiles.length} of {files.length} · {formatBytes(totalBytes)} total
+                {total} of {grandTotal} · {formatBytes(totalBytes)} total
               </div>
             </div>
           </div>
@@ -535,7 +538,10 @@ export default function BotFilesPage() {
               className={statusFilter === "all" ? "filter-chip active" : "filter-chip"}
               onClick={() => setStatusFilter("all")}
             >
-              All <span className="count">{statusCounts.all}</span>
+              All{" "}
+              <span className="count">
+                {statusCounts.indexed + statusCounts.in_progress + statusCounts.errors}
+              </span>
             </span>
             <span
               className={statusFilter === "indexed" ? "filter-chip active" : "filter-chip"}
@@ -557,16 +563,16 @@ export default function BotFilesPage() {
             </span>
           </div>
 
-        {loading ? (
+        {loading && data === null ? (
           <p className="muted" style={{ padding: 16 }}>Loading…</p>
-        ) : files.length === 0 ? (
+        ) : grandTotal === 0 ? (
           <p className="muted" style={{ padding: 16 }}>No files yet. Upload your first one above.</p>
-        ) : visibleFiles.length === 0 ? (
+        ) : items.length === 0 ? (
           <p className="muted" style={{ padding: 16 }}>
             No files match this filter.
           </p>
         ) : (
-          <table className="table">
+          <div className="table-scroll"><table className="table">
             <thead>
               <tr>
                 <th>Name</th>
@@ -579,7 +585,7 @@ export default function BotFilesPage() {
               </tr>
             </thead>
             <tbody>
-              {visibleFiles.map((f) => (
+              {items.map((f) => (
                 <tr key={f.id}>
                   <td className="cell-truncate" style={{ maxWidth: 280 }}>
                     {f.file_name}
@@ -610,7 +616,7 @@ export default function BotFilesPage() {
                     </span>
                   </td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>
-                    {f.created_on ? new Date(f.created_on).toLocaleString() : "—"}
+                    {f.created_at ? new Date(f.created_at).toLocaleString() : "—"}
                   </td>
                   <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                     <button
@@ -637,7 +643,43 @@ export default function BotFilesPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
+        )}
+
+        {data !== null && pageCount > 1 && (
+          <div
+            className="row"
+            style={{
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "10px 16px",
+              borderTop: "1px solid var(--border)",
+              fontSize: 12,
+            }}
+          >
+            <span className="muted">
+              {pageStart}–{pageEnd} of {total}
+            </span>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                className="ghost"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ← Prev
+              </button>
+              <span className="muted" style={{ padding: "0 6px" }}>
+                Page {page} of {pageCount}
+              </span>
+              <button
+                className="ghost"
+                disabled={page >= pageCount}
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         )}
         </div>
       </div>

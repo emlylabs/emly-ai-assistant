@@ -54,12 +54,13 @@ export default function TopBar({
         )}
       </button>
 
-      {/* Brand */}
+      {/* Brand — `brand-text` is hidden on mobile so the bot picker and
+          topbar-right can breathe. The mark stays for tap recognition. */}
       <Link href="/bots" className="topbar-brand">
         <span className="brand-mark">
           <Sparkles strokeWidth={1.75} />
         </span>
-        Emly admin
+        <span className="brand-text">Emly admin</span>
       </Link>
 
       {/* Center area — breadcrumbs (BotShell embeds the bot-picker dropdown
@@ -74,10 +75,15 @@ export default function TopBar({
       <div className="topbar-right">
         <ThemePicker />
         {email && (
-          <span className="topbar-identity">
+          <Link
+            href="/admins/me"
+            className="topbar-identity"
+            title="My profile & invitations"
+            style={{ textDecoration: "none", color: "inherit" }}
+          >
             <span className="topbar-email">{email}</span>
             {role && <span className="topbar-role" title="Your role on this bot">{role}</span>}
-          </span>
+          </Link>
         )}
         <button
           className="ghost compact-icon"

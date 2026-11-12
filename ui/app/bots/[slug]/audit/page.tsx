@@ -56,7 +56,7 @@ export default function BotAuditPage() {
       {error && <div className="error">{error}</div>}
 
       <div className="card" style={{ padding: 0 }}>
-        <table className="table">
+        <div className="table-stack"><table className="table">
           <thead>
             <tr>
               <th>When</th>
@@ -76,15 +76,15 @@ export default function BotAuditPage() {
             ) : (
               items.map((row) => (
                 <tr key={row.id}>
-                  <td className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  <td data-label="When" className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
                     {relativeTime(row.created_at)}
                   </td>
-                  <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{row.action}</td>
-                  <td className="muted">{row.admin_id ?? "—"}</td>
-                  <td className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  <td data-label="Action" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{row.action}</td>
+                  <td data-label="Admin" className="muted">{row.admin_id ?? "—"}</td>
+                  <td data-label="Target" className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
                     {row.target_type ? `${row.target_type}:${row.target_id ?? ""}` : "—"}
                   </td>
-                  <td>
+                  <td data-label="Status">
                     <StatusPill variant={row.success ? "success" : "danger"}>
                       {row.success ? "ok" : "failed"}
                     </StatusPill>
@@ -93,7 +93,7 @@ export default function BotAuditPage() {
               ))
             )}
           </tbody>
-        </table>
+        </table></div>
 
         <div className="pagination" style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", margin: 0 }}>
           <span className="muted">

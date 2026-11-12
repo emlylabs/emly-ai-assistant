@@ -33,12 +33,12 @@ type Inputs = {
 export function buildActivityEvents({ bot, files, crawlJobs, messages }: Inputs): ActivityEvent[] {
   const events: ActivityEvent[] = [];
 
-  // File uploads. Skip files without a created_on.
+  // File uploads. Skip files without a created_at.
   for (const f of files ?? []) {
-    if (!f.created_on) continue;
+    if (!f.created_at) continue;
     events.push({
       id: `file:${f.id}`,
-      ts: f.created_on,
+      ts: f.created_at,
       tone: f.embedding_status === "failed" ? "danger" : "default",
       icon: <FileText size={12} strokeWidth={1.75} />,
       title: (
@@ -52,7 +52,7 @@ export function buildActivityEvents({ bot, files, crawlJobs, messages }: Inputs)
 
   // Crawl jobs. Use the most recent timestamp available.
   for (const job of crawlJobs ?? []) {
-    const ts = job.completed_on ?? job.updated_on ?? job.created_on;
+    const ts = job.completed_at ?? job.updated_at ?? job.created_at;
     if (!ts) continue;
     const failedOrCancelled = job.status === "failed" || job.status === "cancelled";
     events.push({
@@ -89,12 +89,12 @@ export function buildActivityEvents({ bot, files, crawlJobs, messages }: Inputs)
   // Avoids hundreds of "new message" rows on busy bots.
   const seenSessions = new Set<string>();
   for (const m of messages ?? []) {
-    if (!m.session_id || !m.created_on) continue;
+    if (!m.session_id || !m.created_at) continue;
     if (seenSessions.has(m.session_id)) continue;
     seenSessions.add(m.session_id);
     events.push({
       id: `session:${m.session_id}`,
-      ts: m.created_on,
+      ts: m.created_at,
       tone: "info",
       icon: <MessageSquare size={12} strokeWidth={1.75} />,
       title: <>New conversation started</>,

@@ -1,9 +1,17 @@
 // Tiny fetch wrapper. Auth is cookie-based — every request sends
 // `credentials: "include"` so the httpOnly session cookie set by
-// `/api/admin/auth/callback` flows automatically. JS never reads or writes
-// the cookie. On 401 we redirect to the OIDC login endpoint; the session
-// cookie either lands on return or the IdP routes the user to "Request
-// access" / "Email not verified" pages.
+// `/api/admin/auth/callback` flows automatically. JS never reads or
+// writes the session cookies. The one cookie JS *can* see is
+// `session_expires_at` (httpOnly=False, sameSite=lax) — it's a
+// non-sensitive Unix timestamp that the proactive-refresh interceptor
+// reads to decide when to silently renew the id_token via
+// `POST /api/auth/refresh`. The refresh_token itself never enters JS:
+// it lives in the encrypted `emly_admin_refresh` cookie, the BFF
+// reads + decrypts it, exchanges it with the IdP, and rewrites the
+// trio of cookies (id_token / refresh_token / expires_at) on the way
+// out. On 401 we redirect to the OIDC login endpoint; the session
+// cookie either lands on return or the IdP routes the user to
+// "Request access" / "Email not verified" pages.
 
 export type AdminUser = {
   id: string;
@@ -614,12 +622,170 @@ export function loginUrl(returnTo?: string): string {
   return `/api/admin/auth/login?return_to=${encodeURIComponent(safe)}`;
 }
 
-let _redirecting = false;
+// ----- BFF session refresh -----
+//
+// The public `session_expires_at` cookie carries the Unix timestamp of
+// the id_token's expiry. The JS reads it to drive the proactive
+// silent-refresh loop: 5 minutes before expiry, if the tab is
+// visible, fire `POST /api/auth/refresh` in the background. The BFF
+// rolls the session cookies forward and the next API call lands on
+// the freshly-minted id_token without the user noticing.
+//
+// We never read the session cookie or the refresh cookie — those are
+// httpOnly. The expires_at cookie is the only signal the JS needs.
+
+const EXPIRES_COOKIE_NAME = "session_expires_at";
+/** Refresh when within this many seconds of the id_token expiring. */
+const REFRESH_LEEWAY_SECONDS = 5 * 60;
+/** Random jitter on the scheduled refresh to spread load. */
+const REFRESH_JITTER_MS = 30_000;
+
+function readSessionExpiresAt(): number | null {
+  if (typeof document === "undefined") return null;
+  const cookies = document.cookie.split("; ");
+  for (const c of cookies) {
+    const eq = c.indexOf("=");
+    if (eq < 0) continue;
+    const name = c.slice(0, eq);
+    if (name !== EXPIRES_COOKIE_NAME) continue;
+    const value = c.slice(eq + 1);
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+let _refreshScheduledFor: number | null = null;
+let _refreshInFlight: Promise<void> | null = null;
+let _onRefreshListeners: Array<(s: { ok: boolean; expiresAt: number | null }) => void> = [];
+
+export function onSessionRefresh(
+  listener: (s: { ok: boolean; expiresAt: number | null }) => void
+): () => void {
+  _onRefreshListeners.push(listener);
+  return () => {
+    _onRefreshListeners = _onRefreshListeners.filter((l) => l !== listener);
+  };
+}
+
+function _emitRefresh(status: { ok: boolean; expiresAt: number | null }) {
+  for (const l of _onRefreshListeners) {
+    try {
+      l(status);
+    } catch {
+      /* listener errors are non-fatal */
+    }
+  }
+}
+
+function _scheduleNextRefresh() {
+  if (typeof window === "undefined") return;
+  const expires = readSessionExpiresAt();
+  if (!expires) return;
+  const msUntilFire = Math.max(
+    expires * 1000 - Date.now() - REFRESH_LEEWAY_SECONDS * 1000,
+    0
+  );
+  const jitter = Math.random() * REFRESH_JITTER_MS;
+  const delay = msUntilFire + jitter;
+  _refreshScheduledFor = Date.now() + delay;
+  setTimeout(_onRefreshTimerFire, delay);
+}
+
+function _onRefreshTimerFire() {
+  if (typeof document === "undefined") return;
+  if (document.visibilityState === "visible") {
+    void _performRefresh();
+    return;
+  }
+  // Tab is hidden — defer until the user comes back. This is what
+  // makes the "user leaves the tab open overnight" case work without
+  // bouncing them through a full IdP redirect on their first
+  // click the next morning.
+  const onVisible = () => {
+    if (document.visibilityState !== "visible") return;
+    document.removeEventListener("visibilitychange", onVisible);
+    const expires = readSessionExpiresAt();
+    if (expires && expires * 1000 - Date.now() < REFRESH_LEEWAY_SECONDS * 1000) {
+      void _performRefresh();
+    } else {
+      _scheduleNextRefresh();
+    }
+  };
+  document.addEventListener("visibilitychange", onVisible);
+}
+
+async function _performRefresh(): Promise<void> {
+  // Coalesce concurrent refresh attempts — the timer + a manual
+  // click on "Sign in again to load new bots" can both fire at
+  // roughly the same time. The second caller awaits the first.
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = (async () => {
+    try {
+      const res = await api.refreshSession();
+      _emitRefresh({ ok: true, expiresAt: res.expires_at });
+    } catch (err) {
+      _emitRefresh({ ok: false, expiresAt: readSessionExpiresAt() });
+      // Re-throw so callers that want to react can (e.g. the
+      // bot-not-found page that wants to surface the failure
+      // to the user). The proactive loop swallows the error
+      // and re-schedules.
+      throw err;
+    } finally {
+      _refreshInFlight = null;
+      _scheduleNextRefresh();
+    }
+  })();
+  return _refreshInFlight;
+}
+
+/**
+ * Start the proactive silent-refresh loop. Call once on app mount
+ * (typically from a top-level component like `BotShell` or
+ * `AdminShell`).
+ *
+ * - Reads the public `session_expires_at` cookie set by the BFF.
+ * - Schedules a background `POST /api/auth/refresh` ~5 minutes
+ *   before expiry, with random jitter to spread load.
+ * - Defers the call if the tab is hidden; runs the moment the user
+ *   comes back, *before* the token actually expires.
+ * - Coalesces concurrent calls so two timers can't double-fire.
+ *
+ * Idempotent — safe to call from multiple components.
+ */
+export function startProactiveRefresh(): void {
+  if (typeof window === "undefined") return;
+  // If we already have a refresh scheduled within the next leeway
+  // window, don't re-schedule (avoids piling up timers when the
+  // shell re-mounts on bot switch).
+  if (_refreshScheduledFor && _refreshScheduledFor - Date.now() < REFRESH_LEEWAY_SECONDS * 1000) {
+    return;
+  }
+  _scheduleNextRefresh();
+}
+
+/**
+ * Force a refresh now. Returns the fresh `expires_in` / `expires_at`
+ * on success. Used by `refreshPermissions()` to sync permissions
+ * without bouncing through the IdP.
+ */
+export async function forceRefreshSession(): Promise<{ expires_in: number; expires_at: number }> {
+  return api.refreshSession();
+}
+
+/**
+ * Force a refresh *and* fetch the updated admin claims. Returns the
+ * new `AdminUser` so the caller can drop it into React state
+ * seamlessly. The BFF also rolls the session cookies forward as a
+ * side effect.
+ */
+export async function forceRefreshClaims(): Promise<{ admin: AdminUser; expires_in: number; expires_at: number }> {
+  return api.refreshClaims();
+}
+
 function redirectToLogin() {
   if (typeof window === "undefined") return;
-  if (_redirecting) return;
   if (window.location.pathname.startsWith("/login") || window.location.pathname.startsWith("/auth/")) return;
-  _redirecting = true;
   window.location.href = loginUrl();
 }
 
@@ -637,13 +803,14 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
-  opts?: { auth?: boolean }
+  opts?: { auth?: boolean; base?: string }
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const auth = opts?.auth ?? true;
+  const base = opts?.base ?? "/api/admin";
 
-  const res = await fetch(`/api/admin${path}`, {
+  const res = await fetch(`${base}${path}`, {
     method,
     headers,
     credentials: "include",
@@ -839,6 +1006,27 @@ export const api = {
   me: () => request<AdminUser>("GET", "/auth/me"),
   logout: () =>
     request<{ provider_logout_url: string | null }>("POST", "/auth/logout", undefined, { auth: false }),
+
+  // BFF silent refresh. /api/auth/refresh hits the encrypted
+  // refresh_token cookie (which the JS can't see), mints a fresh
+  // id_token from the IdP, and rolls the trio of session cookies
+  // forward. /api/auth/refresh-claims does the same and additionally
+  // returns the resolved AdminUser so the caller can update its
+  // `me` state without a separate /me round-trip.
+  refreshSession: () =>
+    request<{ expires_in: number; expires_at: number }>(
+      "POST",
+      "/refresh",
+      undefined,
+      { auth: false, base: "/api/auth" }
+    ),
+  refreshClaims: () =>
+    request<{ admin: AdminUser; expires_in: number; expires_at: number }>(
+      "POST",
+      "/refresh-claims",
+      undefined,
+      { auth: false, base: "/api/auth" }
+    ),
 
   // Phase 11 backend-backfill: audit log readers.
   listAuditLogs: (opts?: {

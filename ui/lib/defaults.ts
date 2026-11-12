@@ -24,7 +24,6 @@ export const LIMITS_DEFAULTS = {
 } as const;
 
 export const LLM_DEFAULTS = {
-  model_type: "openai",
   temperature: 0.5,
 } as const;
 

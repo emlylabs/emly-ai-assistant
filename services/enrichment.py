@@ -147,16 +147,23 @@ def _build_llm_for_bot(bot_id: str):
         if bot is None:
             return None
         cfg = dict(bot.config_json or {})
+        llm_cfg = cfg.get("llm") or {}
         # Allow opting into a cheaper enrichment model than the chat
         # model — defaults to gpt-4o-mini which is suitable for short
         # classification tasks.
-        model = cfg.get("enrichment_model") or cfg.get("model_name") or "gpt-4o-mini"
+        model = (
+            cfg.get("enrichment_model")
+            or llm_cfg.get("model")
+            or cfg.get("model_name")
+            or "gpt-4o-mini"
+        )
         api_key = get_decrypted_api_key(bot_id) or OPENAI_API_KEY
+        base_url = llm_cfg.get("api_endpoint") or OPENAI_BASE_URL
         kwargs: Dict[str, Any] = {"model": model, "temperature": 0.0, "timeout": 20, "max_retries": 1}
         if api_key:
             kwargs["api_key"] = api_key
-        if OPENAI_BASE_URL:
-            kwargs["base_url"] = OPENAI_BASE_URL
+        if base_url:
+            kwargs["base_url"] = base_url
         llm = ChatOpenAI(**kwargs)
         _LLM_CACHE[bot_id] = llm
         return llm

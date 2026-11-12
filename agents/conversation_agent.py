@@ -29,7 +29,7 @@ from config import MODEL, EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
 from agents.rag_manager import get_rag_manager
-from routes.actions import get_config_json_file
+from services.bot_config import get_config_for_bot
 from cachetools import TTLCache
 from utils.utils import clean_template_string, get_filtered_citations, filter_citations
 
@@ -317,7 +317,7 @@ class RAGManager:
         if not self.should_use_rag(topic_name):
             self.logger.warning("RAG is not enabled for topic '%s'.", topic_name)
             return "", []
-        threshold = float(get_config_json_file(self.bot_id).get("embedding_threshold", 0.20))
+        threshold = float(get_config_for_bot(self.bot_id).model_dump(mode="json").get("embedding_threshold", 0.20))
         return self.rag.search(
             bot_id=self.bot_id,
             query=query,
@@ -980,6 +980,17 @@ class AgenticConversationHandler:
                     if "_llm_telemetry" in last_node_output and last_node_output["_llm_telemetry"]:
                         final_telemetry = last_node_output["_llm_telemetry"]
 
+                # If the LLM produced no tokens (empty stream — sometimes
+                # happens on streaming chunked usage-only chunks or upstream
+                # provider hiccups), emit a clear fallback so the widget
+                # doesn't render "No response received" and we don't pollute
+                # the history with an empty assistant turn that degrades
+                # subsequent prompts.
+                if not full_response.strip():
+                    fallback = "I'm sorry, I wasn't able to generate a response. Could you please rephrase or try again?"
+                    yield {"type": "token", "data": fallback}
+                    full_response = fallback
+
                 # After stream is complete, update memory and save messages
                 self.conversation_manager.global_memory.chat_memory.add_user_message(user_input)
                 self.conversation_manager.global_memory.chat_memory.add_ai_message(full_response)
@@ -1072,7 +1083,7 @@ def create_config(bot_id: str) -> Dict[str, Any]:
     """Build the runtime config dict for a single bot.
 
     Reads ``bots.config_json`` for the given bot (which is in the
-    ``BotConfigV1`` shape from ``services/bot_config.py``) and assembles
+    ``BotConfig`` shape from ``services/bot_config.py``) and assembles
     the legacy-shaped dict the rest of this module consumes (topics,
     global_prompts, model_name, …).
     """
@@ -1086,7 +1097,7 @@ def create_config(bot_id: str) -> Dict[str, Any]:
         except LookupError:
             bot_config = {}
 
-        # New shape (BotConfigV1) has topics / global_prompts at top
+        # New shape (BotConfig) has topics / global_prompts at top
         # level. Legacy shape nested them under "agent_config". Support
         # both for transitional compat: look at the top-level first,
         # fall back to "agent_config" for old config rows.
@@ -1114,10 +1125,13 @@ def create_config(bot_id: str) -> Dict[str, Any]:
 
         config = deep_merge(default_config, config_from_file)
 
-        # LLM model: prefer the bot's per-row override (BotConfigV1.llm.model),
-        # fall back to the deployment-wide MODEL env default.
+        # LLM model: prefer the bot's per-row override (BotConfig.llm.model),
+        # fall back to the deployment-wide MODEL env default. Same for
+        # the OpenAI-compatible base URL — per-bot api_endpoint wins so a
+        # bot pointed at OpenRouter etc. works without changing deployment env.
         llm_cfg = bot_config.get("llm") or {}
         config["model_name"] = llm_cfg.get("model") or MODEL
+        config["api_endpoint"] = llm_cfg.get("api_endpoint")
         config["embedding_model_name"] = EMBEDDING_MODEL_NAME
 
         # All RAG-enabled topics share the bot's single Qdrant tenant.
@@ -1220,6 +1234,7 @@ class ConversationSessionManager:
 
         config = create_config(bot_id=bot_id)
         api_key = get_decrypted_api_key(bot_id) or OPENAI_API_KEY
+        api_endpoint = config.get("api_endpoint") or OPENAI_BASE_URL
         llm_kwargs = {
             "model": config.get("model_name", "gpt-4o-mini"),
             "temperature": TEMPERATURE,
@@ -1233,8 +1248,8 @@ class ConversationSessionManager:
         }
         if api_key:
             llm_kwargs["api_key"] = api_key
-        if OPENAI_BASE_URL:
-            llm_kwargs["base_url"] = OPENAI_BASE_URL
+        if api_endpoint:
+            llm_kwargs["base_url"] = api_endpoint
         llm = ChatOpenAI(**llm_kwargs)
         topics = {
             t_name: TopicConfig(**t_config)

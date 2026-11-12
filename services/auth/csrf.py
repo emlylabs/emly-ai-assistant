@@ -24,11 +24,13 @@ from starlette.types import ASGIApp
 
 log = logging.getLogger(__name__)
 
-_PROTECTED_PATH_PREFIXES = ("/api/admin/",)
+_PROTECTED_PATH_PREFIXES = ("/api/admin/", "/api/auth/")
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Routes that legitimately need an unauthenticated POST (no cookie, by design).
 # The login form posts into the embedded issuer with form-encoded creds — there
-# is no session cookie at that point; CSRF doesn't apply.
+# is no session cookie at that point; CSRF doesn't apply. The BFF refresh
+# endpoints (/api/auth/refresh, /api/auth/refresh-claims) are NOT in this list
+# — they require the session + refresh cookies and must pass the Origin check.
 _BYPASS_PATHS = ("/api/auth/local/authorize", "/api/auth/local/token", "/api/auth/local/logout")
 
 

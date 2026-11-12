@@ -49,8 +49,8 @@ function stubMessage(session: EmlySession): Message {
     session_id: session.id,
     message: "",
     role: "user",
-    created_on: session.last_activity_at,
-    updated_on: session.last_activity_at,
+    created_at: session.last_activity_at,
+    updated_at: session.last_activity_at,
     not_useful: false,
     expanded_query: null,
     page: null,
@@ -80,7 +80,7 @@ export function withDetail(
 ): ConversationSession {
   if (messages.length === 0) return base;
   const sorted = [...messages].sort((a, b) =>
-    a.created_on < b.created_on ? -1 : a.created_on > b.created_on ? 1 : 0,
+    a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
   );
   const first = sorted[0];
   const last = sorted[sorted.length - 1];

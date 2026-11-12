@@ -18,8 +18,8 @@ class OtpAuth(pw.Model):
     otp = pw.CharField(max_length=255)
     expires_in = pw.BigIntegerField()
     authorized = pw.BooleanField()
-    created_on = pw.DateTimeField()
-    updated_on = pw.DateTimeField()
+    created_at = pw.DateTimeField()
+    updated_at = pw.DateTimeField()
 
     class Meta:
         database = DB
@@ -34,8 +34,8 @@ class OtpAuthForm(BaseModel):
     otp: str
     expires_in: int
     authorized: bool
-    created_on: Optional[datetime] = None
-    updated_on: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class OtpAuthTable:
@@ -61,8 +61,8 @@ class OtpAuthTable:
             otp=otp,
             expires_in=expires_in,
             authorized=authorized,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
         )
         return model_to_dict(row, recurse=False) if row else None
 
@@ -81,7 +81,7 @@ class OtpAuthTable:
         try:
             (
                 OtpAuth.update(
-                    otp=otp, expires_in=expires_in, updated_on=datetime.now()
+                    otp=otp, expires_in=expires_in, updated_at=datetime.now()
                 )
                 .where((OtpAuth.bot == bot_id) & (OtpAuth.user_id == user_id))
                 .execute()

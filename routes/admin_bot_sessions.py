@@ -27,6 +27,7 @@ from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_sessions import EMLYSessionModel, EMLYSessions
 from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.authz import require_member, require_writer
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,17 +40,13 @@ def _resolve_bot(slug: str) -> BotModel:
     return bot
 
 
-def _require_member(admin_id: str, bot_id: str) -> str:
-    m = AdminBotMemberships.get(admin_id, bot_id)
-    if m is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this bot")
-    return m.role
+def _require_member(admin: AdminUserModel, bot_id: str) -> str:
+    """Honors ``is_superadmin`` via ``services.authz``."""
+    return require_member(admin, bot_id).role
 
 
-def _require_writer(admin_id: str, bot_id: str) -> None:
-    role = _require_member(admin_id, bot_id)
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read-only role on this bot")
+def _require_writer(admin: AdminUserModel, bot_id: str) -> None:
+    require_writer(admin, bot_id)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +113,7 @@ def list_sessions_daily(
     the result set is comfortably under a millisecond per thousand rows.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     from datetime import timedelta
 
     from models.emly_sessions import EMLYSession
@@ -205,7 +202,7 @@ def list_sessions(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     if started_after is not None and started_before is not None and started_after > started_before:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -242,7 +239,7 @@ def get_session(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -265,7 +262,7 @@ def resolve_session(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.mark_resolved(
@@ -300,7 +297,7 @@ def escalate_session(
     (a human picked it up). Reopen would call /resolve with is_resolved=false.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.mark_resolved(
@@ -346,7 +343,7 @@ def takeover_session(
     a clear "Channel adapter pending" tooltip.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -396,7 +393,7 @@ def release_session(
 ):
     """Release a take-over so the bot resumes responding."""
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.set_takeover(bot.id, session_id, admin_id=None)
@@ -435,7 +432,7 @@ def admin_reply(
     replies.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")

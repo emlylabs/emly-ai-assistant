@@ -189,7 +189,7 @@ export interface WidgetBotConfig {
   whatsapp_message?: string | null;
 
   /** Launcher tooltip cycle. Mirrors the `nudges` sub-tree in
-   * `BotConfigV1`. The widget reads `nudge[]` for entries (each with
+   * `BotConfig`. The widget reads `nudge[]` for entries (each with
    * `nudge_label` + `nudge_query`), `wait_time` ms before the first
    * appearance, `duration` ms each is shown, and `count` for how many
    * appearances total before stopping. */
