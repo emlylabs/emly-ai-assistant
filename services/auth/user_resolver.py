@@ -273,3 +273,8 @@ def _migrate_bootstrap_credential(email: str, admin_id: str) -> None:
     )
     LocalCredentials.delete(sentinel_id)
     log.info("Migrated bootstrap credential for %s onto admin_id=%s", email, admin_id)
+    # The generated temporary password (if any) has now been used to sign in;
+    # the plaintext copy on disk is no longer needed.
+    from services.auth.bootstrap import remove_bootstrap_password_file
+
+    remove_bootstrap_password_file()

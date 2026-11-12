@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import secrets
 import time
 import urllib.parse
 import uuid
@@ -157,94 +156,12 @@ def _init_embedded_issuer() -> None:
 
 
 def _bootstrap_pending_superadmin() -> None:
-    """Pre-stage the first admin in ``pending_admins`` from
-    ``AUTH_BOOTSTRAP_SUPERADMIN_EMAIL``.
+    """Pre-stage the first admin from ``AUTH_BOOTSTRAP_SUPERADMIN_EMAIL``.
+    See ``services.auth.bootstrap`` — a generated temporary password is
+    written to a 0600 file under DATA_DIR, never logged."""
+    from services.auth.bootstrap import bootstrap_pending_superadmin
 
-    Idempotent — runs on every boot. Behavior:
-      - No admin yet, no pending row → create both, seed credential.
-      - Pending row exists, ``AUTH_LOCAL_BOOTSTRAP_PASSWORD`` set →
-        reconcile the credential to match the env (operator's env wins).
-      - Pending row exists, env password unset → leave the existing
-        credential alone (don't churn the random one).
-      - Admin user exists (post-activation) → do nothing; password reset
-        goes through the proper change-password flow.
-
-    The temporary password is printed exactly once with the
-    ``[BOOTSTRAP]`` prefix when it was auto-generated.
-    """
-    bootstrap_email = os.environ.get("AUTH_BOOTSTRAP_SUPERADMIN_EMAIL", "").strip().lower()
-    if not bootstrap_email:
-        return
-
-    if AdminUsers.get_by_email(bootstrap_email) is not None:
-        # Already activated — env-based password reset isn't supported here.
-        # Operators use /api/auth/local/password/change (Phase 2c follow-up)
-        # or rotate via SQL.
-        return
-
-    from services.auth.issuer.factory import is_local_issuer_enabled
-    from models.pending_admins import PendingAdmins
-
-    pending_exists = PendingAdmins.get_active_by_email(bootstrap_email) is not None
-    if not pending_exists:
-        PendingAdmins.create(
-            email=bootstrap_email,
-            invited_by=None,
-            is_superadmin=True,
-            bot_assignments=[],
-        )
-
-    if not is_local_issuer_enabled():
-        return
-
-    from models.local_credentials import LocalCredentials
-    from services.auth.issuer.passwords import hash_password
-
-    sentinel_id = f"bootstrap:{bootstrap_email}"
-    env_password = os.environ.get("AUTH_LOCAL_BOOTSTRAP_PASSWORD", "").strip()
-    existing_credential = LocalCredentials.get(sentinel_id)
-
-    if existing_credential is None:
-        # First-time provisioning: use env password if set, else generate.
-        password = env_password or secrets.token_urlsafe(18)
-        LocalCredentials.upsert(
-            admin_id=sentinel_id,
-            password_hash=hash_password(password),
-            must_change=True,
-        )
-        if env_password:
-            log.warning(
-                "[BOOTSTRAP] superadmin %s — credential seeded from "
-                "AUTH_LOCAL_BOOTSTRAP_PASSWORD env var",
-                bootstrap_email,
-            )
-        else:
-            log.warning(
-                "[BOOTSTRAP] superadmin %s — temporary password: %s "
-                "(must be changed on first login; pin AUTH_LOCAL_BOOTSTRAP_PASSWORD "
-                "in env to reuse a known value across rebuilds)",
-                bootstrap_email,
-                password,
-            )
-    elif env_password:
-        # Reconcile to env — the operator changed/added AUTH_LOCAL_BOOTSTRAP_PASSWORD
-        # since the last boot, and the pending admin is still un-activated.
-        LocalCredentials.upsert(
-            admin_id=sentinel_id,
-            password_hash=hash_password(env_password),
-            must_change=True,
-        )
-        log.warning(
-            "[BOOTSTRAP] superadmin %s — credential reconciled to "
-            "AUTH_LOCAL_BOOTSTRAP_PASSWORD env var",
-            bootstrap_email,
-        )
-    else:
-        log.info(
-            "[BOOTSTRAP] superadmin %s — credential already provisioned; "
-            "set AUTH_LOCAL_BOOTSTRAP_PASSWORD to reset to a known value",
-            bootstrap_email,
-        )
+    bootstrap_pending_superadmin()
 
 
 _assert_runtime_topology()

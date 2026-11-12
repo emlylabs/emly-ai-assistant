@@ -123,7 +123,7 @@ The app includes a built-in OIDC identity provider — no external auth service 
 | Variable | What it does | Default |
 |----------|-------------|---------|
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | First admin email | `admin@example.com` |
-| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password (random if unset) | — |
+| `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password. If unset, a random one is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600, never logged) and the file is deleted after the first sign-in | — |
 | `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in auth (`true`) or external IdP (`false`) | `true` |
 
 To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.
