@@ -35,6 +35,7 @@ from fastapi.responses import Response
 from models.admin_users import AdminUserModel
 from routes.widget import resolve_bot
 from services.auth.dependencies import get_admin
+from services.authz import require_member
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -149,9 +150,10 @@ def _deployment_origin(request: Request) -> str:
 def bot_preview_qr(
     request: Request,
     bot_ref: str = Path(..., min_length=1),
-    _: AdminUserModel = Depends(get_admin),
+    admin: AdminUserModel = Depends(get_admin),
 ) -> Response:
     """Render an SVG QR that points at the bot's share-preview page.
+    Members of the bot only (any role), like the other per-bot routes.
 
     The QR encodes ``<origin>/widget-test.html?bot=<bot.id>``. The
     response is cacheable (the encoded URL is stable per bot) but we keep
@@ -159,6 +161,7 @@ def bot_preview_qr(
     proxy reconfig) doesn't strand stale codes for hours.
     """
     bot = resolve_bot(bot_ref)
+    require_member(admin, bot.id)
     origin = _deployment_origin(request)
     preview_url = f"{origin}/widget-test.html?bot={bot.id}"
 
