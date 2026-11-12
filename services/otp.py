@@ -1,8 +1,11 @@
 """OTP issuance and verification for widget auth flows."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
-import random
+import secrets
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -17,53 +20,90 @@ from config import (
 from models.otp_auth import OtpAuthorization
 from services.bot_config import get_config_for_bot
 from services.email_service import EmailSender
-from services.scheduler import scheduler
+from services.scheduler import EPHEMERAL_JOBSTORE, scheduler
+from services.secrets import derive_key
 
 log = logging.getLogger(__name__)
 
+# A code is invalidated after this many verification attempts.
+MAX_ATTEMPTS = 5
+DEFAULT_EXPIRES_IN_MINUTES = 5
+
 
 def generate_otp() -> str:
-    return str(random.randint(100000, 999999))
+    """Six-digit code from a CSPRNG."""
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def hash_code(bot_id: str, user_id: str, code: str) -> str:
+    """HMAC-SHA256 of the code, bound to the bot and user so a stored hash
+    can't be replayed against another (bot, user) row."""
+    key = derive_key("otp-v1")
+    msg = f"{bot_id}\x00{user_id}\x00{code}".encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
 def _otp_expires_in(bot_id: str) -> int:
     try:
         cfg = get_config_for_bot(bot_id).model_dump(mode="json")
     except LookupError:
-        return 5
-    return int(cfg.get("otp", {}).get("expires_in", 5))
+        return DEFAULT_EXPIRES_IN_MINUTES
+    return int((cfg.get("otp") or {}).get("expires_in", DEFAULT_EXPIRES_IN_MINUTES))
 
 
 def create_otp(payload_data: dict, bot_id: str) -> dict:
-    """Issue (or refresh) an OTP for a user under ``bot_id``."""
-    expires_in = _otp_expires_in(bot_id)
-    otp = OtpAuthorization.get_otp(bot_id=bot_id, user_id=payload_data["user_id"])
-    if otp:
-        otp = OtpAuthorization.update_otp(
-            bot_id=bot_id,
-            user_id=payload_data["user_id"],
-            otp=generate_otp(),
-            expires_in=expires_in,
-        )
-    else:
-        otp = OtpAuthorization.insert_otp(
-            bot_id=bot_id,
-            user_id=payload_data["user_id"],
-            otp_type=payload_data["otp_type"],
-            otp=generate_otp(),
-            expires_in=expires_in,
-            authorized=False,
-        )
-    payload_data["otp"] = otp["otp"]
-    scheduler.add_job(send_otp_in_email, args=[payload_data])
-    return otp
+    """Issue (or re-issue) an OTP for a user under ``bot_id`` and email it.
+
+    Only the HMAC is stored. The plaintext travels to the email job via an
+    in-memory jobstore, so it never touches the database or the persistent
+    APScheduler store.
+    """
+    user_id = payload_data["user_id"]
+    code = generate_otp()
+    row = OtpAuthorization.upsert_otp(
+        bot_id=bot_id,
+        user_id=user_id,
+        otp_type=payload_data.get("otp_type") or "email",
+        otp_hash=hash_code(bot_id, user_id, code),
+        expires_in=_otp_expires_in(bot_id),
+    )
+    scheduler.add_job(
+        send_otp_in_email,
+        args=[{**payload_data, "otp": code}],
+        jobstore=EPHEMERAL_JOBSTORE,
+    )
+    return {k: v for k, v in row.items() if k != "otp"}
+
+
+def verify_otp(bot_id: str, user_id: str, code: str) -> bool:
+    """Check a submitted code. Each call uses one attempt; the code is
+    deleted after ``MAX_ATTEMPTS`` or on first success (single use)."""
+    row = OtpAuthorization.get_otp(bot_id=bot_id, user_id=user_id)
+    if row is None:
+        return False
+
+    expires_at = row.get("expires_at")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if expires_at is None or now >= expires_at:
+        OtpAuthorization.delete_by_id(row["id"])
+        return False
+
+    if not OtpAuthorization.claim_attempt(row["id"], MAX_ATTEMPTS):
+        OtpAuthorization.delete_by_id(row["id"])
+        return False
+
+    expected = row.get("otp") or ""
+    if not hmac.compare_digest(expected, hash_code(bot_id, user_id, str(code or "").strip())):
+        if row.get("attempts", 0) + 1 >= MAX_ATTEMPTS:
+            OtpAuthorization.delete_by_id(row["id"])
+        return False
+
+    # Single use: only the request that actually deletes the row succeeds.
+    return OtpAuthorization.delete_by_id(row["id"])
 
 
 def authorize_otp(payload_data: dict, bot_id: str) -> dict:
-    otp = OtpAuthorization.validate_otp(
-        bot_id=bot_id, user_id=payload_data["user_id"], otp=payload_data["otp"]
-    )
-    if otp:
+    if verify_otp(bot_id, payload_data["user_id"], payload_data.get("otp", "")):
         return {"code": 200, "message": "OTP authorized successfully"}
     return {"code": 401, "message": "Invalid OTP"}
 

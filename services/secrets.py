@@ -89,6 +89,18 @@ def decrypt(ciphertext: Optional[str]) -> Optional[str]:
     return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
 
 
+def derive_key(purpose: str) -> bytes:
+    """Derive a 32-byte purpose-specific key from ``BOT_SECRETS_KEY``.
+
+    Used where a MAC key is needed (e.g. hashing one-time passcodes) so the
+    Fernet key itself is never reused directly for a second purpose.
+    """
+    import hashlib
+    import hmac
+
+    return hmac.new(_load_or_create_key(), f"emly:{purpose}".encode("utf-8"), hashlib.sha256).digest()
+
+
 # -------- BFF session-cookie helpers --------
 #
 # The refresh_token issued by the IdP is too sensitive to put in a JS-readable
