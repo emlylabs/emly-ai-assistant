@@ -78,3 +78,14 @@ def test_next_telemetry_disabled_in_ui_builder():
     dockerfile = (REPO_ROOT / "Dockerfile").read_text()
     stage = dockerfile.split("AS ui-builder", 1)[1].split("\nFROM ", 1)[0]
     assert re.search(r"^ENV NEXT_TELEMETRY_DISABLED=1\b", stage, re.MULTILINE)
+
+
+# --------------------------------------------------------------------- B5
+
+
+def test_start_sh_does_not_trust_every_proxy():
+    start = (REPO_ROOT / "start.sh").read_text()
+    assert "--forwarded-allow-ips '*'" not in start
+    assert '--forwarded-allow-ips "*"' not in start
+    assert re.search(r'^FORWARDED_ALLOW_IPS="\$\{FORWARDED_ALLOW_IPS:-127\.0\.0\.1\}"', start, re.MULTILINE)
+    assert '--forwarded-allow-ips "$FORWARDED_ALLOW_IPS"' in start
