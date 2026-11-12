@@ -25,7 +25,7 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
-from services.authz import require_member, require_writer
+from services.authz import require_member, require_owner, require_writer
 from services.bot_config import (
     discard_draft_for_bot,
     get_config_for_bot,
@@ -1126,6 +1126,31 @@ def bot_get_end_user(
     if u is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return u
+
+
+@router.delete("/bots/{slug}/end-users/{user_id}")
+def bot_erase_end_user(
+    slug: str,
+    user_id: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Erase one visitor of this bot (owners only): profile, sessions,
+    messages, form submissions, attachments (rows and files), channel
+    identities and OTP rows. Audited as ``end_user.erased`` with counts
+    only. 404 when nothing was stored for that id."""
+    from services.audit import audit
+    from services.data_retention import erase_end_user
+    from utils.dependencies import get_agent_service
+
+    bot = _resolve_bot(slug)
+    require_owner(admin, bot.id)
+    counts = erase_end_user(bot.id, user_id)
+    get_agent_service().forget_user(bot.id, user_id)
+    if not any(counts.values()):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    audit("end_user.erased", admin_id=admin.id, bot_id=bot.id, target_type="end_user",
+          target_id=user_id, payload=counts)
+    return {"erased": counts}
 
 
 # ---------------------------------------------------------------------------

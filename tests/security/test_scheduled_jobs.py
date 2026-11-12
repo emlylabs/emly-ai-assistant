@@ -24,6 +24,7 @@ from services.scheduler import scheduler
 scheduler.start(paused=True)
 main._register_invite_expiry_sweep()
 main._register_audit_retention_purge()
+main._register_data_retention_purge()
 jobs = {j.id: f"{j.func.__module__}:{j.func.__name__}" for j in scheduler.get_jobs(jobstore="default")}
 rows = [r[0] for r in sqlite3.connect(os.path.join(os.environ["DATA_DIR"], "actions.db"))
         .execute("select id from apscheduler_jobs")]
@@ -48,8 +49,9 @@ def test_recurring_jobs_are_persisted(tmp_path):
     assert result["jobs"] == {
         "invite_expiry_sweep": "services.invite_email:sweep_expired_invites",
         "audit_retention_purge": "services.audit:purge_expired_audit_rows",
+        "data_retention_purge": "services.data_retention:purge_expired_data",
     }
-    assert result["rows"] == ["audit_retention_purge", "invite_expiry_sweep"]
+    assert result["rows"] == ["audit_retention_purge", "data_retention_purge", "invite_expiry_sweep"]
     assert "cannot be serialized" not in proc.stderr
 
 

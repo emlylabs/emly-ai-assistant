@@ -377,6 +377,26 @@ def _boot_scheduler() -> None:
 
 
 INVITE_EXPIRY_SWEEP_REF = "services.invite_email:sweep_expired_invites"
+DATA_RETENTION_PURGE_REF = "services.data_retention:purge_expired_data"
+
+
+@app.on_event("startup")
+def _register_data_retention_purge() -> None:
+    """Nightly per-bot retention purge plus expired OTP and webhook dedupe
+    cleanup (D4). Registered by import path for the persistent jobstore."""
+    try:
+        from services.scheduler import scheduler
+
+        scheduler.add_job(
+            DATA_RETENTION_PURGE_REF,
+            "cron",
+            hour=3,
+            minute=45,
+            id="data_retention_purge",
+            replace_existing=True,
+        )
+    except Exception:
+        logging.exception("failed to register data retention purge")
 
 
 @app.on_event("startup")

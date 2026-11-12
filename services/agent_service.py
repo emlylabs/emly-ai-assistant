@@ -69,6 +69,14 @@ class AgentService:
         except Exception:
             logger.exception("invalidate_bot(%s) failed", bot_id)
 
+    def forget_user(self, bot_id: str, user_id: str) -> None:
+        if self.session_manager is None:
+            return
+        try:
+            self.session_manager.forget_user(bot_id, user_id)
+        except Exception:
+            logger.exception("forget_user failed for bot=%s", bot_id)
+
     def process_message(
         self,
         bot_id: str,

@@ -54,6 +54,10 @@ class LimitsConfig(BaseModel):
     # means only this app's own origin — the admin preview and the hosted
     # test page. Existing bots were given an explicit ["*"] by migration 010.
     widget_allowed_origins: List[str] = Field(default_factory=list)
+    # Conversations, form submissions and chat attachments older than this
+    # many days are deleted by the nightly purge (services/data_retention).
+    # None keeps them until deleted by hand.
+    retention_days: Optional[int] = Field(default=None, ge=1, le=3650)
 
 
 class LLMConfig(BaseModel):

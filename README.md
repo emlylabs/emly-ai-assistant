@@ -126,7 +126,14 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys, channel credentials and the admin refresh cookie, and signs widget tokens. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
-| `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 UTC) deletes older rows and records the purge. `0` keeps them forever | `365` |
+| `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
+| `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
+
+#### Visitor data: retention and erasure
+
+- **Retention:** each bot's *Config → Limits → Data retention* sets how many days to keep conversations. Every night (03:45) messages, conversations, form submissions and chat attachments older than that are deleted, along with visitor profiles that have nothing left. Empty keeps everything.
+- **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
+- **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
 | `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
 | `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |

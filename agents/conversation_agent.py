@@ -1288,6 +1288,14 @@ class ConversationSessionManager:
             if key.startswith(prefix):
                 del self._session_locks[key]
 
+    def forget_user(self, bot_id: str, user_id: str) -> None:
+        """Drop one visitor's in-memory conversations (erasure)."""
+        prefix = f"{bot_id}_{user_id}_"
+        for store in (self.sessions, self._session_locks):
+            for key in list(store.keys()):
+                if key.startswith(prefix):
+                    del store[key]
+
     def session_lock(self, session_key: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_key)
         if lock is None:

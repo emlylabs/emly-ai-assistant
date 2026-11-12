@@ -1427,6 +1427,12 @@ export const api = {
       "GET",
       `/bots/${encodeURIComponent(slug)}/end-users${qs({ ...opts })}`
     ),
+  // Erases everything stored about one visitor of this bot (owners only).
+  eraseBotEndUser: (slug: string, userId: string) =>
+    request<{ erased: Record<string, number> }>(
+      "DELETE",
+      `/bots/${encodeURIComponent(slug)}/end-users/${encodeURIComponent(userId)}`
+    ),
   getBotConfig: (slug: string) =>
     request<BotConfigResponse>(
       "GET",
