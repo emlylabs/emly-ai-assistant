@@ -343,6 +343,12 @@ async def upload_file(
     )
 
     _kick_embed(bot.id, file_id, str(target_path), background_tasks)
+    from services.audit import audit
+
+    audit("file.uploaded", admin_id=admin.id, bot_id=bot.id, target_type="file", target_id=file_id,
+          payload={"file_name": file.filename or target_path.name, "size_bytes": size,
+                   "mime_type": file.content_type, "document_type": document_type},
+          request=request)
     return FileResponse(
         id=file_id,
         bot_id=bot.id,
@@ -385,6 +391,10 @@ def patch_file(
             Emly_Files.update_status(bot.id, file_id, EMBEDDING_STATUS_PENDING)
             _kick_embed(bot.id, file_id, str(candidates[0]), background_tasks)
 
+    from services.audit import audit
+
+    audit("file.updated", admin_id=admin.id, bot_id=bot.id, target_type="file", target_id=file_id,
+          payload=payload.model_dump(exclude_none=True))
     return _row_to_response(Emly_Files.get_by_id(bot.id, file_id))
 
 
@@ -462,6 +472,9 @@ def delete_file(
     file_dir = _bot_uploads_dir(bot.id) / file_id
     if file_dir.exists():
         shutil.rmtree(file_dir, ignore_errors=True)
+    from services.audit import audit
+
+    audit("file.deleted", admin_id=admin.id, bot_id=bot.id, target_type="file", target_id=file_id)
 
 
 @router.post("/bots/{slug}/files/{file_id}/reindex", response_model=FileResponse)
@@ -482,6 +495,9 @@ def reindex_file(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Source file missing on disk")
     Emly_Files.update_status(bot.id, file_id, EMBEDDING_STATUS_PENDING)
     _kick_embed(bot.id, file_id, str(candidates[0]), background_tasks)
+    from services.audit import audit
+
+    audit("file.reindexed", admin_id=admin.id, bot_id=bot.id, target_type="file", target_id=file_id)
     return _row_to_response(Emly_Files.get_by_id(bot.id, file_id))
 
 
@@ -1099,4 +1115,8 @@ def reindex_all(
         Emly_Files.update_status(bot.id, row["id"], EMBEDDING_STATUS_PENDING)
         _kick_embed(bot.id, row["id"], str(candidates[0]), background_tasks)
         queued += 1
+    from services.audit import audit
+
+    audit("files.reindexed_all", admin_id=admin.id, bot_id=bot.id, target_type="bot", target_id=bot.id,
+          payload={"files_queued": queued})
     return {"status": "queued", "files_queued": queued}

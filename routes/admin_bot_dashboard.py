@@ -973,6 +973,15 @@ def bot_get_message(
     return msg
 
 
+def _audit_config_change(action: str, admin, bot, before: Optional[dict], after: Optional[dict], **extra) -> None:
+    """Audit a live-config change with a masked before/after diff (C7)."""
+    from services.audit import audit
+    from services.audit_diff import config_diff
+
+    audit(action, admin_id=admin.id, bot_id=bot.id, target_type="bot", target_id=bot.id,
+          payload={**extra, **config_diff(before, after)})
+
+
 @router.patch("/bots/{slug}/messages/{message_id}", response_model=EMLYMessageModel)
 def bot_update_message(
     slug: str,
@@ -987,6 +996,10 @@ def bot_update_message(
     updated = EMLYMessages.update_emly_message_by_id(bot.id, message_id, payload.not_useful)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    from services.audit import audit
+
+    audit("message.updated", admin_id=admin.id, bot_id=bot.id, target_type="message",
+          target_id=str(message_id), payload={"not_useful": payload.not_useful})
     return updated
 
 
@@ -1000,6 +1013,10 @@ def bot_delete_message(
     _require_writer(admin, bot.id)
     if not EMLYMessages.delete_message_by_id(bot.id, message_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    from services.audit import audit
+
+    audit("message.deleted", admin_id=admin.id, bot_id=bot.id, target_type="message",
+          target_id=str(message_id))
 
 
 # Phase 6 backend-backfill: admin override for the heuristic deflection
@@ -1264,8 +1281,13 @@ def bot_put_config(
         except Exception:
             log.exception("audit emit failed for config.save.forced bot=%s", bot.id)
 
+    before_config = dict(bot.config_json or {})
     save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
     refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
+        config_version=refreshed.config_version if refreshed else None, forced=bool(force),
+    )
     # Snapshot the just-saved config into ``bot_config_history`` so the
     # per-bot History tab can show diffs and offer rollback. Failures
     # here must not block the save (the user just clicked Save and the
@@ -1322,7 +1344,12 @@ def bot_discard_config_draft(
 ):
     bot = _resolve_bot(slug)
     _require_writer(admin, bot.id)
+    had_draft = bool(bot.config_draft_json)
     discard_draft_for_bot(bot.id)
+    from services.audit import audit
+
+    audit("config.draft.discarded", admin_id=admin.id, bot_id=bot.id, target_type="bot",
+          target_id=bot.id, payload={"had_draft": had_draft})
     refreshed = Bots.get_by_id(bot.id)
     return _build_config_response(refreshed or bot)
 
@@ -1360,8 +1387,14 @@ def bot_publish_config_draft(
                 "issues": [i.to_dict() for i in issues],
             },
         )
+    before_config = dict(bot.config_json or {})
     save_config_for_bot(bot.id, draft, admin_id=admin.id, admin_email=admin.email)
     refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.draft.published", admin, bot, before_config,
+        refreshed.config_json if refreshed else draft.model_dump(mode="json"),
+        config_version=refreshed.config_version if refreshed else None,
+    )
     try:
         from models.bot_config_history import BotConfigHistories
         BotConfigHistories.snapshot(
@@ -1398,6 +1431,11 @@ def bot_put_api_key(
     bot = _resolve_bot(slug)
     _require_writer(admin, bot.id)
     set_api_key(bot.id, payload.api_key)
+    # Record that the key changed — never its value.
+    from services.audit import audit
+
+    audit("bot.api_key.cleared" if not payload.api_key else "bot.api_key.set",
+          admin_id=admin.id, bot_id=bot.id, target_type="bot", target_id=bot.id)
     # Force the runtime to pick up the new key on the next chat.
     try:
         from utils.dependencies import AGENT_SERVICE_INSTANCE
@@ -1504,8 +1542,14 @@ def bot_restore_config_history(
     row = BotConfigHistories.get_by_id(entry_id)
     if row is None or row.bot_id != bot.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
+    before_config = dict(bot.config_json or {})
     save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
     refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.history.restored", admin, bot, before_config,
+        refreshed.config_json if refreshed else row.config_json,
+        history_entry_id=entry_id, config_version=refreshed.config_version if refreshed else None,
+    )
     try:
         BotConfigHistories.snapshot(
             bot_id=bot.id,

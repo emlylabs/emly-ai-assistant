@@ -140,6 +140,7 @@ async def update_admin(
                 detail={"code": "last_active_superadmin"},
             )
 
+    before = {"is_active": target.is_active, "is_superadmin": target.is_superadmin}
     if payload.is_active is not None:
         AdminUsers.set_active(admin_id, payload.is_active)
     if payload.is_superadmin is not None:
@@ -158,6 +159,12 @@ async def update_admin(
         payload={
             "is_active": payload.is_active,
             "is_superadmin": payload.is_superadmin,
+            # Before/after of the fields that actually changed.
+            "changed": {
+                field: {"before": before[field], "after": getattr(fresh, field)}
+                for field in before
+                if before[field] != getattr(fresh, field)
+            },
         },
     )
     return fresh
@@ -414,6 +421,8 @@ async def bulk_update_admin_memberships(
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "admin_not_found"})
     results: List[BulkMembershipResult] = []
+    # Before/after role per bot for the audit diff (C7).
+    role_changes: dict[str, dict] = {}
     for assignment in payload.assignments:
         bot = Bots.get_by_slug(assignment.bot_slug)
         if bot is None or bot.is_deleted:
@@ -425,6 +434,10 @@ async def bulk_update_admin_memberships(
             continue
         existing = AdminBotMemberships.get(admin_id, bot.id)
         desired_role = assignment.role
+        role_changes[assignment.bot_slug] = {
+            "from_role": existing.role if existing else None,
+            "to_role": desired_role,
+        }
         if desired_role is not None and desired_role not in ROLES:
             results.append(
                 BulkMembershipResult(
@@ -490,7 +503,8 @@ async def bulk_update_admin_memberships(
         target_id=admin_id,
         payload={
             "results": [
-                {"bot_slug": r.bot_slug, "status": r.status, "detail": r.detail}
+                {"bot_slug": r.bot_slug, "status": r.status, "detail": r.detail,
+                 **(role_changes.get(r.bot_slug, {}) if r.status in ("granted", "updated", "revoked") else {})}
                 for r in results
             ],
         },
