@@ -89,3 +89,12 @@ def test_start_sh_does_not_trust_every_proxy():
     assert '--forwarded-allow-ips "*"' not in start
     assert re.search(r'^FORWARDED_ALLOW_IPS="\$\{FORWARDED_ALLOW_IPS:-127\.0\.0\.1\}"', start, re.MULTILINE)
     assert '--forwarded-allow-ips "$FORWARDED_ALLOW_IPS"' in start
+
+
+# --------------------------------------------------------------------- C8
+
+
+def test_rotation_script_is_not_dockerignored():
+    ignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
+    assert "!scripts/rotate_bot_secrets.py" in ignore
+    assert "!scripts/__init__.py" in ignore

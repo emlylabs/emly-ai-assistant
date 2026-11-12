@@ -177,6 +177,9 @@ def _bootstrap_pending_superadmin() -> None:
 
 
 _assert_runtime_topology()
+# C8: production needs an explicit, valid BOT_SECRETS_KEY.
+from services.secrets import validate_configuration as _validate_secrets_key  # noqa: E402
+_validate_secrets_key()
 _init_embedded_issuer()
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()

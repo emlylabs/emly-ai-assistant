@@ -83,10 +83,11 @@ def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
     return out[:length]
 
 
-def _derive_bot_key(bot_id: str, key_version: int) -> bytes:
-    """Derive the per-bot HMAC key for the given version. Pure, no I/O."""
+def _derive_bot_key(bot_id: str, key_version: int, root: bytes | None = None) -> bytes:
+    """Derive the per-bot HMAC key for the given version from ``root``
+    (default: the current BOT_SECRETS_KEY). Pure, no I/O."""
     salt = f"{bot_id}:v{key_version}".encode("utf-8")
-    prk = _hkdf_extract(salt, _bot_root_key())
+    prk = _hkdf_extract(salt, root if root is not None else _bot_root_key())
     return _hkdf_expand(prk, WIDGET_TOKEN_INFO, length=32)
 
 
@@ -180,12 +181,17 @@ def verify(
     if key_version not in accepted_versions:
         raise WidgetTokenError("stale_key_version")
 
-    expected_sig = hmac.new(
-        _derive_bot_key(bot_id, key_version),
-        payload_b64.encode("ascii"),
-        hashlib.sha256,
-    ).digest()
-    if not hmac.compare_digest(expected_sig, sig):
+    # Tokens signed before a BOT_SECRETS_KEY rotation stay valid (C8):
+    # try the current root key, then any BOT_SECRETS_KEY_PREVIOUS.
+    from services.secrets import root_keys
+
+    if not any(
+        hmac.compare_digest(
+            hmac.new(_derive_bot_key(bot_id, key_version, root), payload_b64.encode("ascii"), hashlib.sha256).digest(),
+            sig,
+        )
+        for root in root_keys()
+    ):
         raise WidgetTokenError("bad_signature")
 
     return WidgetPrincipal(

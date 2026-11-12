@@ -30,7 +30,7 @@ import logging
 import os
 from typing import Optional
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from config import DATA_DIR
 
@@ -40,7 +40,9 @@ _SECRET_FILENAME = ".bot_secrets_key"
 
 
 def _load_or_create_key() -> bytes:
-    env_key = os.environ.get("BOT_SECRETS_KEY")
+    """The current key: ``BOT_SECRETS_KEY``, or (outside production only)
+    a key generated once and kept in ``{DATA_DIR}/.bot_secrets_key``."""
+    env_key = (os.environ.get("BOT_SECRETS_KEY") or "").strip()
     if env_key:
         return env_key.encode("utf-8")
 
@@ -62,14 +64,68 @@ def _load_or_create_key() -> bytes:
     return key
 
 
-_FERNET: Optional[Fernet] = None
+def previous_keys() -> list[bytes]:
+    """Retired keys from ``BOT_SECRETS_KEY_PREVIOUS`` (comma-separated,
+    newest first). They still decrypt and verify but never encrypt."""
+    raw = os.environ.get("BOT_SECRETS_KEY_PREVIOUS") or ""
+    return [k.strip().encode("utf-8") for k in raw.split(",") if k.strip()]
 
 
-def _get_fernet() -> Fernet:
+def root_keys() -> list[bytes]:
+    """Current key first, then previous keys."""
+    return [_load_or_create_key(), *previous_keys()]
+
+
+def validate_configuration() -> None:
+    """Boot check (C8). In production ``BOT_SECRETS_KEY`` is required — a key
+    generated into DATA_DIR is lost with the volume and can't be rotated or
+    backed up separately. Every configured key must be a valid Fernet key."""
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode() and not (os.environ.get("BOT_SECRETS_KEY") or "").strip():
+        hint = ""
+        existing = os.path.join(str(DATA_DIR), _SECRET_FILENAME)
+        if os.path.exists(existing):
+            hint = (f" A key generated earlier exists at {existing}; set BOT_SECRETS_KEY to its "
+                    "contents so already-encrypted secrets stay readable.")
+        raise RuntimeError(
+            "MODE=prod requires BOT_SECRETS_KEY (a Fernet key: python -c \"from cryptography.fernet "
+            "import Fernet; print(Fernet.generate_key().decode())\")." + hint
+        )
+    for name, key in (("BOT_SECRETS_KEY", (os.environ.get("BOT_SECRETS_KEY") or "").strip().encode()),
+                      *(("BOT_SECRETS_KEY_PREVIOUS", k) for k in previous_keys())):
+        if not key:
+            continue
+        try:
+            Fernet(key)
+        except Exception:
+            raise RuntimeError(f"{name} is not a valid Fernet key (32 url-safe base64-encoded bytes).") from None
+
+
+_FERNET: Optional[MultiFernet] = None
+
+
+def _get_fernet() -> MultiFernet:
+    """Encrypts with the current key; decrypts with the current or any
+    previous key, so rotation doesn't break stored secrets or cookies."""
     global _FERNET
     if _FERNET is None:
-        _FERNET = Fernet(_load_or_create_key())
+        _FERNET = MultiFernet([Fernet(k) for k in root_keys()])
     return _FERNET
+
+
+def reset_for_tests() -> None:
+    global _FERNET
+    _FERNET = None
+
+
+def rotate(ciphertext: Optional[str]) -> Optional[str]:
+    """Re-encrypt a stored value under the current key (decrypting with
+    whichever key it was written under). Raises ``InvalidToken`` if no
+    configured key can read it."""
+    if not ciphertext:
+        return ciphertext
+    return _get_fernet().rotate(ciphertext.encode("utf-8")).decode("utf-8")
 
 
 def encrypt(plaintext: Optional[str]) -> Optional[str]:
