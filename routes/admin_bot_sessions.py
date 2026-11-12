@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from models.admin_bot_memberships import AdminBotMemberships
@@ -27,7 +27,7 @@ from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_sessions import EMLYSessionModel, EMLYSessions
 from services.audit import audit
 from services.auth.dependencies import get_admin
-from services.authz import require_member, require_writer
+from services.authz import require_member, require_owner, require_writer
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -334,9 +334,16 @@ def _channel_kind_or_none(channel_id: Optional[str]) -> Optional[str]:
 def takeover_session(
     slug: str,
     session_id: str,
+    request: Request,
+    force: bool = Query(False, description="Take the session from another admin (owners only)."),
     admin: AdminUserModel = Depends(get_admin),
 ):
     """Pause the bot on this session and claim it for the calling admin.
+
+    If another admin already holds the session this returns 409
+    ``session_held`` (with ``held_by``). An owner of the bot (or a
+    superadmin) can pass ``force=true`` to take it over anyway; that is
+    audited as ``session.takeover.forced`` with the previous holder.
 
     Phase 10 v1: only web_widget sessions are supported. Other channel
     kinds return 400 with a documented `reason` body so the UI can render
@@ -361,13 +368,32 @@ def takeover_session(
                 ),
             },
         )
-    EMLYSessions.set_takeover(bot.id, session_id, admin_id=admin.id)
+    holder = session.taken_over_by or None
+    held_by_other = holder is not None and holder != admin.id
+    if held_by_other:
+        if not force:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "session_held", "held_by": holder},
+            )
+        # Taking a session from a colleague is an owner-level action.
+        require_owner(admin, bot.id)
+
+    if not EMLYSessions.claim_takeover(bot.id, session_id, admin_id=admin.id, force=held_by_other):
+        # Lost a race: someone else claimed it between our read and write.
+        current = EMLYSessions.get(bot.id, session_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "session_held", "held_by": current.taken_over_by if current else None},
+        )
     audit(
-        action="session.takeover.claimed",
+        action="session.takeover.forced" if held_by_other else "session.takeover.claimed",
         admin_id=admin.id,
         bot_id=bot.id,
         target_type="session",
         target_id=session_id,
+        payload={"previous_holder": holder} if held_by_other else None,
+        request=request,
     )
     try:
         from services.realtime import publish
