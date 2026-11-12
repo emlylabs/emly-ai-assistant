@@ -219,11 +219,10 @@ class CustomMiddleware(BaseHTTPMiddleware):
                 logging_context.user_id_var.set(user_id)
             if session_id:
                 logging_context.session_id_var.set(session_id)
-            # Body fallback for ``/widget/{ref}/chat`` only — the widget's
-            # localStorage-backed identity init can race with the first
-            # chat fetch, so fall back to body fields or generate fresh
-            # IDs. Response headers echo the resolved IDs so the widget
-            # can adopt them.
+            # Body fallback for ``/widget/{ref}/chat`` only — fill the
+            # user/session ids from the body when the headers are absent,
+            # and mint a session id if neither has one. Response headers
+            # echo the resolved IDs so the widget can adopt them.
             _path_parts = request.url.path.split("/")
             _is_widget_chat = (
                 len(_path_parts) == 4
@@ -242,10 +241,13 @@ class CustomMiddleware(BaseHTTPMiddleware):
 
                 body_user = data.get("user_id") if isinstance(data.get("user_id"), str) else None
                 body_session = data.get("session_id") if isinstance(data.get("session_id"), str) else None
-                user_id = user_id or body_user or f"emly-gs-{uuid.uuid4()}"
+                # No synthesized user id: the widget token (B2) names the
+                # user, and the chat route rejects a body user that differs.
+                user_id = user_id or body_user
                 session_id = session_id or body_session or f"session-{uuid.uuid4()}"
 
-                data["user_id"] = user_id
+                if user_id:
+                    data["user_id"] = user_id
                 data["session_id"] = session_id
                 data["timestamp"] = int(time.time())
                 data["page_id"] = page_id

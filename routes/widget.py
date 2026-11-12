@@ -26,7 +26,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -35,6 +35,8 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
+from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
+from services.auth.widget_hmac import WidgetPrincipal
 from services.bot_config import get_config_for_bot
 
 router = APIRouter()
@@ -73,6 +75,15 @@ def resolve_bot(bot_ref: str) -> BotModel:
 
 # Backwards-compatibility alias for existing callsites in this module.
 _resolve_bot = resolve_bot
+
+
+def widget_principal(bot_ref: str, request: Request) -> WidgetPrincipal:
+    """Dependency: the verified widget-token identity for ``bot_ref``.
+
+    Runs before body validation, so a request without a valid token gets
+    401 rather than a 422 for its body."""
+    require_bearer(request)
+    return require_widget_principal(request, resolve_bot(bot_ref))
 
 
 def _safe_url(value: Optional[str]) -> Optional[str]:
@@ -259,8 +270,8 @@ class WidgetSubmissionCountsResponse(BaseModel):
     Powers the "N of M submissions remaining" footnote and the
     post-limit engagement bubble. The widget consults this on mount and
     after each successful submission. Public-safe: only counts the
-    requesting visitor's own actions (filtered by the trusted
-    ``X-Emly-UserID`` header — same header model as the chat surface)."""
+    requesting visitor's own actions (the user in the verified widget
+    token)."""
 
     counts: Dict[str, int]
 
@@ -269,15 +280,9 @@ class WidgetSubmissionCountsResponse(BaseModel):
     "/widget/{bot_ref}/submissions/counts",
     response_model=WidgetSubmissionCountsResponse,
 )
-def widget_submission_counts(bot_ref: str, request: Request):
+def widget_submission_counts(bot_ref: str, principal: WidgetPrincipal = Depends(widget_principal)):
     bot = _resolve_bot(bot_ref)
-    user_id = request.headers.get("X-Emly-UserID")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Emly-UserID header is required",
-        )
-    counts = USER_ACTIONS.submission_counts(bot.id, user_id)
+    counts = USER_ACTIONS.submission_counts(bot.id, principal.user_id)
     return WidgetSubmissionCountsResponse(counts=counts)
 
 
@@ -314,7 +319,11 @@ class WidgetImpressionPayload(BaseModel):
 
 
 @router.post("/widget/{bot_ref}/impressions", status_code=status.HTTP_204_NO_CONTENT)
-def widget_impression(bot_ref: str, payload: WidgetImpressionPayload):
+def widget_impression(
+    bot_ref: str,
+    payload: WidgetImpressionPayload,
+    _principal: WidgetPrincipal = Depends(widget_principal),
+):
     bot = _resolve_bot(bot_ref)
     kind = (payload.type or "").lower()
     if kind not in ("short", "long"):
@@ -436,18 +445,18 @@ def widget_rate_message(
     bot_ref: str,
     message_id: int,
     payload: WidgetRatePayload,
+    principal: WidgetPrincipal = Depends(widget_principal),
 ):
     """Public rating endpoint for end users — backs CSAT.
 
     Verification model (v1):
         - The message must belong to (bot, session_id) the rater claims.
         - rating must be in {-1, 0, +1}.
-        - Anyone with a valid (session_id, message_id) pair can rate.
-          That's the same trust level as ``POST /widget/{ref}/chat`` today —
-          a follow-up can plug in widget HMAC token verification once the
-          embed bundle threads it through.
+        - A valid widget token is required, and the message must belong
+          to the token's user.
     """
     bot = _resolve_bot(bot_ref)
+    ensure_same_user(principal, payload.user_id)
     if payload.rating not in (-1, 0, 1):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -456,7 +465,7 @@ def widget_rate_message(
     msg = EMLYMessages.get_message_by_id(bot.id, message_id)
     if msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
-    if msg.session_id != payload.session_id:
+    if msg.session_id != payload.session_id or (msg.user_id and str(msg.user_id) != principal.user_id):
         # Don't leak which one mismatched — message vs session — to keep
         # the endpoint awkward to enumerate.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Message not in this session")
@@ -494,6 +503,7 @@ async def widget_action(
     request: Request,
     payload: str = Form(...),
     files: List[UploadFile] = File(default=None),
+    principal: WidgetPrincipal = Depends(widget_principal),
 ):
     """Bot-scoped form-submission / OTP endpoint.
 
@@ -521,6 +531,15 @@ async def widget_action(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid payload JSON: {e}")
 
     form_title = (payload_data.get("form_title") or "").strip().lower()
+
+    # The OTP flows key their rows by the email being verified, so their
+    # body ``user_id`` is that email rather than the visitor. Every other
+    # action must name the token's user (or omit it).
+    if form_title in ("auth_authentication", "auth_verification"):
+        ensure_same_user(principal, payload_data.get("visitor_id"))
+    else:
+        ensure_same_user(principal, payload_data.get("user_id"))
+        payload_data["user_id"] = principal.user_id
 
     # OTP flows (auth_authentication / auth_verification) — handled by
     # the same helpers the legacy route uses, but bot-scoped.
@@ -573,7 +592,8 @@ async def widget_action(
     message_id = payload_data.get("message_id")
     if message_id:
         msg = EMLYMessages.get_message_by_id(bot.id, int(message_id)) if str(message_id).isdigit() else None
-        if msg is None:
+        # Another visitor's message is reported as "not found", not 403.
+        if msg is None or (msg.user_id and str(msg.user_id) != principal.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
     user_action = USER_ACTIONS.insert_new_action(

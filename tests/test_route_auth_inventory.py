@@ -34,15 +34,10 @@ REJECTED = frozenset({401, 403})
 
 # Routes that are intentionally reachable without admin credentials.
 PUBLIC_ROUTES: dict[tuple[str, str], str] = {
-    # --- Embeddable widget: end users are anonymous; per-request widget
-    # token verification is B2's job.
-    ("POST", "/widget/{bot_slug}/chat"): "widget",
-    ("GET", "/widget/{bot_ref}/config"): "widget",
-    ("GET", "/widget/{bot_ref}/submissions/counts"): "widget",
-    ("POST", "/widget/{bot_ref}/impressions"): "widget",
-    ("POST", "/widget/{bot_ref}/init"): "widget",
-    ("POST", "/widget/{bot_ref}/messages/{message_id}/rate"): "widget",
-    ("POST", "/widget/{bot_ref}/action"): "widget",
+    # --- Embeddable widget. Only these two are public; every other widget
+    # route needs the widget token that /init issues (B2), so it must 401.
+    ("GET", "/widget/{bot_ref}/config"): "widget public config",
+    ("POST", "/widget/{bot_ref}/init"): "widget token issuance",
     # --- Channel webhooks: authenticated by the provider's signature
     # (verify_signature on each adapter), not by an admin session.
     ("POST", "/channels/{channel_type}/events"): "channel webhook (provider signature)",

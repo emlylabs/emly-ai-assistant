@@ -10,6 +10,16 @@ from utils.schemas import AgentRequest
 
 router = APIRouter()
 
+
+def _chat_principal(bot_slug: str, request: Request):
+    """Dependency: verified widget token for the bot in the path. Runs
+    before body validation so a tokenless request gets 401, not 422."""
+    from routes.widget import resolve_bot
+    from services.auth.widget_auth import require_bearer, require_widget_principal
+
+    require_bearer(request)
+    return require_widget_principal(request, resolve_bot(bot_slug))
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,6 +29,7 @@ async def widget_chat(
     request: AgentRequest,
     http_request: Request,
     agent_service: AgentService = Depends(get_agent_service),
+    principal=Depends(_chat_principal),
 ):
     """Path-based chat surface for the embed widget.
 
@@ -27,7 +38,18 @@ async def widget_chat(
     bot doesn't exist or is soft-deleted.
     """
     from routes.widget import resolve_bot
+    from services.auth.widget_auth import ensure_same_user
+
     bot = resolve_bot(bot_slug)
+    ensure_same_user(principal, request.user_id)
+
+    # Session ids are minted client-side; refuse one that belongs to
+    # another visitor so a token for user A can't continue user B's thread.
+    from models.emly_sessions import EMLYSessions
+
+    existing = EMLYSessions.get(bot.id, str(request.session_id))
+    if existing is not None and existing.user_id and existing.user_id != principal.user_id:
+        raise HTTPException(status_code=403, detail={"code": "session_not_owned"})
 
     from models.emly_users import EMLYUsers
     end_user_id = str(request.user_id) if request.user_id else None
