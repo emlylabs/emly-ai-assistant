@@ -81,3 +81,50 @@ def install(level_logger: logging.Logger | None = None, *, preserve_args: bool =
     if any(isinstance(f, RedactSecretsFilter) for f in target.filters):
         return
     target.addFilter(RedactSecretsFilter(preserve_args=preserve_args))
+
+
+# -------- process-wide installation --------
+#
+# A filter added to a *logger* only sees records created on that exact
+# logger; records from child loggers (``routes.*``, ``services.*``) propagate
+# to the parent's *handlers* without passing the parent's filters. So a
+# root-logger filter misses almost every application log line. Installing
+# redaction in the LogRecord factory instead covers every record from every
+# logger, whichever handler (current or added later) ends up emitting it.
+
+# Loggers whose formatters read ``record.args`` positionally; redact each arg
+# in place for these instead of collapsing to a pre-formatted message.
+_PRESERVE_ARGS_LOGGERS = ("uvicorn.access",)
+
+
+def redact_record(record: logging.LogRecord) -> None:
+    """Redact secrets in ``record`` in place. Records without secrets are
+    left untouched (args included), so other formatters see them as-is."""
+    try:
+        message = record.getMessage()
+        if _redact(message) == message:
+            return
+        if record.name.startswith(_PRESERVE_ARGS_LOGGERS):
+            RedactSecretsFilter(preserve_args=True).filter(record)
+        else:
+            record.msg = _redact(message)
+            record.args = ()
+    except Exception:
+        # Redaction must never break logging; leave the record as it was.
+        pass
+
+
+def install_global() -> None:
+    """Redact secrets from every log record in the process. Idempotent."""
+    previous = logging.getLogRecordFactory()
+    if getattr(previous, "_emly_redacting", False):
+        return
+
+    def factory(*args, **kwargs):
+        record = previous(*args, **kwargs)
+        redact_record(record)
+        return record
+
+    factory._emly_redacting = True  # type: ignore[attr-defined]
+    factory._emly_previous = previous  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(factory)
