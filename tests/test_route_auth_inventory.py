@@ -92,7 +92,17 @@ def probe_routes(app) -> list[dict]:
             continue
         for method in sorted((route.methods or set()) - {"HEAD"}):
             resp = client.request(method, _fill_path(route.path), follow_redirects=False)
-            results.append({"method": method, "path": route.path, "status": resp.status_code})
+            results.append({
+                "method": method,
+                "path": route.path,
+                "status": resp.status_code,
+                # B6: security headers as actually served by the full app.
+                "nosniff": resp.headers.get("x-content-type-options") == "nosniff",
+                "referrer_policy": resp.headers.get("referrer-policy"),
+                "frame_deny": resp.headers.get("x-frame-options") == "DENY"
+                and "frame-ancestors 'none'" in (resp.headers.get("content-security-policy") or ""),
+                "hsts": "strict-transport-security" in resp.headers,
+            })
     return results
 
 
@@ -190,3 +200,21 @@ def test_inventory_detects_an_unprotected_route():
     assert "POST /api/admin/leaky -> 422" in bad
     assert "GET /api/admin/also-leaky/{slug} -> 404" in bad
     assert not any("protected" in b and "leaky" not in b for b in bad)
+
+
+def test_security_headers_on_every_route(real_app_results):
+    """B6, checked against the real app: every response has nosniff and a
+    Referrer-Policy; everything except the widget surfaces is unframeable;
+    widget responses carry no framing rules; HSTS is on (APP_BASE_URL is
+    https in the probe)."""
+    from services.security_headers import is_widget_path
+
+    routes = [r for r in real_app_results if r["method"] != "MOUNT"]
+    assert all(r["nosniff"] for r in routes), [r["path"] for r in routes if not r["nosniff"]]
+    assert all(r["referrer_policy"] == "strict-origin-when-cross-origin" for r in routes)
+    assert all(r["hsts"] for r in routes)
+    widget = [r for r in routes if is_widget_path(_fill_path(r["path"]))]
+    others = [r for r in routes if not is_widget_path(_fill_path(r["path"]))]
+    assert widget and others
+    assert not [r["path"] for r in widget if r["frame_deny"]]
+    assert not [f'{r["method"]} {r["path"]}' for r in others if not r["frame_deny"]]

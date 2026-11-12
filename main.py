@@ -342,6 +342,11 @@ app.add_middleware(
 # wide-open ``*`` on actual responses with the resolved per-bot origin.
 from services.auth.widget_cors import WidgetCORSMiddleware  # noqa: E402
 app.add_middleware(WidgetCORSMiddleware)
+# Security headers (nosniff, Referrer-Policy, HSTS on https, anti-framing
+# outside the widget surfaces). Added last = outermost, so it also covers
+# responses the CORS layers short-circuit (403s, preflights).
+from services.security_headers import SecurityHeadersMiddleware  # noqa: E402
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.on_event("startup")
