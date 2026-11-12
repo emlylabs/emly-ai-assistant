@@ -142,6 +142,7 @@ class FakeOidcServer:
         leeway_seconds: int = 30,
         audience_fallback_to_client_id: bool = False,
         trust_email_unconditionally: bool = False,
+        **extra,
     ) -> OidcProvider:
         return OidcProvider(
             issuer=self.issuer,
@@ -152,4 +153,5 @@ class FakeOidcServer:
             audience_fallback_to_client_id=audience_fallback_to_client_id,
             trust_email_unconditionally=trust_email_unconditionally,
             http_client=self.client(),
+            **extra,
         )

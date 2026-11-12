@@ -76,6 +76,8 @@ class OidcProvider:
         leeway_seconds: int = 30,
         audience_fallback_to_client_id: bool = False,
         trust_email_unconditionally: bool = False,
+        request_offline_access: bool = True,
+        email_claims: tuple[str, ...] = ("email",),
         http_client: httpx.Client | None = None,
         # In-process injection used when the issuer is this same app's
         # embedded one — avoids a self-loopback HTTP call that DNS often
@@ -98,6 +100,14 @@ class OidcProvider:
         # of the claim. When False (hosted IdPs by default), we surface
         # the actual claim and let ``user_resolver`` refuse activation.
         self._trust_email_unconditionally = trust_email_unconditionally
+        # Google rejects or ignores ``offline_access``; operators turn it off
+        # with AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false. Sessions then end at
+        # id_token expiry and the BFF refresh path reports
+        # ``missing_refresh_token`` (the UI stops refreshing and re-logs in).
+        self._request_offline_access = request_offline_access
+        # Ordered claim names to read the admin's email from. Entra ID often
+        # omits ``email``; e.g. ("email", "upn") falls back to the UPN.
+        self._email_claims = tuple(email_claims) or ("email",)
 
         self._http = http_client or httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT)
         self._jwt_codec = JsonWebToken(["RS256"])
@@ -230,18 +240,31 @@ class OidcProvider:
         sub = claims.get("sub")
         if not sub:
             raise MissingClaimError("token missing `sub`")
-        email = claims.get("email")
+        email, source = None, None
+        for claim in self._email_claims:
+            value = claims.get(claim)
+            # Fallback claims (upn, preferred_username) aren't always
+            # addresses; only take a value that looks like one.
+            if isinstance(value, str) and "@" in value.strip():
+                email, source = value.strip(), claim
+                break
         if not email:
-            raise MissingClaimError("token missing `email`")
+            raise MissingClaimError(
+                "token has no email in any of: " + ", ".join(self._email_claims)
+            )
         # For the embedded issuer (or an IdP the operator has explicitly
         # marked trusted via env), a successful OIDC sign-in proves the
         # user controls the address — we own the password gate. For
         # other IdPs we pass the claim through so ``user_resolver`` can
         # refuse activation if verification didn't happen at the IdP.
+        # ``email_verified`` describes the ``email`` claim only, so an
+        # address read from a fallback claim counts as unverified.
         if self._trust_email_unconditionally:
             email_verified = True
-        else:
+        elif source == "email":
             email_verified = _coerce_email_verified(claims.get("email_verified"))
+        else:
+            email_verified = False
         return Principal(
             issuer=self._issuer,
             subject=str(sub),
@@ -268,7 +291,8 @@ class OidcProvider:
         store keyed by the original inner state (what the gateway forwards
         back on the callback).
 
-        We always append ``offline_access`` to the requested scope so the
+        Unless disabled (``request_offline_access=False``), we append
+        ``offline_access`` to the requested scope so the
         IdP returns a ``refresh_token`` alongside the id_token. This is the
         OIDC-defined scope that gates refresh-token issuance (RFC 6749 §6).
         Some IdPs (Auth0 in particular) only honour it after a consent
@@ -280,7 +304,7 @@ class OidcProvider:
         if not endpoint:
             raise RuntimeError("OIDC discovery has no authorization_endpoint")
         scope_tokens = self._scopes.split()
-        if "offline_access" not in scope_tokens:
+        if self._request_offline_access and "offline_access" not in scope_tokens:
             scope_tokens.append("offline_access")
         params = {
             "response_type": "code",

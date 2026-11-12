@@ -583,6 +583,23 @@ AUTH_OIDC_CLIENT_SECRET=your-client-secret
 APP_BASE_URL=https://emly.yourdomain.com
 ```
 
+Provider-specific settings:
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `AUTH_OIDC_REQUEST_OFFLINE_ACCESS` | Add `offline_access` to the requested scopes so the IdP issues a refresh token and sessions renew silently. **Google:** set `false`. Sessions then last until the ID token expires and admins sign in again (usually silently, through Google's own session) | `true` |
+| `AUTH_OIDC_EMAIL_CLAIMS` | Comma-separated token claims to read the admin's email from, first match wins. Only values containing `@` are used. **Entra ID** often omits `email`: use `email,upn` | `email` |
+| `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Treat every email the IdP sends as verified. An address taken from a fallback claim (`upn`, `preferred_username`) counts as **unverified** otherwise, and pending invites aren't activated for unverified addresses. Set `true` only for an IdP whose directory you control, e.g. a single-tenant Entra ID app with `upn` | `false` |
+
+```env
+# Google Workspace
+AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false
+
+# Microsoft Entra ID (single tenant)
+AUTH_OIDC_EMAIL_CLAIMS=email,upn
+AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY=true
+```
+
 The OIDC callback URL to register with your IdP is:
 ```
 https://emly.yourdomain.com/api/admin/auth/callback

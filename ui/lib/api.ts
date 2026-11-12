@@ -639,6 +639,15 @@ const EXPIRES_COOKIE_NAME = "session_expires_at";
 const REFRESH_LEEWAY_SECONDS = 5 * 60;
 /** Random jitter on the scheduled refresh to spread load. */
 const REFRESH_JITTER_MS = 30_000;
+// After a failed refresh that wasn't a 401, wait at least this long before
+// trying again, so a flaky network can't turn the loop into a tight retry.
+const REFRESH_FAILURE_BACKOFF_MS = 60_000;
+// Set when the BFF answers 401 (no refresh token — e.g. Google with
+// AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false — or the IdP rejected it).
+// Retrying can't succeed, so the loop stops; the session ends at expiry
+// and the next API call's 401 sends the user through login.
+let _refreshStopped = false;
+let _lastRefreshFailedAt = 0;
 
 function readSessionExpiresAt(): number | null {
   if (typeof document === "undefined") return null;
@@ -680,10 +689,13 @@ function _emitRefresh(status: { ok: boolean; expiresAt: number | null }) {
 
 function _scheduleNextRefresh() {
   if (typeof window === "undefined") return;
+  if (_refreshStopped) return;
   const expires = readSessionExpiresAt();
   if (!expires) return;
+  const backoff = Math.max(_lastRefreshFailedAt + REFRESH_FAILURE_BACKOFF_MS - Date.now(), 0);
   const msUntilFire = Math.max(
     expires * 1000 - Date.now() - REFRESH_LEEWAY_SECONDS * 1000,
+    backoff,
     0
   );
   const jitter = Math.random() * REFRESH_JITTER_MS;
@@ -723,8 +735,15 @@ async function _performRefresh(): Promise<void> {
   _refreshInFlight = (async () => {
     try {
       const res = await api.refreshSession();
+      _refreshStopped = false;
+      _lastRefreshFailedAt = 0;
       _emitRefresh({ ok: true, expiresAt: res.expires_at });
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        _refreshStopped = true;
+      } else {
+        _lastRefreshFailedAt = Date.now();
+      }
       _emitRefresh({ ok: false, expiresAt: readSessionExpiresAt() });
       // Re-throw so callers that want to react can (e.g. the
       // bot-not-found page that wants to surface the failure

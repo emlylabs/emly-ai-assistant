@@ -30,6 +30,12 @@ def _bool_env(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def offline_access_requested() -> bool:
+    """AUTH_OIDC_REQUEST_OFFLINE_ACCESS (default true): ask the IdP for a
+    refresh token. Turn off for Google, which doesn't accept the scope."""
+    return _bool_env("AUTH_OIDC_REQUEST_OFFLINE_ACCESS", True)
+
+
 def _required(name: str) -> str:
     v = os.environ.get(name)
     if not v:
@@ -244,6 +250,10 @@ def _build_provider() -> AuthProvider:
 
         token_exchanger = _local_token_exchange
 
+    email_claims = tuple(
+        c.strip() for c in os.environ.get("AUTH_OIDC_EMAIL_CLAIMS", "email").split(",") if c.strip()
+    ) or ("email",)
+
     return OidcProvider(
         issuer=issuer,
         audience=audience,
@@ -254,6 +264,8 @@ def _build_provider() -> AuthProvider:
         leeway_seconds=leeway,
         audience_fallback_to_client_id=aud_fallback,
         trust_email_unconditionally=trust_email_unconditionally,
+        request_offline_access=offline_access_requested(),
+        email_claims=email_claims,
         discovery_override=discovery_override,
         jwks_provider=jwks_provider,
         token_exchanger=token_exchanger,

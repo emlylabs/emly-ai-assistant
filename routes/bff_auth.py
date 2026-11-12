@@ -217,7 +217,13 @@ async def _refresh_response(
     """
     refresh_token = _extract_refresh_token(request)
     if not refresh_token:
-        audit("auth.refresh_missing", request=request, success=False)
+        # With offline_access disabled (Google) no refresh token is ever
+        # issued, so this is the normal end of a session, not an anomaly:
+        # don't fill the audit log. The UI stops its refresh loop on 401.
+        from services.auth.factory import offline_access_requested
+
+        if offline_access_requested():
+            audit("auth.refresh_missing", request=request, success=False)
         return JSONResponse(
             {"detail": {"code": "missing_refresh_token"}},
             status_code=status.HTTP_401_UNAUTHORIZED,
