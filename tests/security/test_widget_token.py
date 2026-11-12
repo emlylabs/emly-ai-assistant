@@ -132,7 +132,10 @@ def test_expired_token_is_401(env, route):
 @pytest.mark.parametrize("route", ROUTES)
 def test_tampered_token_is_401(env, route):
     token = env["token_for"](env["bot"], "alice")
-    r = _call(env, route, _auth(token[:-2] + ("AA" if not token.endswith("AA") else "BB"), "alice"))
+    payload, sig = token.rsplit(".", 1)
+    # First signature char is fully significant (the last one has padding bits).
+    tampered = payload + "." + ("A" if sig[0] != "A" else "B") + sig[1:]
+    r = _call(env, route, _auth(tampered, "alice"))
     assert r.status_code == 401, r.text
 
 
