@@ -692,7 +692,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = "==23.1.0" },
     { name = "authlib", specifier = "==1.4.1" },
     { name = "cachetools", specifier = "==7.0.6" },
-    { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "cryptography", specifier = "==47.0.0" },
     { name = "docx2txt", specifier = "==0.9" },
     { name = "fastapi", specifier = "==0.136.1" },
     { name = "httpx", specifier = "==0.28.1" },
