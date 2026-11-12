@@ -22,6 +22,7 @@
 #   docker buildx imagetools inspect node:22-slim      | grep -m1 Digest
 #   docker buildx imagetools inspect python:3.13-slim  | grep -m1 Digest
 #   docker buildx imagetools inspect docker/dockerfile:1.7 | grep -m1 Digest
+#   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version> | grep -m1 Digest
 #
 # replace the sha256 after `@` in every matching line, rebuild and run the
 # tests. Both node stages must use the same digest.
@@ -81,8 +82,9 @@ RUN --mount=type=cache,target=/ui/.next/cache \
 ################################################################################
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 
-# Install uv via pip (prebuilt wheel, no Rust compilation needed).
-RUN pip install --no-cache-dir uv==0.5.11
+# uv from its official image, pinned by digest like the base images (was an
+# unhashed pip-installed uv 0.5.11, a version with a critical advisory).
+COPY --from=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 

@@ -133,6 +133,9 @@ def test_base_images_pinned_by_digest():
     assert froms, "no FROM lines"
     for image in froms:
         assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"not pinned by digest: {image}"
+    for image in re.findall(r"COPY\s+--from=(\S+:\S+)", text):  # external images only
+        assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"not pinned by digest: {image}"
+    assert "pip install" not in text
     syntax = text.splitlines()[0]
     assert re.match(r"# syntax=docker/dockerfile:[\d.]+@sha256:[0-9a-f]{64}$", syntax), syntax
     assert "imagetools inspect" in text  # update instructions present
