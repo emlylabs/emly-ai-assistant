@@ -1,0 +1,46 @@
+"""Deployment-config guards (A11, A12, A14).
+
+These read the files as text/YAML so a later edit can't quietly reopen a
+port, restore a default password or drop a telemetry switch.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _compose() -> dict:
+    return yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+
+
+# -------------------------------------------------------------------- A11
+
+
+def test_qdrant_ports_not_published():
+    qdrant = _compose()["services"]["qdrant"]
+    assert not qdrant.get("ports"), "Qdrant must stay on the internal compose network"
+
+
+def test_qdrant_telemetry_disabled():
+    env = _compose()["services"]["qdrant"].get("environment") or {}
+    assert str(env.get("QDRANT__TELEMETRY_DISABLED")).lower() == "true"
+
+
+def test_postgres_password_has_no_default():
+    text = (REPO_ROOT / "docker-compose.yml").read_text()
+    uses = re.findall(r"\$\{POSTGRES_PASSWORD[^}]*\}", text)
+    assert uses, "compose should reference POSTGRES_PASSWORD"
+    for use in uses:
+        assert use.startswith("${POSTGRES_PASSWORD:?"), f"must be required, not defaulted: {use}"
+    assert "emlypassword" not in text
+
+
+def test_env_sample_has_no_postgres_password():
+    sample = (REPO_ROOT / ".env.sample").read_text()
+    assert re.search(r"^POSTGRES_PASSWORD=\s*$", sample, re.MULTILINE)
+    assert "emlypassword" not in sample

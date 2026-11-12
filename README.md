@@ -41,6 +41,7 @@ cp .env.sample .env
 #    - AUTH_LOCAL_BOOTSTRAP_PASSWORD     (your admin login password)
 #    - OPENAI_API_KEY     (your LLM provider API key)
 #    - OPENAI_BASE_URL    (your LLM provider base URL)
+#    - POSTGRES_PASSWORD  (required; e.g. `openssl rand -hex 24`)
 #
 #    Leave DATABASE_URL and QDRANT_URL as-is — Docker Compose
 #    overrides them to point at the containers automatically.
@@ -61,7 +62,7 @@ Open **http://localhost:8080** in your browser. Sign in with the `AUTH_BOOTSTRAP
 |---------|------|-------------|
 | **app** | 8080 | FastAPI backend + Admin UI + Widget |
 | **postgres** | (internal) | PostgreSQL database |
-| **qdrant** | 6333, 6334 | Vector database for RAG |
+| **qdrant** | (internal) | Vector database for RAG. Not published on the host; see the commented `ports:` in `docker-compose.yml` to expose it on loopback for debugging. Telemetry is disabled |
 
 ### Useful Docker Commands
 
@@ -392,8 +393,8 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/emly
 # Remote PostgreSQL (e.g., AWS RDS, Supabase, Neon, etc.)
 DATABASE_URL=postgresql://myuser:mypassword@db.example.com:5432/emly
 
-# Docker Compose PostgreSQL (already configured in docker-compose.yml)
-DATABASE_URL=postgresql://emly:emlypassword@localhost:5432/emly
+# Docker Compose PostgreSQL (uncomment its ports: in docker-compose.yml first)
+DATABASE_URL=postgresql://emly:<POSTGRES_PASSWORD>@localhost:5432/emly
 ```
 
 #### Verify Database Connection
