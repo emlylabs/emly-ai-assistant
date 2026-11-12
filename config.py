@@ -115,7 +115,9 @@ NUMBER_OF_LAST_MESSAGES = os.getenv("MAX_MESSAGE_CONTEXT", 5)
 ####################################
 # Load Email settings
 ####################################
-EMAIL_SERVER = os.getenv("EMAIL_SERVER", "smtp.resend.com")
+# No default relay: when EMAIL_SERVER is unset, email features (OTP, invites,
+# form alerts) are disabled rather than sending through a third party.
+EMAIL_SERVER = (os.getenv("EMAIL_SERVER") or "").strip() or None
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", 465))
 EMAIL_USER = os.getenv("EMAIL_USER", "resend")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")

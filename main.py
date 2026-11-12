@@ -174,6 +174,10 @@ _init_embedded_issuer()
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
+from services.email_service import log_email_status  # noqa: E402
+
+log_email_status()
+
 
 def _register_channel_adapters() -> None:
     """Import side-effect: each adapter module calls
