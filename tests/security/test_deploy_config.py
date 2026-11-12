@@ -98,3 +98,41 @@ def test_rotation_script_is_not_dockerignored():
     ignore = (REPO_ROOT / ".dockerignore").read_text().splitlines()
     assert "!scripts/rotate_bot_secrets.py" in ignore
     assert "!scripts/__init__.py" in ignore
+
+
+# ------------------------------------------------------------------ E1, E2
+
+
+def _dockerfile() -> str:
+    return (REPO_ROOT / "Dockerfile").read_text()
+
+
+def test_widget_installs_from_committed_lockfile():
+    import json
+
+    lock = json.loads((REPO_ROOT / "widget" / "package-lock.json").read_text())
+    pkg = json.loads((REPO_ROOT / "widget" / "package.json").read_text())
+    assert lock["lockfileVersion"] >= 3
+    root = lock["packages"][""]
+    assert root.get("dependencies") == pkg["dependencies"]
+    assert root.get("devDependencies") == pkg["devDependencies"]
+    for path, entry in lock["packages"].items():
+        if path and not entry.get("link"):
+            assert entry.get("resolved", "").startswith("https://registry.npmjs.org/"), path
+            assert entry.get("integrity", "").startswith("sha512-"), path
+    # Instructions only (comments may mention `npm install`); a RUN can
+    # continue onto the next line.
+    code = "\n".join(l for l in _dockerfile().splitlines() if not l.lstrip().startswith("#"))
+    assert "npm install" not in code
+    assert code.count("npm ci") == 2  # widget and admin UI
+
+
+def test_base_images_pinned_by_digest():
+    text = _dockerfile()
+    froms = re.findall(r"^FROM\s+(\S+)", text, flags=re.M)
+    assert froms, "no FROM lines"
+    for image in froms:
+        assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"not pinned by digest: {image}"
+    syntax = text.splitlines()[0]
+    assert re.match(r"# syntax=docker/dockerfile:[\d.]+@sha256:[0-9a-f]{64}$", syntax), syntax
+    assert "imagetools inspect" in text  # update instructions present

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # Build (BuildKit is required — `DOCKER_BUILDKIT=1` is the default in modern
 # Docker Desktop, set it explicitly on older daemons):
@@ -13,6 +13,18 @@
 # install — are independent of source changes and cache across rebuilds via
 # BuildKit cache mounts. The application source is the last `COPY`, so the
 # typical edit-rebuild loop only re-runs the final copy + bytecode compile.
+#
+# Base images (and the syntax frontend above) are pinned by digest so a
+# rebuild can't silently pick up a different image under the same tag. The
+# tag is kept for readability; the digest is what Docker uses. To update
+# (e.g. for base-image security fixes), get the current multi-arch digest:
+#
+#   docker buildx imagetools inspect node:22-slim      | grep -m1 Digest
+#   docker buildx imagetools inspect python:3.13-slim  | grep -m1 Digest
+#   docker buildx imagetools inspect docker/dockerfile:1.7 | grep -m1 Digest
+#
+# replace the sha256 after `@` in every matching line, rebuild and run the
+# tests. Both node stages must use the same digest.
 
 ################################################################################
 # Stage 1a — Embeddable widget bundle (webpack)
@@ -22,17 +34,17 @@
 # under widget/ rebuilds the bundle without re-running the Next.js build, and
 # vice versa. The committed copy at ui/public/emly-widget.js is overwritten in
 # the next stage so we never ship a stale bundle.
-FROM node:22-slim AS widget-builder
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS widget-builder
 
 WORKDIR /widget
 
-# Lockfile-only layer: re-runs only when package.json / a lockfile changes.
-# The widget package currently has yarn.lock / pnpm-lock.yaml but no
-# package-lock.json — `npm install` works with any of them; switch to
-# `npm ci` once a package-lock.json is committed.
-COPY widget/package.json widget/package-lock.json* widget/yarn.lock* widget/pnpm-lock.yaml* ./
+# Lockfile-only layer: re-runs only when package.json / package-lock.json
+# change. `npm ci` installs exactly what the lockfile records (and fails if
+# it is out of date with package.json). To change dependencies, run
+# `npm install <pkg>` in widget/ and commit the updated package-lock.json.
+COPY widget/package.json widget/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --no-audit --no-fund
+    npm ci --no-audit --no-fund
 
 # Source + build. Cached as long as widget/ source files don't change.
 COPY widget/ ./
@@ -42,7 +54,7 @@ RUN npm run build-widget
 ################################################################################
 # Stage 1b — Next.js admin UI (static export)
 ################################################################################
-FROM node:22-slim AS ui-builder
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS ui-builder
 
 WORKDIR /ui
 
@@ -67,7 +79,7 @@ RUN --mount=type=cache,target=/ui/.next/cache \
 ################################################################################
 # Stage 2 — Python runtime
 ################################################################################
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS runtime
 
 # Install uv via pip (prebuilt wheel, no Rust compilation needed).
 RUN pip install --no-cache-dir uv==0.5.11
