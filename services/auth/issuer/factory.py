@@ -23,9 +23,29 @@ _code_store: Optional[CodeStore] = None
 _refresh_store: Optional[RefreshTokenStore] = None
 
 
+def external_issuer_configured() -> bool:
+    """An external IdP is configured when AUTH_OIDC_ISSUER names something
+    other than this app's own base URL (which means "embedded issuer with a
+    custom iss")."""
+    issuer = (os.environ.get("AUTH_OIDC_ISSUER") or "").strip().rstrip("/")
+    if not issuer:
+        return False
+    app_base = (os.environ.get("APP_BASE_URL") or "").strip().rstrip("/")
+    return issuer != app_base
+
+
 def is_local_issuer_enabled() -> bool:
-    val = os.environ.get("AUTH_LOCAL_ISSUER_ENABLED", "true").strip().lower()
-    return val in ("1", "true", "yes", "on")
+    """AUTH_LOCAL_ISSUER_ENABLED wins when set. Otherwise the built-in
+    issuer is on, except in production (MODE=prod) when an external IdP is
+    configured — there a second, password-based way in is off by default."""
+    raw = os.environ.get("AUTH_LOCAL_ISSUER_ENABLED")
+    if raw is not None and raw.strip():
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode() and external_issuer_configured():
+        return False
+    return True
 
 
 def _keys_dir() -> str:

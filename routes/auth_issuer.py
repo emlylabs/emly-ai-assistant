@@ -22,7 +22,6 @@ deferred to Phase 2c (still in scope for Phase 2 but separately committed).
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from urllib.parse import urlencode
@@ -58,7 +57,14 @@ from services.auth.issuer.flows import (
     issue_refresh_token,
     parse_authorize_request,
 )
-from services.auth.issuer.passwords import hash_password, needs_rehash, verify_password
+from services.audit import audit
+from services.auth.issuer.passwords import (
+    hash_password,
+    min_password_length,
+    needs_rehash,
+    new_password_problem,
+    verify_password,
+)
 from services.auth.ratelimit import rate_limit
 from services.auth.issuer.tokens import mint_access_token, mint_id_token
 
@@ -237,6 +243,13 @@ _AUTHORIZE_FORM_HTML = """<!doctype html>
     button:hover {{ background: color-mix(in oklch, var(--fg) 88%, var(--surface)); }}
     button:active {{ transform: translateY(1px); }}
 
+    p.muted {{
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    input[readonly] {{ opacity: .75; }}
+
     .err {{
       margin-top: 16px;
       padding: 10px 12px;
@@ -251,7 +264,7 @@ _AUTHORIZE_FORM_HTML = """<!doctype html>
 <body>
   <main class="card">
     <p class="eyebrow">Emly admin</p>
-    <h1 style="margin-top: 8px;">Sign in</h1>
+    <h1 style="margin-top: 8px;">{title}</h1>
     <form method="post" action="/api/auth/local/authorize">
       <input type="hidden" name="client_id" value="{client_id}">
       <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -260,11 +273,8 @@ _AUTHORIZE_FORM_HTML = """<!doctype html>
       <input type="hidden" name="code_challenge" value="{code_challenge}">
       <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
       <input type="hidden" name="scope" value="{scope}">
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autofocus autocomplete="username">
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" required autocomplete="current-password">
-      <button type="submit">Sign in</button>
+      {fields_html}
+      <button type="submit">{button_label}</button>
       {error_html}
     </form>
   </main>
@@ -273,7 +283,28 @@ _AUTHORIZE_FORM_HTML = """<!doctype html>
 """
 
 
-def _render_authorize_form(*, params: dict, error: str | None = None) -> HTMLResponse:
+_SIGN_IN_FIELDS = """<label for="email">Email</label>
+      <input id="email" name="email" type="email" required autofocus autocomplete="username">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password">"""
+
+# Second step when the credential is flagged ``must_change``. The current
+# password is asked for again rather than carried in a hidden field, so the
+# plaintext never appears in the page.
+_CHANGE_PASSWORD_FIELDS = """<p class="muted">You need to choose a new password before signing in.</p>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required readonly value="{email}" autocomplete="username">
+      <label for="password">Current password</label>
+      <input id="password" name="password" type="password" required autofocus autocomplete="current-password">
+      <label for="new_password">New password (at least {min_len} characters)</label>
+      <input id="new_password" name="new_password" type="password" required minlength="{min_len}" autocomplete="new-password">
+      <label for="new_password_confirm">Repeat new password</label>
+      <input id="new_password_confirm" name="new_password_confirm" type="password" required minlength="{min_len}" autocomplete="new-password">"""
+
+
+def _render_authorize_form(
+    *, params: dict, error: str | None = None, change_password_for: str | None = None
+) -> HTMLResponse:
     """Render the local-issuer login form.
 
     All interpolated values are HTML-escaped (with quote=True so they're safe
@@ -295,6 +326,16 @@ def _render_authorize_form(*, params: dict, error: str | None = None) -> HTMLRes
         scope=html_escape(params.get("scope", "openid email profile"), quote=True),
         error_html=(
             f'<p class="err">{html_escape(error, quote=True)}</p>' if error else ""
+        ),
+        title="Choose a new password" if change_password_for else "Sign in",
+        button_label="Change password and sign in" if change_password_for else "Sign in",
+        fields_html=(
+            _CHANGE_PASSWORD_FIELDS.format(
+                email=html_escape(change_password_for, quote=True),
+                min_len=min_password_length(),
+            )
+            if change_password_for
+            else _SIGN_IN_FIELDS
         ),
     )
     return HTMLResponse(html)
@@ -349,6 +390,8 @@ async def authorize_post(
     scope: str = Form("openid email profile"),
     email: str = Form(...),
     password: str = Form(...),
+    new_password: str | None = Form(None),
+    new_password_confirm: str | None = Form(None),
 ):
     params = {
         "client_id": client_id,
@@ -400,13 +443,18 @@ async def authorize_post(
         from models.pending_admins import PendingAdmins
         pending = PendingAdmins.get_active_by_email(email)
         if pending is None:
+            audit("auth.local.login_failed", success=False, request=request,
+                  payload={"email": email.lower(), "reason": "unknown_account"})
             return _render_authorize_form(params=params, error="Invalid email or password")
         credential_key = f"bootstrap:{email.lower()}"
         token_email = pending.email
         token_name = None
         token_email_verified = True
 
+    audit_admin_id = admin.id if admin is not None else None
     if LocalCredentials.is_locked(credential_key):
+        audit("auth.local.login_blocked", admin_id=audit_admin_id, success=False, request=request,
+              payload={"email": email.lower(), "reason": "locked"})
         return _render_authorize_form(
             params=params,
             error="Account is temporarily locked due to too many failed attempts. Try again later.",
@@ -414,12 +462,21 @@ async def authorize_post(
 
     pw_hash = LocalCredentials.get_password_hash(credential_key)
     if pw_hash is None or not verify_password(password, pw_hash):
-        LocalCredentials.record_failure(
+        updated = LocalCredentials.record_failure(
             credential_key,
             lockout_threshold=lockout_threshold(),
             lockout_duration_seconds=lockout_duration_seconds(),
         )
-        return _render_authorize_form(params=params, error="Invalid email or password")
+        audit("auth.local.login_failed", admin_id=audit_admin_id, success=False, request=request,
+              payload={"email": email.lower(), "reason": "bad_password"})
+        if updated is not None and updated.failed_attempts == lockout_threshold():
+            audit("auth.local.locked_out", admin_id=audit_admin_id, success=False, request=request,
+                  payload={"email": email.lower(), "failed_attempts": updated.failed_attempts,
+                           "locked_until": updated.locked_until.isoformat() if updated.locked_until else None})
+        # On the change-password step, keep showing that step.
+        change_for = email if new_password is not None else None
+        return _render_authorize_form(params=params, error="Invalid email or password",
+                                      change_password_for=change_for)
 
     # Opportunistic Argon2 parameter upgrade. If the stored hash uses
     # outdated cost parameters, transparently rehash on this successful
@@ -430,29 +487,21 @@ async def authorize_post(
         except Exception:
             log.exception("opportunistic rehash failed for %s", credential_key)
 
-    # Optional ``must_change`` enforcement. By design ``must_change=True``
-    # is set on the bootstrap-seeded credential to signal "rotate me on
-    # first login." The rotate-password endpoint is Phase 2c future work,
-    # so out of the box this flag is informational — flipping it to a
-    # hard gate would lock out any deployment whose admin was bootstrapped
-    # before a rotate-flow exists. Operators with an out-of-band rotate
-    # path can opt in via ``AUTH_LOCAL_ENFORCE_MUST_CHANGE=true``; the
-    # bootstrap sentinel itself is always exempt so the very first login
-    # can complete and migrate to a real admin row.
-    if (
-        os.environ.get("AUTH_LOCAL_ENFORCE_MUST_CHANGE", "").strip().lower()
-        in ("1", "true", "yes", "on")
-        and not credential_key.startswith("bootstrap:")
-    ):
-        cred = LocalCredentials.get(credential_key)
-        if cred is not None and cred.must_change:
-            return _render_authorize_form(
-                params=params,
-                error=(
-                    "This account must change its password before it can sign in. "
-                    "Contact your administrator."
-                ),
-            )
+    # ``must_change`` is enforced: the bootstrap-seeded credential (and any
+    # credential an operator flags) can't be used to sign in until a new
+    # password is chosen. The password was just verified, so show (or
+    # process) the change-password step before issuing a code.
+    cred = LocalCredentials.get(credential_key)
+    if cred is not None and cred.must_change:
+        LocalCredentials.record_success(credential_key)
+        if new_password is None:
+            return _render_authorize_form(params=params, change_password_for=email)
+        problem = new_password_problem(new_password, new_password_confirm or "", current=password)
+        if problem:
+            return _render_authorize_form(params=params, error=problem, change_password_for=email)
+        LocalCredentials.upsert(credential_key, hash_password(new_password), must_change=False)
+        audit("auth.local.password_changed", admin_id=audit_admin_id, success=True, request=request,
+              payload={"email": email.lower(), "reason": "must_change"})
 
     LocalCredentials.record_success(credential_key)
 

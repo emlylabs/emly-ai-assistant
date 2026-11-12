@@ -153,10 +153,18 @@ def _init_embedded_issuer() -> None:
     """
     from services.auth.issuer.factory import get_keystore, is_local_issuer_enabled
     if not is_local_issuer_enabled():
-        log.info("Embedded OIDC issuer disabled (AUTH_LOCAL_ISSUER_ENABLED=false).")
+        log.info("Built-in sign-in issuer disabled; admins sign in through the external IdP.")
         return
     ks = get_keystore()
     log.info("Embedded OIDC issuer ready; current kid=%s", ks.current_kid())
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode():
+        log.warning(
+            "Built-in sign-in (email + password) is ACTIVE in production. Configure an "
+            "external IdP (AUTH_OIDC_ISSUER, ...) for SSO; the built-in issuer then turns "
+            "off by default, or set AUTH_LOCAL_ISSUER_ENABLED=false explicitly."
+        )
 
 
 def _bootstrap_pending_superadmin() -> None:

@@ -55,7 +55,26 @@ class LocalCredentialModel(BaseModel):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    # Naive UTC. DateTimeField has no timezone support: SQLite handed an
+    # aware value back as a *string* and Postgres ("timestamp without time
+    # zone") as a naive datetime, so comparing either with an aware "now"
+    # raised TypeError — every sign-in to a locked account crashed.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _as_naive_utc(value) -> Optional[datetime]:
+    """Coerce a stored timestamp (naive/aware datetime, or the string SQLite
+    returns for values written with an offset) to naive UTC."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _to_pydantic(row: LocalCredential) -> LocalCredentialModel:
@@ -65,7 +84,7 @@ def _to_pydantic(row: LocalCredential) -> LocalCredentialModel:
         password_set_at=data["password_set_at"],
         must_change=data["must_change"],
         failed_attempts=data["failed_attempts"],
-        locked_until=data["locked_until"],
+        locked_until=_as_naive_utc(data["locked_until"]),
     )
 
 
@@ -160,9 +179,10 @@ class LocalCredentialsTable:
             row = LocalCredential.get(LocalCredential.admin_id == admin_id)
         except DoesNotExist:
             return False
-        if row.locked_until is None:
+        locked_until = _as_naive_utc(row.locked_until)
+        if locked_until is None:
             return False
-        return row.locked_until > _now()
+        return locked_until > _now()
 
     def list_all(self) -> List[LocalCredentialModel]:
         return [_to_pydantic(r) for r in LocalCredential.select()]

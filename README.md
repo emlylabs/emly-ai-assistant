@@ -54,7 +54,7 @@ sudo chown -R 10001:10001 ./data
 docker compose up --build
 ```
 
-Open **http://localhost:8080** in your browser. Sign in with the `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` and `AUTH_LOCAL_BOOTSTRAP_PASSWORD` you set in `.env`.
+Open **http://localhost:8080** in your browser. Sign in with the `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` and `AUTH_LOCAL_BOOTSTRAP_PASSWORD` you set in `.env`. On first sign-in you'll be asked to choose a new password.
 
 ### What's Running
 
@@ -138,7 +138,8 @@ The app includes a built-in OIDC identity provider — no external auth service 
 |----------|-------------|---------|
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | First admin email | `admin@example.com` |
 | `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password. If unset, a random one is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600, never logged) and the file is deleted after the first sign-in | — |
-| `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in auth (`true`) or external IdP (`false`) | `true` |
+| `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in email + password sign-in (`true`) or only an external IdP (`false`). If unset it is on, except when `MODE=prod` and `AUTH_OIDC_ISSUER` points at an external IdP. In production the app logs a warning while built-in sign-in is active | `true` (see left) |
+| `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | Minimum length for a new built-in password. The bootstrap password, and any password flagged for change, must be replaced at first sign-in | `12` |
 
 To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.
 
