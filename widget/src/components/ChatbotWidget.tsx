@@ -22,7 +22,7 @@ import { buildCandidateSummary, extractCandidateArray } from '../utils/candidate
 import ChatSessionManager from './ChatSessionManager'; // Import ChatSessionManager
 // import { CHATBOT_THEMES, resolveChatbotTheme, type ChatbotTheme } from '../utils/chatbotThemes';
 import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, fetchBotConfig, recordImpression } from '../embed';
-import { getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
+import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
 
@@ -277,6 +277,14 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   // remaining" footnote and post-limit engagement bubble. Keyed by
   // `action_value` (= the form_title written on submit).
   const [formCounts, setFormCounts] = useState<Record<string, number>>({});
+  // Settle the visitor id + widget token before the visitor can act, so
+  // chat/form bodies are built with the id the server issued.
+  useEffect(() => {
+    ensureWidgetIdentity().catch(() => {
+      // Retried lazily by the first widget request.
+    });
+  }, []);
+
   useEffect(() => {
     const url = getSubmissionCountsUrl();
     if (!url) return;

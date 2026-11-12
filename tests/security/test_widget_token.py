@@ -235,3 +235,88 @@ def test_rotated_key_rejects_old_token_after_grace(env, monkeypatch):
     monkeypatch.setenv("WIDGET_TOKEN_ROTATION_GRACE_SECONDS", "0")
     r = env["client"].get(f"/widget/{env['bot'].id}/submissions/counts", headers=_auth(token, "alice"))
     assert r.status_code == 401
+
+
+# ------------------------------------------- Q2: who /init issues tokens for
+
+
+def _init(env, **body):
+    r = env["client"].post(f"/widget/{env['bot'].id}/init", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _give_history(bot, user_id):
+    from models.emly_users import EMLYUsers
+
+    EMLYUsers.insert_new_user(bot_id=bot.id, id=user_id, first_name=None, last_name=None,
+                              email=None, phone=None, ip="", browser="", meta=None)
+
+
+def test_init_without_user_mints_fresh_id(env):
+    assert _init(env)["user_id"].startswith("emly-")
+
+
+def test_init_keeps_unclaimed_client_id(env):
+    """First visit: the widget's own random id has no history yet."""
+    assert _init(env, user_id="emly-first-visit")["user_id"] == "emly-first-visit"
+
+
+def test_init_refuses_id_with_history_without_proof(env):
+    _give_history(env["bot"], "victim")
+    out = _init(env, user_id="victim")
+    assert out["user_id"] != "victim"
+    # The minted token is useless against the victim's data.
+    r = env["client"].get(f"/widget/{env['bot'].id}/submissions/counts",
+                          headers=_auth(out["token"], "victim"))
+    assert r.status_code == 401
+
+
+@pytest.mark.parametrize("ttl", [3600, -3600])  # valid, and expired within the renewal window
+def test_init_renews_with_previous_token(env, ttl):
+    _give_history(env["bot"], "alice")
+    previous = env["token_for"](env["bot"], "alice", ttl=ttl)
+    assert _init(env, user_id="alice", previous_token=previous)["user_id"] == "alice"
+
+
+def test_init_renewal_window_is_bounded(env, monkeypatch):
+    monkeypatch.setenv("WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS", "60")
+    _give_history(env["bot"], "alice")
+    stale = env["token_for"](env["bot"], "alice", ttl=-3600)
+    assert _init(env, user_id="alice", previous_token=stale)["user_id"] != "alice"
+
+
+def test_init_previous_token_wins_over_requested_id(env):
+    _give_history(env["bot"], "victim")
+    mine = env["token_for"](env["bot"], "alice")
+    assert _init(env, user_id="victim", previous_token=mine)["user_id"] == "alice"
+
+
+@pytest.mark.parametrize("kind", ["other_bot", "tampered", "garbage"])
+def test_init_rejects_bad_previous_token(env, kind):
+    _give_history(env["bot"], "alice")
+    if kind == "other_bot":
+        previous = env["token_for"](env["other"], "alice")
+    elif kind == "tampered":
+        token = env["token_for"](env["bot"], "alice")
+        payload, sig = token.rsplit(".", 1)
+        previous = payload + "." + ("A" if sig[0] != "A" else "B") + sig[1:]
+    else:
+        previous = "not-a-token"
+    assert _init(env, user_id="alice", previous_token=previous)["user_id"] != "alice"
+
+
+def test_init_ids_with_history_from_other_channels_are_protected(env):
+    """A Slack/Telegram user's id on the same bot has messages but maybe no
+    end-user row; it still counts as claimed."""
+    from models.emly_messages import EMLYMessages
+
+    EMLYMessages.insert_new_message(bot_id=env["bot"].id, user_id="U0SLACK123", session_id="slack-s",
+                                    role="user", message="hi", not_useful=False,
+                                    expanded_query=None, page=None)
+    assert _init(env, user_id="U0SLACK123")["user_id"] != "U0SLACK123"
+
+
+def test_init_rejects_malformed_supplied_id(env):
+    assert _init(env, user_id="x" * 300)["user_id"] != "x" * 300
+    assert _init(env, user_id="has spaces")["user_id"] != "has spaces"

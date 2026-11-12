@@ -87,3 +87,64 @@ def ensure_same_user(principal: WidgetPrincipal, claimed_user_id: Optional[str])
     """401 when a body-supplied ``user_id`` differs from the token's user."""
     if claimed_user_id and str(claimed_user_id) != principal.user_id:
         raise _unauthorized("widget_user_mismatch")
+
+
+# -------- identity for /init (Q2) --------
+
+_SUPPLIED_ID_RE = __import__("re").compile(r"^[A-Za-z0-9._:@-]{1,128}$")
+
+
+def _renewal_window_seconds() -> int:
+    import os
+
+    return int(os.environ.get("WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS", str(30 * 24 * 3600)))
+
+
+def _user_has_data(bot_id: str, user_id: str) -> bool:
+    """True when ``user_id`` already owns anything on this bot — an end-user
+    row, a session or a message. Such an id must not be handed to a caller
+    who can't prove it was issued to them."""
+    from models.emly_messages import EMLYMessage
+    from models.emly_sessions import EMLYSession
+    from models.emly_users import EMLYUser
+
+    return (
+        EMLYUser.select().where((EMLYUser.bot == bot_id) & (EMLYUser.id == user_id)).exists()
+        or EMLYSession.select().where((EMLYSession.bot_id == bot_id) & (EMLYSession.user_id == user_id)).exists()
+        or EMLYMessage.select().where((EMLYMessage.bot == bot_id) & (EMLYMessage.user_id == user_id)).exists()
+    )
+
+
+def resolve_init_user(bot, requested_user_id: Optional[str], previous_token: Optional[str]) -> tuple[str, str]:
+    """Decide which visitor id ``/init`` issues a token for.
+
+    Returns ``(user_id, how)`` where ``how`` is ``renewed``, ``claimed`` or
+    ``minted``:
+
+    * ``renewed`` — ``previous_token`` is a genuine token for this bot
+      (expired by at most the renewal window); its user is kept.
+    * ``claimed`` — the caller supplied an id that owns no data on this bot
+      yet (a first visit with a client-generated id).
+    * ``minted`` — anything else, including a supplied id that already has
+      history: a fresh server-generated id. The widget adopts it.
+    """
+    import uuid
+
+    if previous_token:
+        try:
+            principal = verify(
+                previous_token,
+                expected_bot_id=bot.id,
+                current_key_version=int(getattr(bot, "widget_key_version", 1) or 1),
+                rotated_at=_as_aware(getattr(bot, "widget_key_rotated_at", None)),
+                expired_leeway_seconds=_renewal_window_seconds(),
+            )
+            return principal.user_id, "renewed"
+        except WidgetTokenError as exc:
+            log.info("widget init: previous token not accepted bot=%s reason=%s",
+                     bot.id, str(exc).split(":", 1)[0])
+
+    requested = (requested_user_id or "").strip()
+    if requested and _SUPPLIED_ID_RE.match(requested) and not _user_has_data(bot.id, requested):
+        return requested, "claimed"
+    return f"emly-{uuid.uuid4()}", "minted"

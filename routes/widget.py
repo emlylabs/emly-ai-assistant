@@ -291,10 +291,13 @@ def widget_submission_counts(bot_ref: str, principal: WidgetPrincipal = Depends(
 # POST /widget/{bot_id}/init — issue a widget HMAC token
 # ---------------------------------------------------------------------------
 class WidgetInitRequest(BaseModel):
-    """Optional ``user_id`` lets a returning visitor keep their conversation
-    history; if absent we generate a fresh ID and return it."""
+    """``user_id`` is the widget's stored visitor id. It is kept only when
+    ``previous_token`` proves it was issued to this caller, or when it has
+    no history on this bot yet; otherwise a fresh id is returned and the
+    widget adopts it (see ``services.auth.widget_auth.resolve_init_user``)."""
 
     user_id: Optional[str] = None
+    previous_token: Optional[str] = None
 
 
 class WidgetInitResponse(BaseModel):
@@ -343,15 +346,20 @@ def widget_impression(
 def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
     """Mint a per-bot HMAC token for a widget visitor.
 
-    The widget calls this on mount; subsequent ``POST /widget/{ref}/chat``
-    submissions will (Phase 7-followup) require the returned token in the
-    ``Authorization: Bearer`` header rather than trusting the spoofable
-    ``X-Emly-UserID`` header.
+    The widget calls this on mount and sends the returned token as
+    ``Authorization: Bearer`` on every per-visitor widget route. The
+    visitor id in the response may differ from the one requested; the
+    widget adopts it.
     """
     from services.auth.widget_hmac import _ttl_seconds, issue
     bot = _resolve_bot(bot_ref)
-    requested_uid = payload.user_id if payload else None
-    user_id = requested_uid or f"emly-gs-{uuid.uuid4()}"
+    from services.auth.widget_auth import resolve_init_user
+
+    user_id, _how = resolve_init_user(
+        bot,
+        payload.user_id if payload else None,
+        payload.previous_token if payload else None,
+    )
     session_id = f"sess-{uuid.uuid4()}"
     ttl = _ttl_seconds()
     token = issue(

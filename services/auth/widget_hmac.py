@@ -137,6 +137,7 @@ def verify(
     expected_bot_id: str,
     current_key_version: int,
     rotated_at: datetime | None = None,
+    expired_leeway_seconds: int = 0,
 ) -> WidgetPrincipal:
     """Verify the token. Raises ``WidgetTokenError`` on any failure.
 
@@ -165,7 +166,9 @@ def verify(
         raise WidgetTokenError("malformed_claims")
     if bot_id != expected_bot_id:
         raise WidgetTokenError("bot_mismatch")
-    if exp < _now():
+    # A positive leeway lets /init accept a recently expired token as proof
+    # of a previously issued identity (renewal); request auth uses 0.
+    if exp + max(0, expired_leeway_seconds) < _now():
         raise WidgetTokenError("expired")
 
     accepted_versions = {current_key_version}
