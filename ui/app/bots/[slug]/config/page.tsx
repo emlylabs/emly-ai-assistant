@@ -1779,6 +1779,30 @@ function TopicEditor({
 // ---------------------------------------------------------------------------
 // LLM tab
 // ---------------------------------------------------------------------------
+function DeploymentDefaultHint({
+  hasDefault,
+  what,
+  blank,
+}: {
+  hasDefault: boolean | undefined;
+  what: string;
+  blank: boolean;
+}) {
+  if (hasDefault === undefined) return null;
+  if (hasDefault) {
+    return (
+      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+        Uses the deployment-wide {what} when blank.
+      </div>
+    );
+  }
+  return (
+    <div className={blank ? "error" : "muted"} style={{ fontSize: 12, marginTop: 4 }}>
+      Required — this deployment has no default {what}.
+    </div>
+  );
+}
+
 function LLMSection({
   slug,
   config,
@@ -1792,6 +1816,11 @@ function LLMSection({
 }) {
   const llm = config.llm ?? {};
   const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [deploymentDefaults, setDeploymentDefaults] = useState<{
+    model: boolean;
+    endpoint: boolean;
+    apiKey: boolean;
+  } | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [keySaving, setKeySaving] = useState(false);
@@ -1799,7 +1828,14 @@ function LLMSection({
   useEffect(() => {
     api
       .getBotApiKeyStatus(slug)
-      .then((r) => setHasKey(r.has_key))
+      .then((r) => {
+        setHasKey(r.has_key);
+        setDeploymentDefaults({
+          model: r.has_deployment_model,
+          endpoint: r.has_deployment_endpoint,
+          apiKey: r.has_deployment_fallback,
+        });
+      })
       .catch(() => setHasKey(null));
   }, [slug]);
 
@@ -1822,19 +1858,24 @@ function LLMSection({
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Provider</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
-        Any OpenAI-compatible chat completions endpoint. New bots default to
-        OpenRouter with the free Nemotron model — paste an OpenRouter API key
-        below and you&apos;re live.
+        Any OpenAI-compatible chat completions endpoint (OpenAI, OpenRouter,
+        Azure OpenAI, a self-hosted server…). The bot won&apos;t answer until it
+        has a model, an endpoint and an API key.
       </p>
       <div className="field">
         <label htmlFor="cfg-model">Model</label>
         <input
           id="cfg-model"
           type="text"
-          placeholder="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+          placeholder="e.g. gpt-4o-mini"
           value={llm.model ?? ""}
           onChange={(e) => patchPath(["llm", "model"], e.target.value || undefined)}
           disabled={!writable}
+        />
+        <DeploymentDefaultHint
+          hasDefault={deploymentDefaults?.model}
+          what="model"
+          blank={!llm.model}
         />
       </div>
       <div className="field">
@@ -1842,14 +1883,16 @@ function LLMSection({
         <input
           id="cfg-endpoint"
           type="url"
-          placeholder="https://openrouter.ai/api/v1"
+          placeholder="e.g. https://api.openai.com/v1"
           value={llm.api_endpoint ?? ""}
           onChange={(e) => patchPath(["llm", "api_endpoint"], e.target.value || undefined)}
           disabled={!writable}
         />
-        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Defaults to the deployment-wide base URL when blank.
-        </div>
+        <DeploymentDefaultHint
+          hasDefault={deploymentDefaults?.endpoint}
+          what="endpoint"
+          blank={!llm.api_endpoint}
+        />
       </div>
       <div className="field">
         <label>
@@ -1872,11 +1915,18 @@ function LLMSection({
       <h2 style={{ marginTop: 24 }}>API key</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
         Stored encrypted at rest. The current value is never returned —
-        only whether one is set. Falls back to the deployment-wide key when cleared.
+        only whether one is set. Falls back to the deployment-wide key, if
+        there is one, when cleared.
       </p>
       <div className="row" style={{ alignItems: "center", gap: 8 }}>
         <span className={hasKey ? "tag" : "tag muted"}>
-          {hasKey === null ? "checking…" : hasKey ? "key configured" : "no key set — using deployment fallback"}
+          {hasKey === null
+            ? "checking…"
+            : hasKey
+              ? "key configured"
+              : deploymentDefaults?.apiKey
+                ? "no key set — using deployment fallback"
+                : "no key set — the bot can't answer"}
         </span>
       </div>
       <div className="field" style={{ marginTop: 12 }}>

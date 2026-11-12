@@ -25,16 +25,12 @@ from config import (
     EMAIL_PORT,
     EMAIL_SERVER,
     EMAIL_USER,
-    MODEL,
-    OPENAI_API_KEY,
-    OPENAI_BASE_URL,
     SUMMARY_RECOMMENDATION_PROMPT,
     TIMEZONE,
 )
 from models.bots import Bots
 from models.emly_messages import EMLYMessages
 from models.emly_users import EMLYUsers
-from services.bot_config import get_decrypted_api_key
 from services.email_service import EmailSender
 from services.scheduler import scheduler
 
@@ -266,35 +262,24 @@ def _summarize_conversation(bot_id: str, messages, prompt_template: str) -> str:
     instructions = prompt_template.strip() if prompt_template else SUMMARY_RECOMMENDATION_PROMPT
     prompt = f"Here are the most recent conversations:\n\n{conversation_text}\n\n{instructions}"
 
-    model = MODEL
-    base_url = OPENAI_BASE_URL
-    if bot_id:
-        try:
-            bot = Bots.get_by_id(bot_id)
-            llm_cfg = (bot.config_json or {}).get("llm") if bot else None
-            if llm_cfg:
-                if llm_cfg.get("model"):
-                    model = llm_cfg["model"]
-                if llm_cfg.get("api_endpoint"):
-                    base_url = llm_cfg["api_endpoint"]
-        except Exception:
-            log.exception("Failed to read per-bot LLM config for bot_id=%s", bot_id)
+    from services import llm_settings
 
-    api_key = get_decrypted_api_key(bot_id) if bot_id else None
-    api_key = api_key or OPENAI_API_KEY
-    if not api_key:
-        log.warning("No LLM API key available for bot_id=%s; skipping summary", bot_id)
+    try:
+        settings = llm_settings.resolve(bot_id or None)
+    except Exception:
+        log.exception("Failed to read per-bot LLM config for bot_id=%s", bot_id)
+        return ""
+    if settings.missing:
+        log.warning("LLM not configured for bot_id=%s (missing %s); skipping summary",
+                    bot_id, ", ".join(settings.missing))
         return ""
 
     kwargs: dict[str, Any] = {
-        "model": model,
+        **settings.chat_kwargs(),
         "temperature": 0.3,
         "timeout": 30,
         "max_retries": 1,
-        "api_key": api_key,
     }
-    if base_url:
-        kwargs["base_url"] = base_url
 
     result = ChatOpenAI(**kwargs).invoke(prompt)
     return getattr(result, "content", None) or ""

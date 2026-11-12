@@ -58,7 +58,7 @@ export default function BotSetupPage() {
   const [config, setConfig] = useState<Cfg>({});
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
-  const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const [files, setFiles] = useState<BotFile[] | null>(null);
   const [fileTotal, setFileTotal] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -92,9 +92,13 @@ export default function BotSetupPage() {
   const loadKey = useCallback(async () => {
     try {
       const res = await api.getBotApiKeyStatus(bot.slug);
-      setHasKey(res.has_key);
+      setLlmStatus({
+        missing: res.missing,
+        hasDeploymentModel: res.has_deployment_model,
+        hasDeploymentEndpoint: res.has_deployment_endpoint,
+      });
     } catch {
-      setHasKey(null);
+      setLlmStatus(null);
     }
   }, [bot.slug]);
 
@@ -135,13 +139,16 @@ export default function BotSetupPage() {
 
       <SetupStepper active={activeStep} onSelect={setActiveStep} />
 
-      {hasKey === false && (
-        <MissingKeyBanner
+      {llmStatus && llmStatus.missing.length > 0 && (
+        <LlmSetupBanner
           slug={bot.slug}
           config={config}
+          version={configVersion}
+          status={llmStatus}
           writable={writable}
-          onSaved={() => {
-            loadKey();
+          onSaved={async () => {
+            await loadConfig();
+            await loadKey();
             setReloadKey((k) => k + 1);
           }}
         />
@@ -301,108 +308,156 @@ function StepCard({
   );
 }
 
-function MissingKeyBanner({
+type LlmStatus = {
+  missing: ("model" | "endpoint" | "api_key")[];
+  hasDeploymentModel: boolean;
+  hasDeploymentEndpoint: boolean;
+};
+
+function LlmSetupBanner({
   slug,
   config,
+  version,
+  status,
   writable,
   onSaved,
 }: {
   slug: string;
   config: Cfg;
+  version: number | null;
+  status: LlmStatus;
   writable: boolean;
-  onSaved: () => void;
+  onSaved: () => Promise<void>;
 }) {
+  const llm: Cfg =
+    config?.llm && typeof config.llm === "object" && !Array.isArray(config.llm)
+      ? (config.llm as Cfg)
+      : {};
+  const currentModel = typeof llm.model === "string" ? llm.model : "";
+  const currentEndpoint = typeof llm.api_endpoint === "string" ? llm.api_endpoint : "";
+  const needModel = status.missing.includes("model");
+  const needEndpoint = status.missing.includes("endpoint");
+  const needKey = status.missing.includes("api_key");
+
+  const [model, setModel] = useState("");
+  const [endpoint, setEndpoint] = useState("");
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const llm =
-    config?.llm && typeof config.llm === "object" && !Array.isArray(config.llm)
-      ? (config.llm as Cfg)
-      : {};
-  const model = typeof llm.model === "string" && llm.model ? llm.model : null;
-  const endpoint =
-    typeof llm.api_endpoint === "string" && llm.api_endpoint ? llm.api_endpoint : null;
+  const ready =
+    (!needModel || model.trim() !== "") &&
+    (!needEndpoint || endpoint.trim() !== "") &&
+    (!needKey || key.trim() !== "");
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!key.trim()) return;
+    if (!ready) return;
     setSaving(true);
     setError(null);
     try {
-      await api.putBotApiKey(slug, key.trim());
+      if (needModel || needEndpoint) {
+        const nextLlm: Cfg = { ...llm };
+        if (needModel) nextLlm.model = model.trim();
+        if (needEndpoint) nextLlm.api_endpoint = endpoint.trim();
+        await api.putBotConfig(slug, { ...config, llm: nextLlm }, version ?? undefined);
+      }
+      if (needKey) await api.putBotApiKey(slug, key.trim());
       setKey("");
-      onSaved();
+      await onSaved();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      if (err instanceof ApiError && err.status === 409) {
+        setError("Someone else just edited this bot. Reload and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to save");
+      }
     } finally {
       setSaving(false);
     }
   }
 
+  const value = (current: string, hasDefault: boolean) =>
+    current ? (
+      <code style={{ fontFamily: "var(--font-mono)" }}>{current}</code>
+    ) : hasDefault ? (
+      <span className="muted">deployment default</span>
+    ) : (
+      <span className="error">not set</span>
+    );
+
   return (
-    <div
-      className="banner warning banner-icon"
-      style={{ marginBottom: 16 }}
-    >
+    <div className="banner warning banner-icon" style={{ marginBottom: 16 }}>
       <KeyRound strokeWidth={1.75} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600 }}>This bot needs an LLM API key.</div>
+        <div style={{ fontWeight: 600 }}>Choose the LLM this bot uses.</div>
         <div style={{ fontSize: 13, marginTop: 2, color: "var(--muted)" }}>
-          The bot can&apos;t answer messages until a key is set for the model
-          and endpoint below.
+          The bot can&apos;t answer messages until it has a model, an
+          OpenAI-compatible endpoint and an API key. Visitors see a short
+          &ldquo;not available&rdquo; reply until then.
         </div>
-        <dl
-          style={{
-            margin: "8px 0 0",
-            display: "grid",
-            gridTemplateColumns: "auto 1fr",
-            columnGap: 8,
-            rowGap: 2,
-            fontSize: 12,
-          }}
-        >
-          <dt className="muted">Model</dt>
-          <dd style={{ margin: 0 }}>
-            {model ? (
-              <code style={{ fontFamily: "var(--font-mono)" }}>{model}</code>
-            ) : (
-              <span className="muted">deployment default</span>
+        {!writable || !(needModel || needEndpoint || needKey) ? (
+          <dl
+            style={{
+              margin: "8px 0 0",
+              display: "grid",
+              gridTemplateColumns: "auto 1fr",
+              columnGap: 8,
+              rowGap: 2,
+              fontSize: 12,
+            }}
+          >
+            <dt className="muted">Model</dt>
+            <dd style={{ margin: 0 }}>{value(currentModel, status.hasDeploymentModel)}</dd>
+            <dt className="muted">Endpoint</dt>
+            <dd style={{ margin: 0 }}>{value(currentEndpoint, status.hasDeploymentEndpoint)}</dd>
+            <dt className="muted">API key</dt>
+            <dd style={{ margin: 0 }}>{needKey ? <span className="error">not set</span> : "set"}</dd>
+          </dl>
+        ) : (
+          <form onSubmit={onSubmit} style={{ marginTop: 8, display: "grid", gap: 8 }}>
+            {needModel && (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="Model, e.g. gpt-4o-mini"
+                aria-label="Model"
+                style={{ fontFamily: "var(--font-mono)" }}
+                autoComplete="off"
+              />
             )}
-          </dd>
-          <dt className="muted">Endpoint</dt>
-          <dd style={{ margin: 0 }}>
-            {endpoint ? (
-              <code style={{ fontFamily: "var(--font-mono)" }}>{endpoint}</code>
-            ) : (
-              <span className="muted">deployment default</span>
+            {needEndpoint && (
+              <input
+                type="url"
+                value={endpoint}
+                onChange={(e) => setEndpoint(e.target.value)}
+                placeholder="Endpoint, e.g. https://api.openai.com/v1"
+                aria-label="API endpoint"
+                style={{ fontFamily: "var(--font-mono)" }}
+                autoComplete="off"
+              />
             )}
-          </dd>
-        </dl>
-        {writable && (
-          <form onSubmit={onSubmit} className="row" style={{ marginTop: 8, gap: 8 }}>
-            <input
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="sk-…"
-              style={{ flex: 1, fontFamily: "var(--font-mono)" }}
-              autoComplete="off"
-            />
-            <button type="submit" disabled={saving || !key.trim()}>
-              {saving ? "Saving…" : "Save key"}
-            </button>
+            {needKey && (
+              <input
+                type="password"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="API key, e.g. sk-…"
+                aria-label="API key"
+                style={{ fontFamily: "var(--font-mono)" }}
+                autoComplete="off"
+              />
+            )}
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button type="submit" disabled={saving || !ready}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
           </form>
         )}
         <div style={{ marginTop: 8, fontSize: 12 }}>
-          Don&apos;t have an OpenRouter key?{" "}
-          <a href="https://openrouter.ai/" target="_blank" rel="noopener">
-            Sign up here →
-          </a>
-        </div>
-        <div style={{ marginTop: 4, fontSize: 12 }}>
-          Want a different model or endpoint?{" "}
-          <Link href={`/bots/${slug}/config?tab=llm`}>Open LLM settings</Link>.
+          More options (temperature, changing these later) are in{" "}
+          <Link href={`/bots/${slug}/config?tab=llm`}>LLM settings</Link>.
         </div>
         {error && <div className="error" style={{ marginTop: 6 }}>{error}</div>}
       </div>

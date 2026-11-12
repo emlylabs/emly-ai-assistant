@@ -14,7 +14,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", BACKEND_DIR / "data")).resolve()
 QDRANT_DATA_PATH = f"{DATA_DIR}/qdrant_db"
 IMPRESSION_USER = "emly-gs-53f89d90-67a0-4326-b55b-3d97178ff454"
 TOP_K = int(os.getenv("RAG_TOP_K", 5))
-MODEL = os.getenv("MODEL", "google/gemma-4-26b-a4b-it:free")
+# The chat model / endpoint / key (and their MODEL, OPENAI_BASE_URL,
+# OPENAI_API_KEY deployment defaults) are resolved in services/llm_settings.py.
 MAX_TOKENS = os.getenv("MAX_TOKENS", 1024)
 
 ############# Load chunk size and chunk overlap #############
@@ -28,7 +29,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "huggingface")
 SENTENCE_TRANSFORMERS_HOME = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/embedding")
 RE_RANKING_MODEL_CACHE_FOLDER = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/re_ranking")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
 
 EMBEDDING_MODEL_INSTANCE = None
 EMBEDDING_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "Alibaba-NLP/gte-base-en-v1.5")

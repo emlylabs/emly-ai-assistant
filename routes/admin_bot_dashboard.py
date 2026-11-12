@@ -39,6 +39,8 @@ from services.config_validation import (
     ValidationContext,
     count_by_severity,
     has_deployment_api_key,
+    has_deployment_endpoint,
+    has_deployment_model,
     probe_bot_api_key,
     validate_config,
 )
@@ -149,6 +151,8 @@ def _build_validation_context(bot: BotModel) -> ValidationContext:
         file_count=file_count,
         has_bot_api_key=probe_bot_api_key(bot.id),
         has_deployment_api_key=has_deployment_api_key(),
+        has_deployment_model=has_deployment_model(),
+        has_deployment_endpoint=has_deployment_endpoint(),
         # known_model_names left None — RT3 stays dormant until we wire
         # a per-provider cache. The rule already skips gracefully.
         known_model_names=None,
@@ -1459,12 +1463,20 @@ def bot_get_api_key_status(
     """Return whether the bot has an api_key set, without leaking its
     value. Includes ``has_deployment_fallback`` so the editor's
     SummaryCard can detect the RT1 hazard (no per-bot key *and* no
-    deployment-wide fallback ⇒ chat will fail)."""
+    deployment-wide fallback ⇒ chat will fail). ``missing`` lists what the
+    live config still lacks after deployment defaults (``model``,
+    ``endpoint``, ``api_key``); while it is non-empty the bot refuses to
+    answer."""
+    from services import llm_settings
+
     bot = _resolve_bot(slug)
     _require_member(admin, bot.id)
     return {
         "has_key": bool(bot.api_key_encrypted),
         "has_deployment_fallback": has_deployment_api_key(),
+        "has_deployment_model": has_deployment_model(),
+        "has_deployment_endpoint": has_deployment_endpoint(),
+        "missing": llm_settings.resolve(bot.id).missing,
     }
 
 

@@ -1463,7 +1463,15 @@ export const api = {
       `/bots/${encodeURIComponent(slug)}/config/draft/publish`
     ),
   getBotApiKeyStatus: (slug: string) =>
-    request<{ has_key: boolean; has_deployment_fallback: boolean }>(
+    request<{
+      has_key: boolean;
+      has_deployment_fallback: boolean;
+      has_deployment_model: boolean;
+      has_deployment_endpoint: boolean;
+      // What the live config still lacks after deployment defaults; the
+      // bot refuses to answer while this is non-empty.
+      missing: ("model" | "endpoint" | "api_key")[];
+    }>(
       "GET",
       `/bots/${encodeURIComponent(slug)}/api-key/status`
     ),

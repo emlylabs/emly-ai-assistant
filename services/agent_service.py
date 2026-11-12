@@ -13,6 +13,7 @@ import traceback
 from typing import Any, Optional
 
 from agents.conversation_agent import ConversationSessionManager, setup_agent
+from services.llm_settings import NOT_CONFIGURED_REPLY, LLMNotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,15 @@ class AgentService:
         except Exception:
             logger.debug("takeover gating skipped (non-fatal)", exc_info=True)
 
-        agent_handler = self.session_manager.get_handler(bot_id, user_id, session_id)
+        try:
+            agent_handler = self.session_manager.get_handler(bot_id, user_id, session_id)
+        except LLMNotConfigured as exc:
+            # The admin hasn't picked a model / endpoint / key and the
+            # deployment has no default. Refuse with a reply that says
+            # nothing about why; the admin UI shows what is missing.
+            logger.warning("Bot %s can't answer: LLM not configured (missing %s)",
+                           bot_id, ", ".join(exc.missing))
+            return self._canned_reply(NOT_CONFIGURED_REPLY, stream)
 
         if not len(agent_handler.topics) >= 1:
             if stream:
@@ -142,6 +151,15 @@ class AgentService:
             user_id, session_id, len(message or ""),
         )
         return response
+
+    @staticmethod
+    def _canned_reply(text: str, stream: bool) -> Any:
+        if stream:
+            def stream_generator():
+                yield {"type": "token", "data": text}
+                yield {"type": "citations", "data": [], "message_id": None}
+            return stream_generator()
+        return (text, [])
 
     def is_available(self) -> bool:
         # Trigger the lazy build on first call. Subsequent calls are

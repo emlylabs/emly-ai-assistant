@@ -85,6 +85,8 @@ class ValidationContext:
     # firing a false positive when a probe is unavailable).
     has_bot_api_key: Optional[bool] = None
     has_deployment_api_key: Optional[bool] = None
+    has_deployment_model: Optional[bool] = None
+    has_deployment_endpoint: Optional[bool] = None
     known_model_names: Optional[set[str]] = None
 
 
@@ -489,6 +491,26 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
                 message="No LLM API key set for this bot and no deployment-wide fallback configured. Chat will fail with a 4xx the moment a visitor sends a message.",
             ))
 
+    # RT4 / RT5 — no model or endpoint for this bot and no deployment
+    # default (MODEL / OPENAI_BASE_URL). There is no built-in fallback, so
+    # the bot refuses to answer (services/llm_settings.py).
+    if ctx.has_deployment_model is not None and not _as_str(llm.get("model")).strip() \
+            and not ctx.has_deployment_model:
+        issues.append(Issue(
+            severity="error",
+            key="RT4_missing_model",
+            section="llm",
+            message="No model set for this bot and no deployment default. The bot will refuse to answer until a model is chosen.",
+        ))
+    if ctx.has_deployment_endpoint is not None and not _as_str(llm.get("api_endpoint")).strip() \
+            and not ctx.has_deployment_endpoint:
+        issues.append(Issue(
+            severity="error",
+            key="RT5_missing_endpoint",
+            section="llm",
+            message="No API endpoint set for this bot and no deployment default. The bot will refuse to answer until an endpoint is set.",
+        ))
+
     # RT2 — no widget origins configured. Empty is the default for new
     # bots and means only this app's own pages (preview / test link) can
     # load the widget; a customer-site embed is refused until listed.
@@ -519,11 +541,20 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
 # Probes — called by routes/admin_bot_dashboard.py when it knows the bot
 # ---------------------------------------------------------------------------
 def has_deployment_api_key() -> bool:
-    """True iff a deployment-wide LLM key is set. Today the only path is
-    ``OPENAI_API_KEY`` (see ``config.py`` and the bot-config fallback at
-    ``agents/conversation_agent.py:1225``). When we add other providers'
-    fallback envs, extend this list."""
-    return bool(os.environ.get("OPENAI_API_KEY"))
+    """True iff a deployment-wide LLM key (``OPENAI_API_KEY``) is set.
+    See ``services/llm_settings.py`` for how fallbacks apply."""
+    from services.llm_settings import deployment_api_key
+    return deployment_api_key() is not None
+
+
+def has_deployment_model() -> bool:
+    from services.llm_settings import deployment_model
+    return deployment_model() is not None
+
+
+def has_deployment_endpoint() -> bool:
+    from services.llm_settings import deployment_endpoint
+    return deployment_endpoint() is not None
 
 
 def probe_bot_api_key(bot_id: str) -> bool:
@@ -546,6 +577,8 @@ __all__ = [
     "count_by_severity",
     "group_issues",
     "has_deployment_api_key",
+    "has_deployment_endpoint",
+    "has_deployment_model",
     "probe_bot_api_key",
     "validate_config",
 ]

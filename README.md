@@ -39,9 +39,11 @@ cp .env.sample .env
 # 3. Open .env and fill in at minimum:
 #    - AUTH_BOOTSTRAP_SUPERADMIN_EMAIL  (your admin login email)
 #    - AUTH_LOCAL_BOOTSTRAP_PASSWORD     (your admin login password)
-#    - OPENAI_API_KEY     (your LLM provider API key)
-#    - OPENAI_BASE_URL    (your LLM provider base URL)
 #    - POSTGRES_PASSWORD  (required; e.g. `openssl rand -hex 24`)
+#
+#    The LLM (model, endpoint, API key) is chosen per bot in the setup
+#    wizard. To give every bot a default instead, also set MODEL,
+#    OPENAI_BASE_URL and OPENAI_API_KEY.
 #
 #    Leave DATABASE_URL and QDRANT_URL as-is — Docker Compose
 #    overrides them to point at the containers automatically.
@@ -105,6 +107,16 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 | `QDRANT_URL` | Vector database URL (leave unset for embedded mode) | `http://localhost:6333` |
 | `DATA_DIR` | Where the app stores files, models, and database | `./data` (local) / `/app/data` (Docker) |
 | `SENTENCE_TRANSFORMERS_HOME` | Embedding model cache directory | `./data/models/embedding` (local) / `/app/data/models/embedding` (Docker) |
+
+### LLM provider
+
+Each bot has its own model, endpoint and API key, set in the setup wizard or the bot's LLM settings. These variables are optional defaults for bots that leave a value blank. There is no built-in model or endpoint: a bot that still lacks one after these defaults refuses to answer (visitors get a short "not available" reply) and its config page shows what is missing.
+
+| Variable | What it does | Default |
+|----------|-------------|---------|
+| `MODEL` | Default model name, e.g. `gpt-4o-mini` | unset |
+| `OPENAI_BASE_URL` | Default OpenAI-compatible endpoint, including the version path, e.g. `https://api.openai.com/v1` or `https://openrouter.ai/api/v1` | unset |
+| `OPENAI_API_KEY` | Default API key (also the embedding key when `EMBEDDING_PROVIDER=openai`) | unset |
 
 ### Runtime and Security
 
@@ -502,7 +514,7 @@ cp .env.sample .env
 #   SENTENCE_TRANSFORMERS_HOME=./data/models/embedding
 #   DATABASE_URL=postgresql://emly:your_password@localhost:5432/emly
 #   AUTH_BOOTSTRAP_SUPERADMIN_EMAIL, AUTH_LOCAL_BOOTSTRAP_PASSWORD
-#   OPENAI_API_KEY, OPENAI_BASE_URL
+#   Optionally MODEL, OPENAI_BASE_URL, OPENAI_API_KEY as defaults for all bots
 
 # Build widget
 cd widget && npm install && npm run build-widget && cp dist/emly-widget.js ../ui/public/emly-widget.js && cd ..

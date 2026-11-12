@@ -36,6 +36,10 @@ def env(isolated_db, monkeypatch):
     from services.audit import AuditRequestContextMiddleware
     from services.auth.dependencies import get_admin
 
+    # Deployment LLM defaults so publish isn't blocked by RT1/RT4/RT5 (D1).
+    monkeypatch.setenv("MODEL", "test-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.test/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(admin_bot_files, "_kick_embed", lambda *a, **k: None)
     fake_rag = SimpleNamespace(delete_file=lambda **kw: None, delete_bot=lambda *a: None)
     monkeypatch.setattr(admin_bot_files, "get_rag_manager", lambda: fake_rag)

@@ -24,8 +24,8 @@ from langchain_classic.memory import ConversationBufferWindowMemory
 
 
 from models.emly_messages import EMLYMessages
-from config import MODEL, EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
-    EMBEDDING_MODEL_INSTANCE, OPENAI_API_KEY, OPENAI_BASE_URL, TOP_K, TEMPERATURE, \
+from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
+    EMBEDDING_MODEL_INSTANCE, TOP_K, TEMPERATURE, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
 from agents.rag_manager import get_rag_manager
@@ -1125,12 +1125,11 @@ def create_config(bot_id: str) -> Dict[str, Any]:
 
         config = deep_merge(default_config, config_from_file)
 
-        # LLM model: prefer the bot's per-row override (BotConfig.llm.model),
-        # fall back to the deployment-wide MODEL env default. Same for
-        # the OpenAI-compatible base URL — per-bot api_endpoint wins so a
-        # bot pointed at OpenRouter etc. works without changing deployment env.
+        # The bot's own model / endpoint. Deployment defaults (MODEL,
+        # OPENAI_BASE_URL) are applied by services.llm_settings, which also
+        # refuses when neither is set.
         llm_cfg = bot_config.get("llm") or {}
-        config["model_name"] = llm_cfg.get("model") or MODEL
+        config["model_name"] = llm_cfg.get("model")
         config["api_endpoint"] = llm_cfg.get("api_endpoint")
         config["embedding_model_name"] = EMBEDDING_MODEL_NAME
 
@@ -1230,13 +1229,16 @@ class ConversationSessionManager:
         self.logger = logging.getLogger(__name__)
 
     def _build_runtime(self, bot_id: str) -> _BotRuntime:
-        from services.bot_config import get_decrypted_api_key
+        from services import llm_settings
 
         config = create_config(bot_id=bot_id)
-        api_key = get_decrypted_api_key(bot_id) or OPENAI_API_KEY
-        api_endpoint = config.get("api_endpoint") or OPENAI_BASE_URL
+        # Raises LLMNotConfigured when the bot has no model, endpoint or
+        # key and the deployment has no default for it.
+        settings = llm_settings.require(
+            bot_id, {"model": config.get("model_name"), "api_endpoint": config.get("api_endpoint")}
+        )
         llm_kwargs = {
-            "model": config.get("model_name", "gpt-4o-mini"),
+            **settings.chat_kwargs(),
             "temperature": TEMPERATURE,
             "timeout": 30,
             "max_retries": 2,
@@ -1246,10 +1248,6 @@ class ConversationSessionManager:
             # it. (Non-streaming pulls usage from the AIMessage directly.)
             "stream_options": {"include_usage": True},
         }
-        if api_key:
-            llm_kwargs["api_key"] = api_key
-        if api_endpoint:
-            llm_kwargs["base_url"] = api_endpoint
         llm = ChatOpenAI(**llm_kwargs)
         topics = {
             t_name: TopicConfig(**t_config)
