@@ -44,3 +44,12 @@ def test_env_sample_has_no_postgres_password():
     sample = (REPO_ROOT / ".env.sample").read_text()
     assert re.search(r"^POSTGRES_PASSWORD=\s*$", sample, re.MULTILINE)
     assert "emlypassword" not in sample
+
+
+# -------------------------------------------------------------------- A13
+
+
+def test_env_sample_has_no_unused_admin_vars():
+    sample = (REPO_ROOT / ".env.sample").read_text()
+    for name in ("ADMIN_EMAIL", "ADMIN_PASSWORD", "ADMIN_JWT_SECRET"):
+        assert not re.search(rf"^#?\s*{name}=", sample, re.MULTILINE), name
