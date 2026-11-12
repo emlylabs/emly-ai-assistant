@@ -328,6 +328,9 @@ if is_local_issuer_enabled():
 # like ``GET /widget/{bot_id}/config`` and ``POST /widget/{bot_id}/action``.
 app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=False)
 app.add_middleware(CustomMiddleware)
+# Record caller IP / user agent for audit() calls made while handling a request.
+from services.audit import AuditRequestContextMiddleware  # noqa: E402
+app.add_middleware(AuditRequestContextMiddleware)
 # CSRF: cookie-authenticated mutating requests must carry an Origin from the
 # trusted-list. Bearer-only callers (no cookie) bypass — without ambient
 # credentials there's no CSRF surface. Mounted before CORS so the response

@@ -38,10 +38,26 @@ def _forbidden(code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=body)
 
 
+def _deny(admin: AdminUserModel, code: str, bot_id: str | None = None, **extra) -> HTTPException:
+    """Audit an authorization denial (``authz.denied``) and return the 403.
+    Every ``require_*`` check goes through here, so denials are recorded
+    centrally with the caller's IP and user agent."""
+    try:
+        from services.audit import audit
+
+        audit("authz.denied", admin_id=admin.id, bot_id=bot_id, success=False,
+              payload={"code": code, **extra})
+    except Exception:  # auditing must never change the response
+        log.debug("authz.denied audit failed", exc_info=True)
+    if bot_id is not None:
+        extra = {"bot_id": bot_id, **extra}
+    return _forbidden(code, **extra)
+
+
 def require_superadmin(admin: AdminUserModel) -> None:
     """Raises 403 unless the admin has the global ``is_superadmin`` flag."""
     if not admin.is_superadmin:
-        raise _forbidden("not_superadmin")
+        raise _deny(admin, "not_superadmin")
 
 
 def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel:
@@ -56,7 +72,7 @@ def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _READER_ROLES:
-        raise _forbidden("not_member", bot_id=bot_id)
+        raise _deny(admin, "not_member", bot_id)
     return membership
 
 
@@ -70,7 +86,7 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _WRITER_ROLES:
-        raise _forbidden("not_writer", bot_id=bot_id)
+        raise _deny(admin, "not_writer", bot_id)
     return membership
 
 
@@ -81,7 +97,7 @@ def require_owner(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role != "owner":
-        raise _forbidden("not_owner", bot_id=bot_id)
+        raise _deny(admin, "not_owner", bot_id)
     return membership
 
 
@@ -155,4 +171,4 @@ def can_create_bots(admin: AdminUserModel) -> bool:
 
 def require_bot_creator(admin: AdminUserModel) -> None:
     if not can_create_bots(admin):
-        raise _forbidden("bot_creation_not_allowed", policy=bot_creation_policy())
+        raise _deny(admin, "bot_creation_not_allowed", policy=bot_creation_policy())

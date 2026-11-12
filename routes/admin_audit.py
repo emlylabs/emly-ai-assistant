@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from models.admin_audit_log import AdminAuditLogModel, AdminAuditLogs
-from models.admin_bot_memberships import AdminBotMemberships
+from services.authz import require_member
 from models.admin_users import AdminUserModel
 from models.bots import Bots
 from services.auth.dependencies import get_admin
@@ -51,11 +51,7 @@ def list_audit_logs(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="bot_id required for non-superadmin reads",
             )
-        if AdminBotMemberships.get(admin.id, bot_id) is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized for this bot",
-            )
+        require_member(admin, bot_id)
     items = AdminAuditLogs.list_filtered(
         admin_id=admin_id,
         bot_id=bot_id,
@@ -80,8 +76,7 @@ def list_bot_audit_logs(
     bot = Bots.get_by_slug(slug)
     if bot is None or bot.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found")
-    if AdminBotMemberships.get(admin.id, bot.id) is None and not admin.is_superadmin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this bot")
+    require_member(admin, bot.id)
     items = AdminAuditLogs.list_filtered(
         bot_id=bot.id,
         action=action,

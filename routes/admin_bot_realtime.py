@@ -21,7 +21,6 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from models.admin_bot_memberships import AdminBotMemberships
 from models.admin_users import AdminUserModel
 from models.bots import Bots
 from services.auth.dependencies import get_admin
@@ -64,8 +63,9 @@ async def stream_conversations(
     bot = Bots.get_by_slug(slug)
     if bot is None or bot.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found")
-    if AdminBotMemberships.get(admin.id, bot.id) is None and not admin.is_superadmin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this bot")
+    from services.authz import require_member
+
+    require_member(admin, bot.id)  # 403 + authz.denied audit for non-members
 
     queue = subscribe(bot.id)
 
