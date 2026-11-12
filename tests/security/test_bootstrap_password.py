@@ -57,7 +57,7 @@ def test_password_file_is_owner_only_and_verifies(bootstrap_env):
 def test_env_password_is_not_logged_and_no_file(bootstrap_env, monkeypatch, caplog):
     from services.auth.bootstrap import bootstrap_password_path, bootstrap_pending_superadmin
 
-    monkeypatch.setenv("AUTH_LOCAL_BOOTSTRAP_PASSWORD", "pinned-Secret-123")
+    monkeypatch.setenv("AUTH_LOCAL_BOOTSTRAP_PASSWORD", "pinned-Secret-123")  # gitleaks:allow (test fixture / not a secret)
     with caplog.at_level(logging.DEBUG):
         bootstrap_pending_superadmin(data_dir=bootstrap_env)
     assert "pinned-Secret-123" not in caplog.text

@@ -1,0 +1,38 @@
+# On a version tag: build the image and attach an SPDX SBOM (syft) to the
+# GitHub release for that tag, creating the release if it doesn't exist.
+name: Release SBOM
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # upload release assets
+
+env:
+  SYFT_IMAGE: anchore/syft:v1.57.1@sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg APP_VERSION="${GITHUB_REF_NAME#v}" \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
+            --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "emly-ai-assistant:${GITHUB_REF_NAME}" .
+      - name: Generate SBOM
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$SYFT_IMAGE" \
+            "emly-ai-assistant:${GITHUB_REF_NAME}" -o spdx-json > "emly-ai-assistant-${GITHUB_REF_NAME}.spdx.json"
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "emly-ai-assistant-${GITHUB_REF_NAME}.spdx.json" --clobber

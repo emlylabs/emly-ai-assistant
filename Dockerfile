@@ -146,7 +146,7 @@ COPY --chown=emly:emly . .
 COPY --from=ui-builder --chown=emly:emly /ui/out ./ui/out
 
 # ---- Version stamp -----------------------------------------------------------
-# CI fills these from the git tag on a release build (see .gitlab-ci.yml). Local
+# CI fills these from the git tag on a release build (.github/workflows/release.yml). Local
 # `docker build` without args produces a clearly-unversioned image so a stray
 # dev artifact never gets mistaken for a release. version.py reads APP_VERSION
 # / GIT_SHA / BUILT_AT at import time; the labels follow the OCI image spec so

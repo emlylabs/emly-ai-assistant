@@ -486,7 +486,7 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
         if not ctx.has_bot_api_key and not ctx.has_deployment_api_key:
             issues.append(Issue(
                 severity="error",
-                key="RT1_missing_api_key",
+                key="RT1_missing_api_key",  # gitleaks:allow (rule name, not a secret)
                 section="llm",
                 message="No LLM API key set for this bot and no deployment-wide fallback configured. Chat will fail with a 4xx the moment a visitor sends a message.",
             ))

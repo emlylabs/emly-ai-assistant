@@ -27,7 +27,7 @@ os.environ.setdefault("AUTH_LOCAL_KEYS_DIR", str(_TEST_DATA_DIR / "auth_keys"))
 os.environ.setdefault("AUTH_LOCAL_ISSUER_ENABLED", "false")
 # A fixed, valid Fernet key so tests (and app subprocesses booted with
 # MODE=prod, which requires one) don't depend on a key file in DATA_DIR.
-os.environ.setdefault("BOT_SECRETS_KEY", "q2mQkqG3o2bM4ZtU0yW0u0dJc8B5m2V7m3w1v9yJ0Hc=")
+os.environ.setdefault("BOT_SECRETS_KEY", "q2mQkqG3o2bM4ZtU0yW0u0dJc8B5m2V7m3w1v9yJ0Hc=")  # gitleaks:allow (test fixture / not a secret)
 
 
 import pytest

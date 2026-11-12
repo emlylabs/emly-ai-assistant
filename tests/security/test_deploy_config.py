@@ -139,3 +139,31 @@ def test_base_images_pinned_by_digest():
     syntax = text.splitlines()[0]
     assert re.match(r"# syntax=docker/dockerfile:[\d.]+@sha256:[0-9a-f]{64}$", syntax), syntax
     assert "imagetools inspect" in text  # update instructions present
+
+
+# ---------------------------------------------------------------------- E3
+
+
+def _workflows() -> dict:
+    return {p.name: p.read_text() for p in (REPO_ROOT / ".github" / "workflows").glob("*.yml")}
+
+
+def test_ci_runs_required_checks():
+    ci = _workflows()["ci.yml"]
+    for needle in ("uv run pytest", "pip-audit", "docker build", "--severity CRITICAL", "--exit-code 1",
+                   "gitleaks git", "fetch-depth: 0"):
+        assert needle in ci, needle
+    on = yaml.safe_load(ci)[True]  # YAML 1.1 reads the bare `on` key as True
+    assert "pull_request" in on and "push" in on
+    release = _workflows()["release.yml"]
+    assert "syft" in release and "spdx-json" in release and "gh release upload" in release
+
+
+def test_workflow_dependencies_are_pinned():
+    for name, text in _workflows().items():
+        for ref in re.findall(r"uses:\s*(\S+)", text):
+            assert re.search(r"@[0-9a-f]{40}$", ref), f"{name}: action not pinned to a commit: {ref}"
+        for image in re.findall(r"(?:TRIVY|SYFT)_IMAGE:\s*(\S+)", text):
+            assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"{name}: image not pinned: {image}"
+        assert "permissions:" in text, f"{name}: set least-privilege permissions"
+    assert "sha256sum -c" in _workflows()["ci.yml"]  # gitleaks binary verified

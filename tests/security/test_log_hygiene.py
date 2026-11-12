@@ -116,7 +116,7 @@ def test_access_log_redacts_invite_token_in_path():
 
     from services.auth.logging_filter import RedactSecretsFilter
 
-    token = "qSHuX3TQGkHZZ36R7jGw_ZYRPVFOU54Dl6Vwa1h72iw"
+    token = "qSHuX3TQGkHZZ36R7jGw_ZYRPVFOU54Dl6Vwa1h72iw"  # gitleaks:allow (test fixture / not a secret)
     record = logging.LogRecord(
         "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
         ("10.0.0.1:5555", "POST", f"/api/admin/admins/invites/{token}/accept", "1.1", 200), None,

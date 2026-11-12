@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 EMAIL = "boot@example.com"
-TEMP_PASSWORD = "temporary-pass-123"
+TEMP_PASSWORD = "temporary-pass-123"  # gitleaks:allow (test fixture / not a secret)
 NEW_PASSWORD = "a-much-better-passphrase"
 
 
