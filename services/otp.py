@@ -18,7 +18,6 @@ from config import (
     EMAIL_USER,
 )
 from models.otp_auth import OtpAuthorization
-from services.bot_config import get_config_for_bot
 from services.email_service import EmailSender
 from services.scheduler import EPHEMERAL_JOBSTORE, scheduler
 from services.secrets import derive_key
@@ -28,6 +27,11 @@ log = logging.getLogger(__name__)
 # A code is invalidated after this many verification attempts.
 MAX_ATTEMPTS = 5
 DEFAULT_EXPIRES_IN_MINUTES = 5
+# Workspace setting key for the code lifetime, and its accepted range. Kept
+# short: a 6-digit code is only as strong as its validity window.
+WORKSPACE_EXPIRY_KEY = "otp_expires_in_minutes"
+MIN_EXPIRES_IN_MINUTES = 1
+MAX_EXPIRES_IN_MINUTES = 30
 
 
 def generate_otp() -> str:
@@ -43,12 +47,31 @@ def hash_code(bot_id: str, user_id: str, code: str) -> str:
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
+def valid_expiry_minutes(value) -> bool:
+    """True for a whole number of minutes within the accepted range."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and MIN_EXPIRES_IN_MINUTES <= value <= MAX_EXPIRES_IN_MINUTES
+    )
+
+
 def _otp_expires_in(bot_id: str) -> int:
+    """Code lifetime in minutes: the workspace default
+    (``otp_expires_in_minutes``) when set and valid, else 5."""
     try:
-        cfg = get_config_for_bot(bot_id).model_dump(mode="json")
-    except LookupError:
+        from models.workspace_settings import WorkspaceSettingsStore
+
+        value = WorkspaceSettingsStore.get().settings.get(WORKSPACE_EXPIRY_KEY)
+    except Exception:
+        log.warning("workspace settings read failed; using default OTP expiry", exc_info=True)
         return DEFAULT_EXPIRES_IN_MINUTES
-    return int((cfg.get("otp") or {}).get("expires_in", DEFAULT_EXPIRES_IN_MINUTES))
+    if value is None:
+        return DEFAULT_EXPIRES_IN_MINUTES
+    if not valid_expiry_minutes(value):
+        log.warning("ignoring invalid workspace %s; using default", WORKSPACE_EXPIRY_KEY)
+        return DEFAULT_EXPIRES_IN_MINUTES
+    return value
 
 
 def create_otp(payload_data: dict, bot_id: str) -> dict:

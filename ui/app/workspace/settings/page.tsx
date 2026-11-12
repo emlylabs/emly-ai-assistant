@@ -43,6 +43,12 @@ const KNOWN_FIELDS: { key: string; label: string; type: "text" | "number"; hint?
     type: "number",
     hint: "Pre-fills the per-bot file upload cap.",
   },
+  {
+    key: "otp_expires_in_minutes",
+    label: "Widget passcode lifetime (minutes)",
+    type: "number",
+    hint: "1–30. How long a one-time passcode sent to a widget user stays valid. Default 5.",
+  },
 ];
 
 export default function WorkspaceSettingsPage() {

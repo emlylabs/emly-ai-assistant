@@ -69,6 +69,26 @@ def _validate_workspace_settings(settings: Dict[str, Any]) -> None:
                 status_code=400,
                 detail={"code": "invalid_key", "key": str(key)[:64]},
             )
+    from services.otp import (
+        MAX_EXPIRES_IN_MINUTES,
+        MIN_EXPIRES_IN_MINUTES,
+        WORKSPACE_EXPIRY_KEY,
+        valid_expiry_minutes,
+    )
+
+    otp_expiry = settings.get(WORKSPACE_EXPIRY_KEY)
+    if otp_expiry is not None and not valid_expiry_minutes(otp_expiry):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_value",
+                "key": WORKSPACE_EXPIRY_KEY,
+                "message": (
+                    f"Must be a whole number of minutes from {MIN_EXPIRES_IN_MINUTES} "
+                    f"to {MAX_EXPIRES_IN_MINUTES}."
+                ),
+            },
+        )
     try:
         encoded = json.dumps(settings, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
