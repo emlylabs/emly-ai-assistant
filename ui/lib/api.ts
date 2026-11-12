@@ -24,6 +24,8 @@ export type AdminUser = {
   email_verified: boolean;
   last_login_at: string | null;
   memberships: { bot_id: string; role: "owner" | "admin" | "viewer" }[];
+  /** Whether BOT_CREATION lets this admin create bots. Absent on old servers. */
+  can_create_bots?: boolean;
 };
 
 export type PendingAdmin = {

@@ -119,3 +119,40 @@ def _synthetic_superadmin_membership(admin_id: str, bot_id: str) -> AdminBotMemb
         created_at=datetime.fromtimestamp(0, tz=timezone.utc),
         updated_at=datetime.fromtimestamp(0, tz=timezone.utc),
     )
+
+
+# -------- bot creation (C2) --------
+
+BOT_CREATION_POLICIES = ("writers", "any", "superadmin")
+
+
+def bot_creation_policy() -> str:
+    """``BOT_CREATION`` env: who may create bots in the workspace.
+
+    * ``writers`` (default) — superadmins, plus admins who are owner or
+      admin of at least one bot. Viewer-only members can't create bots.
+    * ``any`` — every active admin (the previous behaviour).
+    * ``superadmin`` — superadmins only.
+
+    Unknown values fall back to ``writers``.
+    """
+    import os
+
+    value = (os.environ.get("BOT_CREATION") or "writers").strip().lower()
+    return value if value in BOT_CREATION_POLICIES else "writers"
+
+
+def can_create_bots(admin: AdminUserModel) -> bool:
+    if admin.is_superadmin:
+        return True
+    policy = bot_creation_policy()
+    if policy == "any":
+        return True
+    if policy == "superadmin":
+        return False
+    return any(m.role in _WRITER_ROLES for m in AdminBotMemberships.list_for_admin(admin.id))
+
+
+def require_bot_creator(admin: AdminUserModel) -> None:
+    if not can_create_bots(admin):
+        raise _forbidden("bot_creation_not_allowed", policy=bot_creation_policy())

@@ -541,6 +541,7 @@ async def me(admin = Depends(get_admin)):
     """Returns the resolved admin row + memberships. The UI calls this on app
     boot to know who's signed in and what they can access."""
     from models.admin_bot_memberships import AdminBotMemberships
+    from services.authz import can_create_bots
 
     memberships = AdminBotMemberships.list_for_admin(admin.id)
     return {
@@ -557,4 +558,6 @@ async def me(admin = Depends(get_admin)):
             {"bot_id": m.bot_id, "role": m.role}
             for m in memberships
         ],
+        # Lets the UI hide "Create bot" when BOT_CREATION doesn't allow it.
+        "can_create_bots": can_create_bots(admin),
     }

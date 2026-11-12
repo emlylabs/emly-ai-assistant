@@ -120,6 +120,8 @@ function BotsLandingBody() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // null until /me answers; false hides every "create" entry point.
+  const [canCreate, setCanCreate] = useState<boolean | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<{ id: string; slug: string; name: string } | null>(null);
   const [undoSlug, setUndoSlug] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>(() => {
@@ -212,6 +214,7 @@ function BotsLandingBody() {
       .me()
       .then((u) => {
         setMe(u.id);
+        setCanCreate(u.can_create_bots !== false);
         setPins(readPinnedSlugs(u.id));
         // First-sign-in landing: if we've never marked this admin as
         // welcomed in localStorage and they have at least one membership,
@@ -562,10 +565,12 @@ function BotsLandingBody() {
             <Trash2 size={14} strokeWidth={1.75} />
             Recently deleted
           </button>
-          <button onClick={() => setShowCreate(true)}>
-            <Plus strokeWidth={1.75} />
-            Create bot
-          </button>
+          {canCreate !== false && (
+            <button onClick={() => setShowCreate(true)}>
+              <Plus strokeWidth={1.75} />
+              Create bot
+            </button>
+          )}
         </div>
       </div>
 
@@ -616,10 +621,12 @@ function BotsLandingBody() {
               gap: 8,
             }}
           >
-            <button onClick={() => setShowCreate(true)}>
-              <Plus strokeWidth={1.75} />
-              Create your first bot
-            </button>
+            {canCreate !== false && (
+              <button onClick={() => setShowCreate(true)}>
+                <Plus strokeWidth={1.75} />
+                Create your first bot
+              </button>
+            )}
             <button
               className="ghost"
               onClick={() => {
@@ -972,7 +979,7 @@ function BotsLandingBody() {
                         <RowActionsMenu
                           onConfig={() => router.push(`/bots/${r.slug}/config`)}
                           onSettings={() => router.push(`/bots/${r.slug}/settings`)}
-                          onDuplicate={() => openDuplicate(r.slug)}
+                          onDuplicate={canCreate !== false ? () => openDuplicate(r.slug) : undefined}
                           onDelete={() => onDeleteBot(r.slug)}
                         />
                       </td>
@@ -1029,7 +1036,17 @@ function BotsLandingBody() {
         </>
       )}
 
-      {showCreate && (
+      {showCreate && canCreate === false && (
+        <div className="banner warning" role="status">
+          Your role doesn&apos;t allow creating bots. Ask a workspace
+          superadmin, or an owner of a bot you work on, for access.{" "}
+          <button className="ghost compact" onClick={() => setShowCreate(false)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {showCreate && canCreate !== false && (
         <CreateBotWizard
           onClose={() => setShowCreate(false)}
           onCreated={(slug, templateId) => {
@@ -1038,7 +1055,7 @@ function BotsLandingBody() {
         />
       )}
 
-      {duplicateSource && (
+      {duplicateSource && canCreate !== false && (
         <DuplicateBotModal
           source={duplicateSource}
           onClose={() => setDuplicateSource(null)}
@@ -1172,7 +1189,8 @@ function RowActionsMenu({
 }: {
   onConfig: () => void;
   onSettings: () => void;
-  onDuplicate: () => void;
+  /** Omitted when the admin may not create bots (BOT_CREATION). */
+  onDuplicate?: () => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1249,15 +1267,17 @@ function RowActionsMenu({
           >
             <Settings size={13} strokeWidth={1.75} /> Settings
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="ghost"
-            style={itemStyle}
-            onClick={() => closeAndRun(onDuplicate)}
-          >
-            <CopyIcon size={13} strokeWidth={1.75} /> Duplicate…
-          </button>
+          {onDuplicate && (
+            <button
+              type="button"
+              role="menuitem"
+              className="ghost"
+              style={itemStyle}
+              onClick={() => onDuplicate && closeAndRun(onDuplicate)}
+            >
+              <CopyIcon size={13} strokeWidth={1.75} /> Duplicate…
+            </button>
+          )}
           <div
             aria-hidden
             style={{

@@ -30,7 +30,7 @@ from models.admin_users import AdminUserModel, AdminUsers
 from models.bots import BotModel, Bots
 from services.audit import audit
 from services.auth.dependencies import get_admin
-from services.authz import require_member, require_owner, require_writer
+from services.authz import require_bot_creator, require_member, require_owner, require_writer
 from services.bot_templates import get_template_config, list_templates
 
 log = logging.getLogger(__name__)
@@ -162,6 +162,8 @@ def create_bot(
     payload: BotCreate,
     admin: AdminUserModel = Depends(get_admin),
 ):
+    # C2: workspace-level permission to create bots (BOT_CREATION).
+    require_bot_creator(admin)
     if not _SLUG_RE.match(payload.slug):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
