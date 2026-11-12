@@ -167,3 +167,14 @@ def test_workflow_dependencies_are_pinned():
             assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"{name}: image not pinned: {image}"
         assert "permissions:" in text, f"{name}: set least-privilege permissions"
     assert "sha256sum -c" in _workflows()["ci.yml"]  # gitleaks binary verified
+
+
+# ---------------------------------------------------------------------- E4
+
+
+def test_security_policy_present():
+    text = (REPO_ROOT / "SECURITY.md").read_text()
+    assert "security@emlylabs.com" in text
+    for heading in ("## Reporting a vulnerability", "## What to expect", "## Supported versions"):
+        assert heading in text, heading
+    assert "business days" in text
