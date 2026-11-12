@@ -374,6 +374,25 @@ def _boot_scheduler() -> None:
 
 
 @app.on_event("startup")
+def _register_audit_retention_purge() -> None:
+    """Daily purge of audit rows older than AUDIT_RETENTION_DAYS (C7).
+    Registered by import path so the persistent jobstore can store it."""
+    try:
+        from services.scheduler import scheduler
+
+        scheduler.add_job(
+            "services.audit:purge_expired_audit_rows",
+            "cron",
+            hour=3,
+            minute=30,
+            id="audit_retention_purge",
+            replace_existing=True,
+        )
+    except Exception:
+        logging.exception("failed to register audit retention purge")
+
+
+@app.on_event("startup")
 def _register_invite_expiry_sweep() -> None:
     """Hourly sweep that promotes any ``pending`` ``pending_admin`` row whose
     ``expires_at`` is in the past to ``status='expired'``. Idempotent; the

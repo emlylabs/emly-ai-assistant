@@ -112,6 +112,7 @@ All configuration is done via environment variables. Copy `.env.sample` to `.env
 |----------|-------------|---------|
 | `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
+| `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 UTC) deletes older rows and records the purge. `0` keeps them forever | `365` |
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
 | `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
 | `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
@@ -533,6 +534,8 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 | `/api/admin/auth/*` | Login, logout, session |
 | `/api/admin/bots/*` | Bot CRUD, config, files, RAG |
 | `/api/admin/admins/*` | Admin management |
+| `/api/admin/audit/export` | Whole audit log as CSV (superadmins). Filters: `admin_id`, `bot_id`, `action`, `success`, `since`, `until` |
+| `/api/admin/bots/{slug}/audit/export` | One bot's audit log as CSV (owners of that bot) |
 | `/api/livez` | Health check (liveness) |
 | `/api/readyz` | Readiness check (waits for models + DB) |
 | `/docs`, `/openapi.json` | Interactive API docs and schema. Off when `MODE=prod` unless `ENABLE_API_DOCS=true` |

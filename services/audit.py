@@ -115,3 +115,40 @@ def audit(
     except Exception:
         # Never block the live request on an audit write failure.
         log.exception("audit() failed for action=%s admin=%s bot=%s", action, admin_id, bot_id)
+
+
+# -------- retention (C7) --------
+
+def audit_retention_days() -> int:
+    """AUDIT_RETENTION_DAYS (default 365). 0 or less keeps rows forever."""
+    import os
+
+    try:
+        return int(os.environ.get("AUDIT_RETENTION_DAYS", "365"))
+    except ValueError:
+        log.warning("AUDIT_RETENTION_DAYS is not an integer; using 365")
+        return 365
+
+
+def purge_expired_audit_rows() -> int:
+    """Daily job: delete audit rows older than the retention window and
+    record the purge itself. Module-level so APScheduler's persistent
+    jobstore can reference it by name."""
+    from datetime import datetime, timedelta, timezone
+
+    days = audit_retention_days()
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        from models.admin_audit_log import AdminAuditLogs
+
+        removed = AdminAuditLogs.purge_older_than(cutoff)
+    except Exception:
+        log.exception("audit retention purge failed")
+        return 0
+    if removed:
+        log.info("audit retention: removed %d row(s) older than %d days", removed, days)
+        audit("audit.purged", payload={"removed": removed, "retention_days": days,
+                                       "cutoff": cutoff.isoformat()})
+    return removed
