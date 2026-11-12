@@ -46,6 +46,9 @@ FROM node:22-slim AS ui-builder
 
 WORKDIR /ui
 
+# Next.js sends anonymous build telemetry by default; keep builds offline.
+ENV NEXT_TELEMETRY_DISABLED=1
+
 # Lockfile-only layer: re-runs only when package.json / lock change.
 COPY ui/package.json ui/package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
@@ -86,9 +89,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # ---- Non-root runtime user ---------------------------------------------------
 # Created early so every subsequent COPY can use --chown without a slow `-R`
 # chown pass at the end of the build.
-RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly && \
-    chown emly:emly /app
-
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin emly 2>/dev/null || true && \
     chown emly:emly /app && \
     mkdir -p /home/emly/.cache/huggingface && \

@@ -46,6 +46,22 @@ def test_env_sample_has_no_postgres_password():
     assert "emlypassword" not in sample
 
 
+# -------------------------------------------------------------------- A12
+
+
+def test_entrypoint_execs_so_signals_reach_uvicorn():
+    job = (REPO_ROOT / "job.sh").read_text()
+    start = (REPO_ROOT / "start.sh").read_text()
+    assert re.search(r"^exec \./start\.sh\b", job, re.MULTILINE)
+    assert "&" not in re.sub(r"&&", "", job), "job.sh must not background start.sh"
+    assert re.search(r"^exec uvicorn\b", start, re.MULTILINE)
+
+
+def test_dockerfile_creates_runtime_user_once():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    assert len(re.findall(r"\buseradd\b", dockerfile)) == 1
+
+
 # -------------------------------------------------------------------- A13
 
 
@@ -53,3 +69,12 @@ def test_env_sample_has_no_unused_admin_vars():
     sample = (REPO_ROOT / ".env.sample").read_text()
     for name in ("ADMIN_EMAIL", "ADMIN_PASSWORD", "ADMIN_JWT_SECRET"):
         assert not re.search(rf"^#?\s*{name}=", sample, re.MULTILINE), name
+
+
+# -------------------------------------------------------------------- A14
+
+
+def test_next_telemetry_disabled_in_ui_builder():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    stage = dockerfile.split("AS ui-builder", 1)[1].split("\nFROM ", 1)[0]
+    assert re.search(r"^ENV NEXT_TELEMETRY_DISABLED=1\b", stage, re.MULTILINE)
