@@ -247,6 +247,44 @@ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,s
 </body></html>"""
 
 
+def _render_link_only_email_html(*, bot_name: str, conversation_url: str, form_title: str,
+                                 request_date: str) -> str:
+    """Alert body with no visitor data: what happened, and where to look."""
+    title = _html_escape(form_title) if form_title else "New form submission"
+    if conversation_url:
+        cta = (
+            f'<a href="{_html_escape(conversation_url)}" style="background:{_EMAIL_BRAND_COLOR};color:#FFFFFF;'
+            f'text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;'
+            f'font-weight:600;display:inline-block;">Open the conversation</a>'
+        )
+    else:
+        cta = f'<span style="color:{_EMAIL_MUTED};">Open the bot\'s Conversations page in the admin console.</span>'
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title></head>
+<body style="margin:0;padding:24px;background:{_EMAIL_BG};
+font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="max-width:560px;margin:0 auto;background:{_EMAIL_CARD_BG};border:1px solid {_EMAIL_BORDER};
+  border-radius:12px;padding:24px 28px;color:{_EMAIL_TEXT};">
+  <div style="font-size:18px;font-weight:600;">{title}</div>
+  <p style="font-size:14px;line-height:1.6;">A visitor submitted this form on
+  <strong>{_html_escape(bot_name)}</strong> at {_html_escape(request_date)}. The details are
+  in the admin console; this bot is set to keep them out of email.</p>
+  <p style="margin:20px 0;">{cta}</p>
+  <p style="font-size:12px;color:{_EMAIL_MUTED};">This is an automated message from Emly Labs.
+  Please do not reply to this email.</p>
+</div>
+</body></html>"""
+
+
+def _alert_email_content(bot_id: str) -> str:
+    from services.bot_config import get_config_for_bot
+
+    try:
+        return get_config_for_bot(bot_id).alert_email_content if bot_id else "full"
+    except LookupError:
+        return "full"
+
+
 def _summarize_conversation(bot_id: str, messages, prompt_template: str) -> str:
     """Generate the human-agent-facing summary using the bot's own LLM creds.
 
@@ -348,14 +386,26 @@ def send_scheduled_email(
     user = EMLYUsers.get_user_by_id(bot_id, user_id)
     request_date = datetime.now().strftime("%Y:%m:%d %H:%M:%S")
     subject = f"Emly Labs | {form_title or ''} | {request_date}"
+    session_id = form_data_dict.get("session_id")
 
-    content, _ = get_html_content_with_summarized_messages(
-        user,
-        form_data_dict.get("session_id"),
-        prompt,
-        bot_id=bot_id,
-        form_title=form_title or "",
-    )
+    link_only = _alert_email_content(bot_id) == "link_only"
+    if link_only:
+        # No summary (so no LLM call), transcript, visitor details or files.
+        bot = Bots.get_by_id(bot_id) if bot_id else None
+        content = _render_link_only_email_html(
+            bot_name=bot.name if bot else "your bot",
+            conversation_url=_build_conversation_url(bot_id, session_id or ""),
+            form_title=form_title or "",
+            request_date=request_date,
+        )
+    else:
+        content, _ = get_html_content_with_summarized_messages(
+            user,
+            session_id,
+            prompt,
+            bot_id=bot_id,
+            form_title=form_title or "",
+        )
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -363,7 +413,7 @@ def send_scheduled_email(
     msg["To"] = email
     msg.attach(MIMEText(content, "html"))
 
-    for file in uploaded_files:
+    for file in [] if link_only else uploaded_files:
         try:
             with open(file["path"], "rb") as f:
                 file_content = f.read()
@@ -426,12 +476,16 @@ async def send_email_with_attachments(
         "Messages count is %s for user %s session %s", message_count, user.id, form_data.session_id
     )
 
+    # The job (and its arguments) is stored in the persistent APScheduler
+    # database until it runs, so keep visitor data out of it: the worker
+    # only needs the session id, and link-only alerts need no files.
+    link_only = _alert_email_content(bot_id) == "link_only"
     args = [
         email,
         user.id,
-        form_data_dict,
+        {"session_id": form_data_dict.get("session_id")},
         form_title,
-        uploaded_files,
+        [] if link_only else uploaded_files,
         page,
         prompt,
         bot_id,

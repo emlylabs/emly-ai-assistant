@@ -22,7 +22,7 @@ import ActionWizard from "./ActionWizard";
 
 type Props = {
   config: Record<string, unknown>;
-  patch: (key: "c_forms_selected", value: unknown) => void;
+  patch: (key: "c_forms_selected" | "alert_email_content", value: unknown) => void;
   writable: boolean;
 };
 
@@ -111,6 +111,27 @@ export default function ActionsSection({ config, patch, writable }: Props) {
               <Plus size={14} strokeWidth={1.75} /> New action
             </button>
           )}
+
+          <div className="field" style={{ margin: 0 }}>
+            <label htmlFor="alert-email-content" style={{ fontSize: 12 }}>
+              Alert emails contain
+            </label>
+            <select
+              id="alert-email-content"
+              value={config.alert_email_content === "link_only" ? "link_only" : "full"}
+              onChange={(e) =>
+                patch("alert_email_content", e.target.value === "link_only" ? "link_only" : undefined)
+              }
+              disabled={!writable}
+            >
+              <option value="full">Summary, transcript, visitor details and files</option>
+              <option value="link_only">Only a link to the conversation</option>
+            </select>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              &ldquo;Only a link&rdquo; keeps visitor data out of mailboxes; recipients sign in
+              to read it.
+            </div>
+          </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 16, overflowY: "auto" }}>
             {actions.length === 0 && (

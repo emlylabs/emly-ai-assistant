@@ -13,7 +13,7 @@ predictable.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -140,6 +140,12 @@ class BotConfig(BaseModel):
 
     # Optional grouped widget block (theme + layout)
     widget: Optional[Dict[str, Any]] = None
+
+    # What form-alert emails contain. "full": AI summary, transcript,
+    # visitor details and attachments. "link_only": just a link to the
+    # conversation in the admin console, so visitor data stays out of
+    # mailboxes (services/widget_email.py).
+    alert_email_content: Literal["full", "link_only"] = "full"
 
 
 # ---------------------------------------------------------------------------
