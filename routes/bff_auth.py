@@ -72,20 +72,16 @@ def _cookie_name_expires_at() -> str:
 
 
 def _cookie_secure(request: Request | None = None) -> bool:
-    """Decide the ``Secure`` cookie attribute based on the actual
-    request scheme (not the configured ``APP_BASE_URL``). See
-    ``routes/auth.py::_cookie_secure`` for the full rationale."""
-    explicit = os.environ.get("AUTH_COOKIE_SECURE")
-    if explicit is not None:
-        return explicit.strip().lower() in ("1", "true", "yes", "on")
-    if request is not None:
-        return request.url.scheme.lower() == "https"
-    return (os.environ.get("APP_BASE_URL", "").lower().startswith("https://"))
+    """See ``services.auth.cookie_policy.cookie_secure``."""
+    from services.auth.cookie_policy import cookie_secure
+
+    return cookie_secure(request)
 
 
 def _cookie_samesite() -> str:
-    val = os.environ.get("AUTH_COOKIE_SAMESITE", "lax").strip().lower()
-    return val if val in ("strict", "lax", "none") else "lax"
+    from services.auth.cookie_policy import cookie_samesite
+
+    return cookie_samesite()
 
 
 def _cookie_domain() -> str | None:

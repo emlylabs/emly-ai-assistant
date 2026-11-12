@@ -139,6 +139,8 @@ The app includes a built-in OIDC identity provider — no external auth service 
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL` | First admin email | `admin@example.com` |
 | `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password. If unset, a random one is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600, never logged) and the file is deleted after the first sign-in | — |
 | `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in email + password sign-in (`true`) or only an external IdP (`false`). If unset it is on, except when `MODE=prod` and `AUTH_OIDC_ISSUER` points at an external IdP. In production the app logs a warning while built-in sign-in is active | `true` (see left) |
+| `AUTH_COOKIE_SECURE` | Force the admin session cookies' `Secure` flag on or off. Unset: on when `MODE=prod` or `APP_BASE_URL` is https, otherwise it follows the request scheme | (auto) |
+| `AUTH_COOKIE_SAMESITE` | SameSite for the admin session cookies. Keep `lax`: `strict` breaks the redirect back from the IdP after sign-in. CSRF is handled by an Origin check | `lax` |
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | Minimum length for a new built-in password. The bootstrap password, and any password flagged for change, must be replaced at first sign-in | `12` |
 
 To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.

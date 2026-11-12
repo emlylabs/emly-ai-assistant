@@ -1,7 +1,8 @@
 """Origin-check middleware for cookie-authenticated mutating requests.
 
-The admin UI authenticates via a ``SameSite=Strict`` cookie. ``SameSite``
-already blocks most cross-site CSRF; this middleware adds belt-and-braces
+The admin UI authenticates via a ``SameSite=Lax`` cookie (not Strict — see
+``services.auth.cookie_policy.cookie_samesite``). Lax blocks cookies on
+cross-site POSTs from other sites' forms; this middleware adds belt-and-braces
 ``Origin`` validation so a leaked cookie can't be replayed from a third-party
 page even via complex routing edge cases.
 

@@ -234,46 +234,17 @@ def _clear_session_cookies(response, request: Request) -> None:
 
 
 def _cookie_secure(request: Request | None = None) -> bool:
-    """Decide the ``Secure`` cookie attribute.
+    """See ``services.auth.cookie_policy.cookie_secure``."""
+    from services.auth.cookie_policy import cookie_secure
 
-    The browser silently drops a ``Secure`` cookie when the response is
-    served over plain HTTP, so the attribute must reflect the
-    **actual** request scheme — not the configured ``APP_BASE_URL``.
-    Otherwise a dev session whose ``APP_BASE_URL=https://example.com``
-    points at production would fail to set cookies on ``http://localhost``,
-    the catchall would see no session, and the user would get
-    rate-limited bouncing between the catchall and ``/api/admin/auth/login``.
-
-    Precedence:
-    1. Explicit override via ``AUTH_COOKIE_SECURE=true|false`` (for
-       deploys that front an HTTPS terminator while the app talks
-       plain HTTP behind it).
-    2. The request's actual ``url.scheme`` (HTTPS → True, HTTP → False).
-       This is correct in every topology we care about:
-       - Direct HTTPS: scheme is https.
-       - HTTP localhost: scheme is http.
-       - Reverse proxy (TLS terminated upstream): scheme is http
-         but the cookie is set on the user's HTTPS browser, so the
-         browser stores it just fine.
-    3. Fallback when ``request`` is unavailable (module-init): default
-       to ``False`` (the safe-ish choice — easier to debug a "cookie
-       didn't set" than a "cookie silently dropped").
-    """
-    explicit = os.environ.get("AUTH_COOKIE_SECURE")
-    if explicit is not None:
-        return explicit.strip().lower() in ("1", "true", "yes", "on")
-    if request is not None:
-        return request.url.scheme.lower() == "https"
-    return (os.environ.get("APP_BASE_URL", "").lower().startswith("https://"))
+    return cookie_secure(request)
 
 
 def _cookie_samesite() -> str:
-    """Default to "lax" so the IdP's 302 → callback request still carries the
-    cookie back. "strict" would block it on the very first redirect after
-    setting and is what surfaces as "I logged in but bounced back to /login".
-    """
-    val = os.environ.get("AUTH_COOKIE_SAMESITE", "lax").strip().lower()
-    return val if val in ("strict", "lax", "none") else "lax"
+    """See ``services.auth.cookie_policy.cookie_samesite`` (why ``lax``)."""
+    from services.auth.cookie_policy import cookie_samesite
+
+    return cookie_samesite()
 
 
 def _cookie_domain() -> str | None:
@@ -502,35 +473,22 @@ async def logout(
     )
     _clear_session_cookies(response, request)
 
-    # If the BFF still has the refresh_token in memory, hand it to the
-    # embedded issuer so the store-side entry is dropped. External IdPs
-    # (Auth0, Clerk, etc.) don't expose this surface in our Protocol —
-    # they treat logout as "stop using it" and the cookie clear is
+    # With the embedded issuer, drop the refresh token from its store so a
+    # copied cookie can't be replayed after logout. The store lives in this
+    # process, so revoke directly (this used to be a blocking HTTP call to
+    # the app's own public URL, which often doesn't resolve inside a pod).
+    # External IdPs treat logout as "stop using it"; the cookie clear is
     # what blocks replay from this browser.
     try:
         from services.secrets import decrypt_session_cookie
-        from services.auth.issuer.factory import is_local_issuer_enabled
+        from services.auth.issuer.factory import get_refresh_store, is_local_issuer_enabled
         if is_local_issuer_enabled():
             raw = request.cookies.get(_refresh_cookie_name())
-            if raw:
-                rt = decrypt_session_cookie(raw)
-                if rt:
-                    # Fire-and-forget: the issuer's /logout endpoint
-                    # is the only path that takes a refresh_token.
-                    # The store revoke is best-effort — if the IdP
-                    # is unreachable the cookie clear is still
-                    # what protects the user.
-                    import httpx
-                    try:
-                        httpx.post(
-                            f"{_app_base_url(request)}/api/auth/local/logout",
-                            data={"refresh_token": rt},
-                            timeout=2.0,
-                        )
-                    except Exception:
-                        log.debug("BFF logout: embedded-issuer revoke failed (non-fatal)")
+            rt = decrypt_session_cookie(raw) if raw else None
+            if rt:
+                get_refresh_store().revoke(rt)
     except Exception:
-        log.debug("BFF logout: refresh-token cleanup skipped", exc_info=True)
+        log.debug("BFF logout: refresh-token revoke skipped", exc_info=True)
 
     audit("auth.logout", request=request, success=True)
     return response
