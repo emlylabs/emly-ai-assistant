@@ -94,6 +94,61 @@ Use this when you want hot-reload on the backend or UI during development.
 
 ---
 
+## Production hardening
+
+Checklist for a production deployment. Each variable is described in full under [Configuration Reference](#configuration-reference); this section says what to set and why. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+**Required**
+
+| Setting | Production value | Why |
+|---------|------------------|-----|
+| `MODE` | `prod` | Turns on the production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set |
+| `APP_BASE_URL`, `PUBLIC_BASE_URL` | Your public `https://` URL | Required with `MODE=prod`. An https URL also turns on HSTS and `Secure` cookies, and is the base for links in emails |
+| `BOT_SECRETS_KEY` | A Fernet key you generate and back up | Encrypts stored API keys and channel credentials, and signs widget tokens. The app refuses to start in prod without it. Rotate with `BOT_SECRETS_KEY_PREVIOUS` ([how](#rotating-the-secrets-key)) |
+| `POSTGRES_PASSWORD` | A long random value | Docker Compose refuses to start without it; there is no default password |
+| `FORWARDED_ALLOW_IPS` | Only your reverse proxy's address or subnet | Client IPs (rate limits, audit log) are read from proxy headers only when they come from these addresses. Never `*` |
+
+**Sign-in and admin access**
+
+| Setting | Production value | Why |
+|---------|------------------|-----|
+| `AUTH_OIDC_*` | Your IdP | With an external IdP set, built-in password sign-in is off in prod unless `AUTH_LOCAL_ISSUER_ENABLED=true` |
+| `AUTH_LOCAL_ISSUER_ENABLED` | Leave unset (or `false`) when you use an IdP | Avoids a second, password-based way in |
+| `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | `12` or more | Applies when built-in sign-in is used; the first sign-in must replace the bootstrap password |
+| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in |
+| `AUTH_OIDC_REQUEST_OFFLINE_ACCESS`, `AUTH_OIDC_EMAIL_CLAIMS`, `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Per your IdP (see [SSO](#external-identity-provider-sso)) | Keep `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` `false` unless you control the IdP's directory |
+| `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
+| `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
+| `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
+
+**Widget and visitors**
+
+| Setting | Production value | Why |
+|---------|------------------|-----|
+| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): review them |
+| `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
+| `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
+| Each bot's *Data retention* | Your retention period | Conversations, submissions and attachments older than this are deleted nightly |
+| Each bot's *Alert emails contain* | *Only a link* if alerts shouldn't carry visitor data | Keeps transcripts, visitor details and files out of mailboxes |
+| Workspace *OTP expiry* | 5 minutes (default) | One-time codes are single-use, hashed, and locked after 5 wrong attempts |
+
+**Email, models and data**
+
+| Setting | Production value | Why |
+|---------|------------------|-----|
+| `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
+| `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
+| `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
+| `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
+| `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION`, `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Only when using non-default models | Pin a commit; allow remote code only for a model you have reviewed |
+| `AUDIT_RETENTION_DAYS`, `WEBHOOK_DEDUPE_RETENTION_HOURS` | `365` and `24` (defaults), or your policy | Nightly cleanup |
+
+**Network and channels**
+
+- Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
+- Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.
+- The image runs as a non-root user and handles `SIGTERM` for clean shutdowns.
+
 ## Configuration Reference
 
 All configuration is done via environment variables. Copy `.env.sample` to `.env` and edit it.
@@ -128,18 +183,19 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
 | `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
 | `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
+| `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
+| `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
+| `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | After a bot's widget signing secret is rotated, how long tokens signed with the previous secret are still accepted | `86400` (24 h) |
+| `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
+| `FORWARDED_ALLOW_IPS` | Proxy addresses (comma-separated IPs or CIDRs) trusted to set `X-Forwarded-For` / `X-Forwarded-Proto`. Client IPs from these headers feed rate limits and the audit log, so never use `*`. Exposed directly (the default compose stack): leave the default. Behind a reverse-proxy container in compose: the proxy container's IP or the compose network's subnet, e.g. `172.18.0.0/16` (see `docker network inspect`). Kubernetes: the range your ingress controller connects from, usually the pod CIDR, e.g. `10.244.0.0/16` | `127.0.0.1` |
+| `AUTH_RATE_*` | Per-client rate limits, in [`limits`](https://limits.readthedocs.io/) syntax such as `20/minute`. `WIDGET_INIT` (30/min), `WIDGET_CHAT` (20/min), `WIDGET_ACTION` (20/min) and `WIDGET_UPLOAD` (10/min) are per IP per bot. `OTP_SEND_TARGET` (5 per 10 min) is per bot and email address, `OTP_SEND_IP` (20/hour) and `OTP_VERIFY` (10 per 10 min) per IP per bot. `LOCAL_AUTHORIZE` (5/min) and `LOCAL_TOKEN` (10/min) are per IP. Counters are in memory, per process | see left |
+| `EMAIL_SERVER` | Your SMTP relay for OTP codes, invites and form alerts. With no value, email is disabled and a line is logged at boot. Port 465 uses implicit TLS and 587 uses STARTTLS, both with certificate verification | unset (email off) |
 
 #### Visitor data: retention and erasure
 
 - **Retention:** each bot's *Config → Limits → Data retention* sets how many days to keep conversations. Every night (03:45) messages, conversations, form submissions and chat attachments older than that are deleted, along with visitor profiles that have nothing left. Empty keeps everything.
 - **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
 - **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
-| `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
-| `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
-| `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
-| `FORWARDED_ALLOW_IPS` | Proxy addresses (comma-separated IPs or CIDRs) trusted to set `X-Forwarded-For` / `X-Forwarded-Proto`. Client IPs from these headers feed rate limits and the audit log, so never use `*`. Exposed directly (the default compose stack): leave the default. Behind a reverse-proxy container in compose: the proxy container's IP or the compose network's subnet, e.g. `172.18.0.0/16` (see `docker network inspect`). Kubernetes: the range your ingress controller connects from, usually the pod CIDR, e.g. `10.244.0.0/16` | `127.0.0.1` |
-| `AUTH_RATE_*` | Per-client rate limits, in [`limits`](https://limits.readthedocs.io/) syntax such as `20/minute`. `WIDGET_INIT` (30/min), `WIDGET_CHAT` (20/min), `WIDGET_ACTION` (20/min) and `WIDGET_UPLOAD` (10/min) are per IP per bot. `OTP_SEND_TARGET` (5 per 10 min) is per bot and email address, `OTP_SEND_IP` (20/hour) and `OTP_VERIFY` (10 per 10 min) per IP per bot. `LOCAL_AUTHORIZE` (5/min) and `LOCAL_TOKEN` (10/min) are per IP. Counters are in memory, per process | see left |
-| `EMAIL_SERVER` | Your SMTP relay for OTP codes, invites and form alerts. With no value, email is disabled and a line is logged at boot. Port 465 uses implicit TLS and 587 uses STARTTLS, both with certificate verification | unset (email off) |
 
 #### Rotating the secrets key
 
@@ -596,7 +652,7 @@ Add this snippet to any website:
 </script>
 ```
 
-See [`widget/EMBED.md`](widget/EMBED.md) for full customization (themes, user IDs, callbacks).
+Add your site to the bot's *Allowed widget origins* (Config → Limits) first; new bots only allow this app's own pages. See [`widget/README.md`](widget/README.md) for the build and the widget's public API.
 
 ---
 
@@ -688,7 +744,6 @@ curl -X POST https://emly.yourdomain.com/api/admin/admins/pending \
 └──────────────┘    └──────────────┘
 ```
 
-For detailed architecture docs, see [`docs/multi-bot.md`](docs/multi-bot.md).
 
 ---
 
@@ -721,8 +776,7 @@ emly-ai-assistant/
 │   ├── src/                # Source code
 │   └── dist/               # Built bundle
 │
-├── channels/               # Channel adapters (Slack, etc.)
-└── docs/                   # Architecture and API docs
+└── channels/               # Channel adapters (Slack, etc.)
 ```
 
 ---

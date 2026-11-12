@@ -178,3 +178,44 @@ def test_security_policy_present():
     for heading in ("## Reporting a vulnerability", "## What to expect", "## Supported versions"):
         assert heading in text, heading
     assert "business days" in text
+
+
+# ---------------------------------------------------------------------- E5
+
+# Every environment variable added or changed by the security work.
+HARDENING_VARS = (
+    "MODE", "APP_BASE_URL", "PUBLIC_BASE_URL", "BOT_SECRETS_KEY", "BOT_SECRETS_KEY_PREVIOUS",
+    "POSTGRES_PASSWORD", "FORWARDED_ALLOW_IPS", "AUTH_LOCAL_ISSUER_ENABLED", "AUTH_LOCAL_MIN_PASSWORD_LENGTH",
+    "AUTH_BOOTSTRAP_SUPERADMIN_EMAIL", "AUTH_LOCAL_BOOTSTRAP_PASSWORD", "AUTH_OIDC_REQUEST_OFFLINE_ACCESS",
+    "AUTH_OIDC_EMAIL_CLAIMS", "AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY", "AUTH_COOKIE_SECURE",
+    "AUTH_COOKIE_SAMESITE", "BOT_CREATION", "ENABLE_API_DOCS", "WIDGET_TOKEN_TTL_SECONDS",
+    "WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS", "WIDGET_TOKEN_ROTATION_GRACE_SECONDS", "AUTH_RATE_",
+    "EMAIL_SERVER", "MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
+    "SENTENCE_TRANSFORMERS_HOME", "RE_RANKING_MODEL_HOME", "RAG_EMBEDDING_MODEL_REVISION",
+    "RE_RANKING_MODEL_REVISION", "RAG_EMBEDDING_TRUST_REMOTE_CODE", "AUDIT_RETENTION_DAYS",
+    "WEBHOOK_DEDUPE_RETENTION_HOURS",
+)
+
+
+def _readme() -> str:
+    return (REPO_ROOT / "README.md").read_text()
+
+
+def test_production_hardening_lists_every_variable():
+    text = _readme()
+    section = text[text.index("## Production hardening"):text.index("## Configuration Reference")]
+    missing = [v for v in HARDENING_VARS if f"`{v}" not in section]
+    assert missing == []
+
+
+def test_readme_internal_links_resolve():
+    text = _readme()
+
+    def anchor(heading: str) -> str:
+        return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+    anchors = {anchor(h) for h in re.findall(r"^#{1,6}\s+(.+)$", text, flags=re.M)}
+    for target in re.findall(r"\]\(#([^)]+)\)", text):
+        assert target in anchors, f"broken anchor #{target}"
+    for target in re.findall(r"\]\((?!https?:|#|mailto:)([^)#]+)", text):
+        assert (REPO_ROOT / target).exists(), f"broken link {target}"
