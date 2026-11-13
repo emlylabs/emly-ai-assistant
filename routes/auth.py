@@ -55,10 +55,10 @@ def _app_base_url(request: Request | None = None) -> str:
 
     Resolution order:
       1. ``APP_BASE_URL`` env (the operator's contract — set this in prod).
-      2. The incoming request's scheme + host. uvicorn runs with
-         ``--forwarded-allow-ips '*'`` (see ``start.sh``), so behind a
-         reverse proxy ``request.url`` already reflects ``X-Forwarded-Proto``
-         / ``X-Forwarded-Host``.
+      2. The incoming request's scheme + host (dev only: prod modes refuse
+         to boot without ``APP_BASE_URL``). uvicorn applies
+         ``X-Forwarded-Proto`` only from ``FORWARDED_ALLOW_IPS`` (see
+         ``start.sh``); the host comes from the ``Host`` header.
       3. ``http://localhost:8080`` — last-resort fallback for code paths
          that don't have a request in scope.
     """
