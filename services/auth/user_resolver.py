@@ -28,12 +28,12 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from typing import Optional
 
 from db.db import DB
 from models.admin_bot_memberships import AdminBotMemberships, ROLES
-from models.admin_users import AdminUser, AdminUserModel, AdminUsers
-from models.pending_admins import PendingAdmins
+from models.admin_users import AdminUserModel, AdminUsers
+from models.bots import Bots
+from models.pending_admins import KIND_SUPERADMIN_LEGACY, PendingAdmins
 from services.auth.base import AuthError, Principal
 
 log = logging.getLogger(__name__)
@@ -50,7 +50,9 @@ class EmailLinkedToOtherProvider(AuthError):
 
 
 class EmailNotVerified(AuthError):
-    """The IdP reports that the user's email address has not been verified."""
+    """IdP returned ``email_verified=false``. Activating a new admin row from
+    an unverified email is unsafe — anyone who can sign up at the IdP with an
+    invitee's address would inherit the admin row."""
 
 
 def _allow_email_relink() -> bool:
@@ -62,8 +64,6 @@ def _generate_admin_id() -> str:
 
 
 def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
-    from models.bots import Bots  # late import to avoid circulars
-
     for entry in assignments:
         bot_id = entry.get("bot_id")
         role = entry.get("role", "viewer")
@@ -72,6 +72,12 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
             continue
         if Bots.get_by_id(bot_id) is None:
             log.warning("Skipping pending bot assignment for nonexistent bot %s", bot_id)
+            continue
+        existing = AdminBotMemberships.get(admin_id, bot_id)
+        if existing is not None:
+            # Already a member — accept may have happened from a stale
+            # token, or the resolver re-applied a legacy invite. Leave
+            # the existing role intact.
             continue
         membership_id = f"mbr-{uuid.uuid4()}"
         try:
@@ -148,50 +154,87 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
                 pass
             return _refetch(by_email.id)
 
-        # 3) Pending-admin activation.
-        pending = PendingAdmins.get_active_by_email(principal.email)
-        if pending is not None:
-            admin_id = _generate_admin_id()
-            AdminUsers.insert(
-                id=admin_id,
-                email=principal.email,
-                password_hash="",  # OIDC-only; legacy login rejects empty hashes
-                is_active=True,
-                issuer=principal.issuer,
-                subject=principal.subject,
-                email_verified=principal.email_verified,
-                is_superadmin=pending.is_superadmin,
-                name=principal.name,
-            )
-            AdminUsers.touch_login(admin_id, email=principal.email, name=principal.name)
-            _apply_pending_assignments(admin_id, pending.bot_assignments)
-            PendingAdmins.consume(principal.email, by_admin_id=admin_id)
-            _migrate_bootstrap_credential(principal.email, admin_id)
-            log.info(
-                "Activated pending admin %s as %s (superadmin=%s, %d bot assignment(s))",
-                principal.email, admin_id, pending.is_superadmin, len(pending.bot_assignments),
-            )
-            try:
-                from services.audit import audit
-                audit(
-                    "admin.created_from_pending",
-                    admin_id=admin_id,
-                    target_type="admin",
-                    target_id=admin_id,
-                    payload={
-                        "email": principal.email,
-                        "issuer": principal.issuer,
-                        "is_superadmin": pending.is_superadmin,
-                        "bot_assignments": len(pending.bot_assignments),
-                    },
-                )
-            except Exception:
-                pass
-            return _refetch(admin_id)
+        # 3) First-time signup via pending invite.
+        #
+        # Two invite kinds coexist on ``pending_admin``:
+        # * ``superadmin_legacy`` — applied silently on first login, the
+        #   legacy "platform invite" path. Used by the bootstrap admin
+        #   and by superadmins staging multi-bot grants.
+        # * ``space_invite`` — accepted/rejected explicitly via the
+        #   ``/accept-invite`` page. The resolver does NOT consume these
+        #   here; it just records that they exist so the callback can
+        #   route the user to the picker.
+        all_pending = PendingAdmins.list_pending_for_email(principal.email)
+        legacy_pending = [p for p in all_pending if p.kind == KIND_SUPERADMIN_LEGACY]
+        space_invites = [p for p in all_pending if p.kind != KIND_SUPERADMIN_LEGACY]
 
-        # 4) Authenticated stranger.
-        log.info("Refusing login for %s: no existing admin and no pending invite", principal.email)
-        raise AdminNotProvisioned("admin_not_provisioned")
+        if not all_pending:
+            # 4) Authenticated stranger — no invite, no admin, refuse.
+            log.info(
+                "Refusing login for %s: no existing admin and no pending invite",
+                principal.email,
+            )
+            raise AdminNotProvisioned("admin_not_provisioned")
+
+        # Don't create the admin row off an unverified email.
+        # The embedded issuer always emits email_verified=True; for
+        # external IdPs the operator can opt back in to the legacy
+        # trust-unconditionally posture via
+        # ``AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY=true``.
+        if not principal.email_verified:
+            log.warning(
+                "Refusing to activate pending invite for %s: IdP reports email_verified=false",
+                principal.email,
+            )
+            raise EmailNotVerified("email_not_verified")
+
+        # Promote legacy rows' ``is_superadmin`` flag straight onto the
+        # new admin so the bootstrap path keeps working.
+        becomes_superadmin = any(p.is_superadmin for p in legacy_pending)
+
+        admin_id = _generate_admin_id()
+        AdminUsers.insert(
+            id=admin_id,
+            email=principal.email,
+            password_hash="",  # OIDC-only; legacy login rejects empty hashes
+            is_active=True,
+            issuer=principal.issuer,
+            subject=principal.subject,
+            email_verified=principal.email_verified,
+            is_superadmin=becomes_superadmin,
+            name=principal.name,
+        )
+        AdminUsers.touch_login(admin_id, email=principal.email, name=principal.name)
+
+        for pending in legacy_pending:
+            _apply_pending_assignments(admin_id, pending.bot_assignments)
+            PendingAdmins.mark_accepted(pending.id, admin_id)
+        _migrate_bootstrap_credential(principal.email, admin_id)
+        log.info(
+            "Activated admin %s as %s (superadmin=%s, %d legacy + %d space invites)",
+            principal.email, admin_id, becomes_superadmin,
+            len(legacy_pending), len(space_invites),
+        )
+        try:
+            from services.audit import audit
+            audit(
+                "admin.created_from_pending",
+                admin_id=admin_id,
+                target_type="admin",
+                target_id=admin_id,
+                payload={
+                    "email": principal.email,
+                    "issuer": principal.issuer,
+                    "is_superadmin": becomes_superadmin,
+                    "legacy_assignments": sum(
+                        len(p.bot_assignments) for p in legacy_pending
+                    ),
+                    "space_invites_pending": len(space_invites),
+                },
+            )
+        except Exception:
+            pass
+        return _refetch(admin_id)
 
 
 def _refetch(admin_id: str) -> AdminUserModel:
@@ -230,3 +273,8 @@ def _migrate_bootstrap_credential(email: str, admin_id: str) -> None:
     )
     LocalCredentials.delete(sentinel_id)
     log.info("Migrated bootstrap credential for %s onto admin_id=%s", email, admin_id)
+    # The generated temporary password (if any) has now been used to sign in;
+    # the plaintext copy on disk is no longer needed.
+    from services.auth.bootstrap import remove_bootstrap_password_file
+
+    remove_bootstrap_password_file()

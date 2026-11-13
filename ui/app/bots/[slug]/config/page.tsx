@@ -1,21 +1,31 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useBot } from "@/components/BotShell";
+import Modal from "@/components/Modal";
 import ActionsSection from "@/components/actions/ActionsSection";
 import SummaryCard from "@/components/SummaryCard";
-import MigrationNotice from "@/components/MigrationNotice";
 import ValidationPanel from "@/components/ValidationPanel";
 import WidgetPreview from "@/components/WidgetPreview";
 import SkillTypePicker from "@/components/skills/SkillTypePicker";
 import FieldsEditor from "@/components/skills/FieldsEditor";
 import PromptEditor from "@/components/skills/PromptEditor";
-import { ApiError, api } from "@/lib/api";
+import {
+  ApiError,
+  BotConfigResponse,
+  ConfigDraft,
+  ConfigHistoryDetail,
+  ConfigHistoryEntry,
+  ConfigValidationIssue,
+  api,
+} from "@/lib/api";
 import { validateConfig } from "@/lib/config-validation";
 import { GLOBAL_PROMPT_DEFAULTS } from "@/lib/defaults";
 import { applyType, inferType } from "@/lib/skill-types";
+import { relativeTime } from "@/lib/aggregations";
 
-type TabId = "identity" | "widget" | "topics" | "forms" | "llm" | "rag" | "limits" | "raw";
+type TabId = "identity" | "widget" | "topics" | "forms" | "llm" | "rag" | "limits" | "raw" | "history";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "identity", label: "Bot setup" },
@@ -26,6 +36,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "llm", label: "LLM" },
   { id: "limits", label: "Limits" },
   { id: "raw", label: "Raw JSON" },
+  { id: "history", label: "History" },
 ];
 
 type Cfg = Record<string, any>;
@@ -33,18 +44,84 @@ type Cfg = Record<string, any>;
 export default function BotConfigPage() {
   const { bot, currentRole, refreshBot } = useBot();
   const writable = currentRole === "owner" || currentRole === "admin";
+  const search = useSearchParams();
+  const requestedTab = search?.get("tab");
+  const initialTab: TabId = TABS.some((t) => t.id === requestedTab)
+    ? (requestedTab as TabId)
+    : "identity";
 
   const [config, setConfig] = useState<Cfg>({});
+  // The last *published* config (what the live widget sees). Used to compute
+  // unsaved-edits state, to diff against drafts, and as the rollback target
+  // for "Discard draft".
   const [savedConfig, setSavedConfig] = useState<Cfg>({});
+  // The current pending draft, if any. Non-null means the user has a saved
+  // draft on disk; the editor primes from it on load. Independent of
+  // unsaved-in-memory edits — those live in ``config`` only.
+  const [draft, setDraft] = useState<ConfigDraft | null>(null);
   const [version, setVersion] = useState<number | null>(null);
+  // Last-saved attribution shown in the editor footer.
+  const [lastSavedBy, setLastSavedBy] = useState<{ email: string | null; at: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [discardingDraft, setDiscardingDraft] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ current: number; expected: number } | null>(null);
-  const [activeTab, setActiveTab] = useState<TabId>("identity");
+  // 422 from save/publish: the server validator found errors. Holds the
+  // issue list (so we can render it inline with tab-jump links) plus the
+  // gate type — "save" allows a force-override, "publish" does not.
+  const [gateBlock, setGateBlock] = useState<{
+    kind: "save" | "publish";
+    message: string;
+    issues: ConfigValidationIssue[];
+    canForce: boolean;
+  } | null>(null);
+  const [forcingSave, setForcingSave] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [fileCount, setFileCount] = useState<number | undefined>(undefined);
   const [hasApiKey, setHasApiKey] = useState<boolean | undefined>(undefined);
+  // Whether the deployment has a fallback LLM key (``OPENAI_API_KEY``).
+  // Combined with ``hasApiKey`` to detect RT1: no bot key + no fallback
+  // = chat will fail. Surfaced by the SummaryCard.
+  const [hasDeploymentFallback, setHasDeploymentFallback] = useState<boolean | undefined>(undefined);
+  // Per-session undo: ring buffer of recent ``config`` snapshots and a
+  // matching redo stack. Cleared on load/save; not persisted. Cmd+Z pops
+  // from undo onto redo; Cmd+Shift+Z does the reverse. Bounded at 50 to
+  // cap memory on long sessions with large topic trees.
+  const undoStackRef = useRef<Cfg[]>([]);
+  const redoStackRef = useRef<Cfg[]>([]);
+  const restoringFromUndoRef = useRef(false);
+  // Beforeunload guard: prompt the user when they navigate away with
+  // unsaved-in-memory edits. The browser shows a generic confirm dialog;
+  // we can't customize the message but can opt in via returnValue.
+  const hasUnsavedRef = useRef(false);
+
+  const applyResponse = useCallback((res: BotConfigResponse) => {
+    const live = (res.config ?? {}) as Cfg;
+    setSavedConfig(live);
+    setVersion(res.config_version);
+    setLastSavedBy(
+      res.last_updated_at
+        ? { email: res.last_updated_by_admin_email, at: res.last_updated_at }
+        : null,
+    );
+    if (res.draft) {
+      setDraft(res.draft);
+      // Prime the editor with the draft so the admin lands on their
+      // in-progress work, not the live config they may have wandered away
+      // from. The unsaved-edits indicator stays off because draft == config
+      // until they edit further.
+      setConfig((res.draft.config ?? {}) as Cfg);
+    } else {
+      setDraft(null);
+      setConfig(live);
+    }
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,16 +130,13 @@ export default function BotConfigPage() {
     setSuccess(null);
     try {
       const res = await api.getBotConfig(bot.slug);
-      const cfg = (res.config ?? {}) as Cfg;
-      setConfig(cfg);
-      setSavedConfig(cfg);
-      setVersion(res.config_version);
+      applyResponse(res);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load config");
     } finally {
       setLoading(false);
     }
-  }, [bot.slug]);
+  }, [bot.slug, applyResponse]);
 
   useEffect(() => {
     load();
@@ -70,28 +144,75 @@ export default function BotConfigPage() {
 
   // Fetch file count + API key status for the summary card / validation.
   useEffect(() => {
-    api.listBotFiles(bot.slug).then((files) => setFileCount(files.length)).catch(() => setFileCount(undefined));
-    api.getBotApiKeyStatus(bot.slug).then((r) => setHasApiKey(r.has_key)).catch(() => setHasApiKey(undefined));
+    api
+      .listBotFiles(bot.slug, { page: 1, pageSize: 1 })
+      .then((res) => setFileCount(res.grand_total))
+      .catch(() => setFileCount(undefined));
+    api
+      .getBotApiKeyStatus(bot.slug)
+      .then((r) => {
+        setHasApiKey(r.has_key);
+        setHasDeploymentFallback(r.has_deployment_fallback);
+      })
+      .catch(() => {
+        setHasApiKey(undefined);
+        setHasDeploymentFallback(undefined);
+      });
   }, [bot.slug]);
 
-  const issues = useMemo(() => validateConfig(config, { fileCount }), [config, fileCount]);
+  const issues = useMemo(
+    () => validateConfig(config, { fileCount, botSlug: bot.slug }),
+    [config, fileCount, bot.slug],
+  );
+  // The "baseline" for unsaved-edits is the draft when one exists, else the
+  // last-published config. Editing the draft makes the editor dirty; editing
+  // when no draft exists also makes it dirty (relative to live).
+  const baseline = useMemo<Cfg>(
+    () => (draft?.config ? (draft.config as Cfg) : savedConfig),
+    [draft, savedConfig],
+  );
   const hasUnsavedEdits = useMemo(
-    () => JSON.stringify(config) !== JSON.stringify(savedConfig),
-    [config, savedConfig],
+    () => JSON.stringify(config) !== JSON.stringify(baseline),
+    [config, baseline],
+  );
+  const draftDiffersFromLive = useMemo(
+    () => Boolean(draft) && JSON.stringify(draft?.config ?? {}) !== JSON.stringify(savedConfig),
+    [draft, savedConfig],
   );
 
-  async function save() {
+  useEffect(() => {
+    hasUnsavedRef.current = hasUnsavedEdits;
+  }, [hasUnsavedEdits]);
+
+  // Prompt on tab-close / navigate-away when the editor is dirty. The
+  // browser ignores the message string and shows its own copy, but the
+  // user still sees a "Leave site?" prompt — better than silent loss.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (!hasUnsavedRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  async function save(opts?: { force?: boolean }) {
     setError(null);
     setSuccess(null);
     setConflict(null);
-    setSaving(true);
+    setGateBlock(null);
+    if (opts?.force) setForcingSave(true);
+    else setSaving(true);
     try {
-      const res = await api.putBotConfig(bot.slug, config, version ?? undefined);
-      const next = (res.config ?? config) as Cfg;
-      setConfig(next);
-      setSavedConfig(next);
-      setVersion(res.config_version);
-      setSuccess("Saved.");
+      const res = await api.putBotConfig(
+        bot.slug,
+        config,
+        version ?? undefined,
+        opts?.force ? { force: true } : undefined,
+      );
+      applyResponse(res);
+      setSuccess(opts?.force ? "Saved (override)." : "Saved.");
       refreshBot();
     } catch (err: unknown) {
       if (err instanceof ApiError && err.status === 409) {
@@ -104,12 +225,96 @@ export default function BotConfigPage() {
         } else {
           setError(err.message);
         }
+      } else if (err instanceof ApiError && err.status === 422) {
+        const detail =
+          typeof err.detail === "object" && err.detail
+            ? (err.detail as {
+                message?: string;
+                issues?: ConfigValidationIssue[];
+                can_force?: boolean;
+              })
+            : {};
+        setGateBlock({
+          kind: "save",
+          message: detail.message ?? "Save blocked by validation errors.",
+          issues: detail.issues ?? [],
+          canForce: Boolean(detail.can_force),
+        });
       } else {
         setError(err instanceof Error ? err.message : "Failed to save");
       }
     } finally {
-      setSaving(false);
+      if (opts?.force) setForcingSave(false);
+      else setSaving(false);
     }
+  }
+
+  async function saveDraft() {
+    setError(null);
+    setSuccess(null);
+    setSavingDraft(true);
+    try {
+      const res = await api.putBotConfigDraft(bot.slug, config);
+      applyResponse(res);
+      setSuccess("Draft saved. Visitors still see the published config.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function publishDraft() {
+    setError(null);
+    setSuccess(null);
+    setGateBlock(null);
+    setPublishing(true);
+    try {
+      const res = await api.publishBotConfigDraft(bot.slug);
+      applyResponse(res);
+      setSuccess("Published. Visitors now see the new config.");
+      refreshBot();
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 422) {
+        const detail =
+          typeof err.detail === "object" && err.detail
+            ? (err.detail as { message?: string; issues?: ConfigValidationIssue[] })
+            : {};
+        setGateBlock({
+          kind: "publish",
+          message: detail.message ?? "Publish blocked by validation errors.",
+          issues: detail.issues ?? [],
+          // Publish never offers a force escape: the contract is
+          // "drafts can be broken; published bots cannot."
+          canForce: false,
+        });
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to publish draft");
+      }
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function discardDraft() {
+    setError(null);
+    setSuccess(null);
+    setDiscardingDraft(true);
+    try {
+      const res = await api.discardBotConfigDraft(bot.slug);
+      applyResponse(res);
+      setSuccess("Draft discarded.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to discard draft");
+    } finally {
+      setDiscardingDraft(false);
+    }
+  }
+
+  function discardInMemoryEdits() {
+    setConfig(baseline);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
   }
 
   // Cmd/Ctrl+S triggers Save. Use a ref so the listener always reads the
@@ -118,25 +323,86 @@ export default function BotConfigPage() {
   useEffect(() => {
     saveRef.current = save;
   });
+
+  // Push the current config onto the undo stack before any structural
+  // change. Skip the push when the change came from undo/redo itself, so
+  // the stacks don't recursively swallow each other.
+  const pushUndo = useCallback(() => {
+    if (restoringFromUndoRef.current) return;
+    const snap = JSON.parse(JSON.stringify(config));
+    undoStackRef.current.push(snap);
+    if (undoStackRef.current.length > 50) {
+      undoStackRef.current = undoStackRef.current.slice(-50);
+    }
+    // Any new edit invalidates the redo trail — branching means the user
+    // wants the new path, not the abandoned future.
+    redoStackRef.current = [];
+  }, [config]);
+
+  const performUndo = useCallback(() => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    redoStackRef.current.push(JSON.parse(JSON.stringify(config)));
+    restoringFromUndoRef.current = true;
+    setConfig(prev);
+    queueMicrotask(() => { restoringFromUndoRef.current = false; });
+  }, [config]);
+
+  const performRedo = useCallback(() => {
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current.push(JSON.parse(JSON.stringify(config)));
+    restoringFromUndoRef.current = true;
+    setConfig(next);
+    queueMicrotask(() => { restoringFromUndoRef.current = false; });
+  }, [config]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const isSaveCombo = (e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S");
-      if (!isSaveCombo) return;
-      e.preventDefault();
-      if (!writable || saving || loading) return;
-      if (!hasUnsavedEdits) return;
-      saveRef.current();
+      const meta = e.metaKey || e.ctrlKey;
+      const isSaveCombo = meta && (e.key === "s" || e.key === "S");
+      const isUndoCombo = meta && !e.shiftKey && (e.key === "z" || e.key === "Z");
+      const isRedoCombo =
+        meta && (e.shiftKey ? e.key === "z" || e.key === "Z" : e.key === "y" || e.key === "Y");
+      if (isSaveCombo) {
+        e.preventDefault();
+        if (!writable || saving || loading) return;
+        if (!hasUnsavedEdits) return;
+        saveRef.current();
+        return;
+      }
+      // Skip undo/redo when focus is inside a text input — the browser's
+      // native undo handles those (and a config-level rollback would be
+      // jarring mid-typing). The target check is the right scope; keys
+      // bubble up from contenteditable / textarea / input identically.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const inField =
+        tag === "input" ||
+        tag === "textarea" ||
+        target?.isContentEditable === true;
+      if (isUndoCombo && !inField) {
+        if (undoStackRef.current.length === 0) return;
+        e.preventDefault();
+        performUndo();
+      } else if (isRedoCombo && !inField) {
+        if (redoStackRef.current.length === 0) return;
+        e.preventDefault();
+        performRedo();
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [writable, saving, loading, hasUnsavedEdits]);
+  }, [writable, saving, loading, hasUnsavedEdits, performUndo, performRedo]);
 
   // Helpers used by every section to mutate a sub-key without losing the rest.
   function patch<K extends keyof Cfg>(key: K, value: Cfg[K]) {
+    pushUndo();
     setConfig((prev) => ({ ...prev, [key]: value }));
   }
 
   function patchPath(path: string[], value: any) {
+    pushUndo();
     // Structural sharing: shallow-copy only the path we touch so
     // siblings keep their object identity. This avoids triggering
     // ``[config]`` effects in untouched tabs (notably RawJSONSection,
@@ -157,19 +423,117 @@ export default function BotConfigPage() {
     });
   }
 
+  const busy = loading || saving || savingDraft || publishing || discardingDraft;
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+
   return (
     <>
       <div className="header">
         <h1>Config — {bot.name}</h1>
-        <div className="row">
-          <button className="ghost" onClick={load} disabled={loading || saving}>
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <button className="ghost" onClick={load} disabled={busy}>
             Reload
           </button>
-          <button onClick={save} disabled={loading || saving || !writable}>
-            {saving ? "Saving…" : "Save"}
+          {writable && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setTemplateModalOpen(true)}
+              title="Snapshot this bot's config as a workspace template the create-bot wizard can use."
+            >
+              Save as workspace template…
+            </button>
+          )}
+          {writable && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={saveDraft}
+              disabled={busy || !hasUnsavedEdits}
+              title="Persist these edits without publishing. Visitors keep seeing the live config."
+            >
+              {savingDraft ? "Saving draft…" : "Save as draft"}
+            </button>
+          )}
+          <button
+            onClick={() => save()}
+            disabled={busy || !writable || !hasUnsavedEdits}
+            title="Save and publish — visitors see the new config immediately."
+          >
+            {saving ? "Saving…" : draftDiffersFromLive ? "Publish & save" : "Save"}
           </button>
         </div>
       </div>
+
+      {templateModalOpen && (
+        <SaveAsWorkspaceTemplateModal
+          botSlug={bot.slug}
+          defaultName={`${bot.name} (template)`}
+          onClose={() => setTemplateModalOpen(false)}
+        />
+      )}
+
+      {hasUnsavedEdits && writable && (
+        <div
+          className="banner warning"
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+            position: "sticky",
+            top: 0,
+            zIndex: 4,
+          }}
+        >
+          <strong>Unsaved edits.</strong>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            {draft
+              ? "You've changed the draft. Save as draft to update it, or Save to publish your changes."
+              : "Save as draft to keep editing privately, or Save to publish now."}
+          </span>
+          <button
+            type="button"
+            className="ghost compact"
+            onClick={discardInMemoryEdits}
+            disabled={busy}
+          >
+            Discard edits
+          </button>
+        </div>
+      )}
+
+      {draft && !hasUnsavedEdits && writable && draftDiffersFromLive && (
+        <div
+          className="banner advisory"
+          style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}
+        >
+          <strong>Draft pending.</strong>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            Saved as draft{" "}
+            {draft.updated_by_admin_email
+              ? `by ${draft.updated_by_admin_email} `
+              : ""}
+            {relativeTime(draft.updated_at)}. Visitors still see the published config.
+          </span>
+          <button
+            type="button"
+            onClick={publishDraft}
+            disabled={busy}
+          >
+            {publishing ? "Publishing…" : "Publish draft"}
+          </button>
+          <button
+            type="button"
+            className="ghost compact"
+            onClick={discardDraft}
+            disabled={busy}
+          >
+            {discardingDraft ? "Discarding…" : "Discard draft"}
+          </button>
+        </div>
+      )}
 
       {!writable && (
         <div className="banner advisory">
@@ -199,15 +563,69 @@ export default function BotConfigPage() {
         </div>
       )}
 
+      {gateBlock && (
+        <div
+          className="banner warning"
+          role="alert"
+          style={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
+          <div
+            style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}
+          >
+            <strong>
+              {gateBlock.kind === "publish" ? "Publish blocked" : "Save blocked"}
+            </strong>
+            <span style={{ flex: 1, minWidth: 200 }}>{gateBlock.message}</span>
+            {gateBlock.canForce && (
+              <button
+                type="button"
+                onClick={() => save({ force: true })}
+                disabled={busy || forcingSave}
+                title="Override the workspace gate and save anyway. The action is audited."
+              >
+                {forcingSave ? "Saving…" : "Save anyway"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="ghost compact"
+              onClick={() => setGateBlock(null)}
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
+          </div>
+          {gateBlock.issues.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+              {gateBlock.issues
+                .filter((i) => i.severity === "error")
+                .map((i) => (
+                  <li key={i.key} style={{ marginTop: 4 }}>
+                    {i.message}
+                    {" "}
+                    <button
+                      type="button"
+                      className="ghost compact"
+                      onClick={() => setActiveTab(i.section as TabId)}
+                    >
+                      Jump to {i.section} →
+                    </button>
+                  </li>
+                ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <p className="muted">Loading…</p>
       ) : (
         <>
-          <MigrationNotice />
           <SummaryCard
             config={config}
             fileCount={fileCount}
             hasApiKey={hasApiKey}
+            hasDeploymentFallback={hasDeploymentFallback}
             onJump={(t) => setActiveTab(t as TabId)}
           />
           <ValidationPanel
@@ -217,6 +635,7 @@ export default function BotConfigPage() {
           <div
             role="tablist"
             aria-label="Config sections"
+            className="config-tab-strip"
             style={{
               display: "flex",
               gap: 4,
@@ -286,10 +705,42 @@ export default function BotConfigPage() {
               writable={writable}
             />
           )}
+          {activeTab === "history" && (
+            <HistorySection
+              slug={bot.slug}
+              currentConfig={savedConfig}
+              writable={writable}
+              onRestored={() => {
+                load();
+                refreshBot();
+              }}
+            />
+          )}
 
           {version != null && (
-            <div className="muted" style={{ fontSize: 12, marginTop: 16, textAlign: "left" }}>
-              config_version: {version}
+            <div
+              className="muted"
+              style={{
+                fontSize: 12,
+                marginTop: 16,
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 12,
+                alignItems: "center",
+              }}
+            >
+              <span>config_version: {version}</span>
+              {lastSavedBy?.at && (
+                <span>
+                  Last saved
+                  {lastSavedBy.email ? ` by ${lastSavedBy.email}` : ""}{" "}
+                  {relativeTime(lastSavedBy.at)}
+                </span>
+              )}
+              <span style={{ flex: 1 }} />
+              <span style={{ fontFamily: "var(--font-mono)" }}>
+                Cmd/Ctrl+Z to undo · Cmd/Ctrl+Shift+Z to redo
+              </span>
             </div>
           )}
         </>
@@ -299,6 +750,112 @@ export default function BotConfigPage() {
         <WidgetPreview slug={bot.slug} reloadKey={version ?? 0} />
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save-as-workspace-template modal
+// ---------------------------------------------------------------------------
+function SaveAsWorkspaceTemplateModal({
+  botSlug,
+  defaultName,
+  onClose,
+}: {
+  botSlug: string;
+  defaultName: string;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await api.createWorkspaceTemplate({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        source_bot_slug: botSlug,
+      });
+      setOk(true);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={() => !submitting && onClose()}
+      closeOnBackdrop={!submitting}
+      closeOnEsc={!submitting}
+      title="Save as workspace template"
+      size="md"
+    >
+      <form onSubmit={onSubmit}>
+        <div className="modal-body">
+          {ok ? (
+            <>
+              <p className="success" role="status">Template saved.</p>
+              <p className="muted" style={{ fontSize: 13 }}>
+                The create-bot wizard will list it under <em>Workspace
+                templates</em> alongside the built-in starters.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+                Snapshots this bot&apos;s saved config. The new bot the wizard
+                creates from this template will <strong>not</strong> share
+                files — admins re-upload knowledge per bot.
+              </p>
+              <div className="field">
+                <label htmlFor="ws-tpl-name">Template name</label>
+                <input
+                  id="ws-tpl-name"
+                  type="text"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="ws-tpl-desc">Description</label>
+                <input
+                  id="ws-tpl-desc"
+                  type="text"
+                  placeholder="What is this template for?"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                />
+              </div>
+              {err && <div className="error" role="alert">{err}</div>}
+            </>
+          )}
+        </div>
+        <div className="modal-footer">
+          {ok ? (
+            <button type="button" onClick={onClose}>Done</button>
+          ) : (
+            <>
+              <button type="button" className="ghost" onClick={onClose} disabled={submitting}>
+                Cancel
+              </button>
+              <button type="submit" disabled={submitting || !name.trim()}>
+                {submitting ? "Saving…" : "Save template"}
+              </button>
+            </>
+          )}
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -1222,6 +1779,30 @@ function TopicEditor({
 // ---------------------------------------------------------------------------
 // LLM tab
 // ---------------------------------------------------------------------------
+function DeploymentDefaultHint({
+  hasDefault,
+  what,
+  blank,
+}: {
+  hasDefault: boolean | undefined;
+  what: string;
+  blank: boolean;
+}) {
+  if (hasDefault === undefined) return null;
+  if (hasDefault) {
+    return (
+      <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+        Uses the deployment-wide {what} when blank.
+      </div>
+    );
+  }
+  return (
+    <div className={blank ? "error" : "muted"} style={{ fontSize: 12, marginTop: 4 }}>
+      Required — this deployment has no default {what}.
+    </div>
+  );
+}
+
 function LLMSection({
   slug,
   config,
@@ -1235,6 +1816,11 @@ function LLMSection({
 }) {
   const llm = config.llm ?? {};
   const [hasKey, setHasKey] = useState<boolean | null>(null);
+  const [deploymentDefaults, setDeploymentDefaults] = useState<{
+    model: boolean;
+    endpoint: boolean;
+    apiKey: boolean;
+  } | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [keySaving, setKeySaving] = useState(false);
@@ -1242,7 +1828,14 @@ function LLMSection({
   useEffect(() => {
     api
       .getBotApiKeyStatus(slug)
-      .then((r) => setHasKey(r.has_key))
+      .then((r) => {
+        setHasKey(r.has_key);
+        setDeploymentDefaults({
+          model: r.has_deployment_model,
+          endpoint: r.has_deployment_endpoint,
+          apiKey: r.has_deployment_fallback,
+        });
+      })
       .catch(() => setHasKey(null));
   }, [slug]);
 
@@ -1264,44 +1857,42 @@ function LLMSection({
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Provider</h2>
-      <div className="field">
-        <label htmlFor="cfg-model-type">Provider type</label>
-        <select
-          id="cfg-model-type"
-          value={llm.model_type ?? "openai"}
-          onChange={(e) => patchPath(["llm", "model_type"], e.target.value)}
-          disabled={!writable}
-          style={selectStyle}
-        >
-          <option value="openai">OpenAI / OpenAI-compatible</option>
-          <option value="google">Google</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
-      </div>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        Any OpenAI-compatible chat completions endpoint (OpenAI, OpenRouter,
+        Azure OpenAI, a self-hosted server…). The bot won&apos;t answer until it
+        has a model, an endpoint and an API key.
+      </p>
       <div className="field">
         <label htmlFor="cfg-model">Model</label>
         <input
           id="cfg-model"
           type="text"
-          placeholder="google/gemma-4-26b-a4b-it:free"
+          placeholder="e.g. gpt-4o-mini"
           value={llm.model ?? ""}
           onChange={(e) => patchPath(["llm", "model"], e.target.value || undefined)}
           disabled={!writable}
         />
+        <DeploymentDefaultHint
+          hasDefault={deploymentDefaults?.model}
+          what="model"
+          blank={!llm.model}
+        />
       </div>
       <div className="field">
-        <label htmlFor="cfg-endpoint">API endpoint (optional)</label>
+        <label htmlFor="cfg-endpoint">API endpoint</label>
         <input
           id="cfg-endpoint"
           type="url"
-          placeholder="https://openrouter.ai/api/v1"
+          placeholder="e.g. https://api.openai.com/v1"
           value={llm.api_endpoint ?? ""}
           onChange={(e) => patchPath(["llm", "api_endpoint"], e.target.value || undefined)}
           disabled={!writable}
         />
-        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Defaults to the provider&apos;s standard URL when blank.
-        </div>
+        <DeploymentDefaultHint
+          hasDefault={deploymentDefaults?.endpoint}
+          what="endpoint"
+          blank={!llm.api_endpoint}
+        />
       </div>
       <div className="field">
         <label>
@@ -1324,11 +1915,18 @@ function LLMSection({
       <h2 style={{ marginTop: 24 }}>API key</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
         Stored encrypted at rest. The current value is never returned —
-        only whether one is set. Falls back to the deployment-wide key when cleared.
+        only whether one is set. Falls back to the deployment-wide key, if
+        there is one, when cleared.
       </p>
       <div className="row" style={{ alignItems: "center", gap: 8 }}>
         <span className={hasKey ? "tag" : "tag muted"}>
-          {hasKey === null ? "checking…" : hasKey ? "key configured" : "no key set — using deployment fallback"}
+          {hasKey === null
+            ? "checking…"
+            : hasKey
+              ? "key configured"
+              : deploymentDefaults?.apiKey
+                ? "no key set — using deployment fallback"
+                : "no key set — the bot can't answer"}
         </span>
       </div>
       <div className="field" style={{ marginTop: 12 }}>
@@ -1342,6 +1940,12 @@ function LLMSection({
           disabled={!writable || keySaving}
           autoComplete="off"
         />
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+          Don&apos;t have an OpenRouter key?{" "}
+          <a href="https://openrouter.ai/" target="_blank" rel="noopener">
+            Sign up here →
+          </a>
+        </div>
       </div>
       {keyMsg && <div className={keyMsg.ok ? "success" : "error"}>{keyMsg.text}</div>}
       <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
@@ -1433,7 +2037,7 @@ function RAGSection({
             borderRadius: 6,
           }}
         >
-          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Files</div>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Knowledge</div>
           <div style={{ fontSize: 18, fontWeight: 600 }}>
             {fileCount === undefined ? "—" : `${fileCount} file${fileCount === 1 ? "" : "s"}`}
           </div>
@@ -1582,7 +2186,7 @@ function LimitsSection({
   writable: boolean;
 }) {
   const limits = config.limits ?? {};
-  const allowedOrigins = (limits.widget_allowed_origins ?? ["*"]) as string[];
+  const allowedOrigins = (limits.widget_allowed_origins ?? []) as string[];
   const mimeAllowlist = (limits.mime_allowlist ?? []) as string[];
   return (
     <div className="card">
@@ -1649,10 +2253,22 @@ function LimitsSection({
         disabled={!writable}
       />
 
+      <h2 style={{ marginTop: 24 }}>Data retention</h2>
+      <NumberField
+        label="Delete conversations after (days)"
+        hint="Messages, conversations, form submissions and chat attachments older than this are deleted every night, along with visitor profiles that have nothing left. Empty = keep until deleted by hand. 1–3650."
+        value={limits.retention_days}
+        defaultValue={undefined}
+        onChange={(v) => patchPath(["limits", "retention_days"], v)}
+        disabled={!writable}
+        min={1}
+        max={3650}
+      />
+
       <h2 style={{ marginTop: 24 }}>Widget origins</h2>
       <ListField
         label="Allowed widget origins"
-        hint="Origins this bot's widget can be embedded on. One per line. Examples: https://customer-site.com, https://*.customer-site.com (any subdomain), or * to allow any origin. Enforced on /widget/{slug}/* requests; non-matching origins get 403."
+        hint="Sites this bot's widget can be embedded on. One per line. Examples: https://customer-site.com, https://*.customer-site.com (any subdomain), or * to allow any site (not recommended). Empty = only this app's own preview and test pages. Enforced on /widget/{slug}/* requests; other origins get 403."
         values={allowedOrigins}
         onChange={(v) => patchPath(["limits", "widget_allowed_origins"], v)}
         placeholder="https://customer-site.com"
@@ -1786,6 +2402,195 @@ function RawJSONSection({
           Apply
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History tab — list of config snapshots written by `services.bot_config.save`
+// (capped at 50). Restoring a snapshot publishes it as the new live config.
+// ---------------------------------------------------------------------------
+function HistorySection({
+  slug,
+  currentConfig,
+  writable,
+  onRestored,
+}: {
+  slug: string;
+  currentConfig: Cfg;
+  writable: boolean;
+  onRestored: () => void;
+}) {
+  const [entries, setEntries] = useState<ConfigHistoryEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ConfigHistoryDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const list = await api.listConfigHistory(slug);
+      setEntries(list);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load history");
+    }
+  }, [slug]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function openEntry(id: string) {
+    setLoadingDetail(true);
+    setError(null);
+    try {
+      const detail = await api.getConfigHistoryEntry(slug, id);
+      setSelected(detail);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load snapshot");
+    } finally {
+      setLoadingDetail(false);
+    }
+  }
+
+  async function confirmRestore() {
+    if (!selected) return;
+    setRestoring(true);
+    setError(null);
+    try {
+      await api.restoreConfigHistory(slug, selected.id);
+      setSelected(null);
+      onRestored();
+      await load();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Restore failed");
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  const diff = useMemo(() => {
+    if (!selected) return [];
+    return diffKeys(currentConfig, selected.config);
+  }, [selected, currentConfig]);
+
+  return (
+    <div className="config-section">
+      <h2 style={{ marginTop: 0 }}>Config history</h2>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        Snapshots are captured on every save (latest 50 retained). Restoring
+        a snapshot publishes it as the new live config and writes a new
+        snapshot of its own.
+      </p>
+
+      {error && <div className="error">{error}</div>}
+      {entries === null && !error && <p className="muted">Loading…</p>}
+      {entries && entries.length === 0 && (
+        <p className="muted">No history yet — save the config at least once.</p>
+      )}
+
+      {entries && entries.length > 0 && (
+        <div className="table-scroll"><table className="table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Saved at</th>
+              <th>Saved by</th>
+              <th className="col-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td style={{ fontFamily: "var(--font-mono)" }}>v{e.config_version}</td>
+                <td
+                  className="muted"
+                  style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+                >
+                  {new Date(e.created_at).toLocaleString()}
+                </td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {e.admin_email ?? e.admin_id ?? "—"}
+                </td>
+                <td className="col-right">
+                  <button
+                    className="ghost compact"
+                    onClick={() => openEntry(e.id)}
+                    disabled={loadingDetail}
+                  >
+                    Preview…
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      )}
+
+      <Modal
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        closeOnBackdrop={!restoring}
+        closeOnEsc={!restoring}
+        title={selected ? `Restore config v${selected.config_version}?` : ""}
+        size="lg"
+      >
+        {selected && (
+          <>
+            <div className="modal-body">
+              <p className="muted" style={{ fontSize: 13 }}>
+                Saved {new Date(selected.created_at).toLocaleString()}
+                {selected.admin_email ? ` by ${selected.admin_email}` : ""}.
+              </p>
+              <div className="field">
+                <label>Changes vs. current config</label>
+                {diff.length === 0 ? (
+                  <p className="muted" style={{ fontSize: 13 }}>
+                    No differences — restoring this snapshot would be a no-op.
+                  </p>
+                ) : (
+                  <ul
+                    style={{
+                      margin: 0,
+                      padding: "8px 0 8px 18px",
+                      maxHeight: 240,
+                      overflow: "auto",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                    }}
+                  >
+                    {diff.slice(0, 100).map((k) => (
+                      <li key={k}>{k}</li>
+                    ))}
+                    {diff.length > 100 && (
+                      <li className="muted">…and {diff.length - 100} more</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setSelected(null)}
+                disabled={restoring}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRestore}
+                disabled={!writable || restoring || diff.length === 0}
+                title={!writable ? "Owner or admin role required" : undefined}
+              >
+                {restoring ? "Restoring…" : "Restore this version"}
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

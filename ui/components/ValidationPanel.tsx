@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { AlertTriangle, CircleAlert, Info } from "lucide-react";
 import { Issue, IssueSeverity } from "@/lib/config-validation";
 
@@ -105,13 +106,23 @@ export default function ValidationPanel({ issues, onJump }: Props) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div>{i.message}</div>
                   {i.cta && (
-                    <button
-                      className="ghost compact"
-                      onClick={() => onJump?.(i)}
-                      style={{ marginTop: 4 }}
-                    >
-                      {i.cta.label} →
-                    </button>
+                    i.cta.href ? (
+                      <Link
+                        href={i.cta.href}
+                        className="ghost compact"
+                        style={{ marginTop: 4, display: "inline-block" }}
+                      >
+                        {i.cta.label} →
+                      </Link>
+                    ) : (
+                      <button
+                        className="ghost compact"
+                        onClick={() => onJump?.(i)}
+                        style={{ marginTop: 4 }}
+                      >
+                        {i.cta.label} →
+                      </button>
+                    )
                   )}
                 </div>
                 {i.severity === "info" && (

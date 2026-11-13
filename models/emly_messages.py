@@ -37,8 +37,8 @@ class EMLYMessage(Model):
     session_id = CharField(max_length=255)
     message = TextField()
     role = CharField(max_length=255)
-    created_on = DateTimeField()
-    updated_on = DateTimeField()
+    created_at = DateTimeField()
+    updated_at = DateTimeField()
     not_useful = BooleanField(default=False)
     expanded_query = TextField(null=True)
     page = TextField(null=True)
@@ -70,8 +70,8 @@ class EMLYMessageModel(BaseModel):
     session_id: str
     message: str
     role: str
-    created_on: datetime
-    updated_on: datetime
+    created_at: datetime
+    updated_at: datetime
     not_useful: bool
     expanded_query: Optional[str] = None
     page: Optional[str] = None
@@ -99,8 +99,8 @@ def _row_to_model(message: EMLYMessage) -> EMLYMessageModel:
         session_id=data["session_id"],
         message=data["message"],
         role=data["role"],
-        created_on=data["created_on"],
-        updated_on=data["updated_on"],
+        created_at=data["created_at"],
+        updated_at=data["updated_at"],
         not_useful=data["not_useful"],
         expanded_query=data.get("expanded_query"),
         page=data.get("page"),
@@ -127,7 +127,7 @@ class EMLYMessageUser(Model):
     session_id = CharField()
     message = CharField()
     role = CharField()
-    created_on = DateTimeField()
+    created_at = DateTimeField()
     not_useful = BooleanField()
     page = CharField()
     topic = CharField(null=True)
@@ -182,8 +182,8 @@ class EMLYMessagesTable:
             message=message,
             role=role,
             not_useful=not_useful,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
             expanded_query=expanded_query,
             page=page,
             topic=topic,
@@ -246,7 +246,7 @@ class EMLYMessagesTable:
             EMLYMessage.update(
                 is_deflected=is_deflected,
                 deflection_method=method,
-                updated_on=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
             )
             .where(
                 (EMLYMessage.bot == bot_id) & (EMLYMessage.id == message_id)
@@ -269,7 +269,7 @@ class EMLYMessagesTable:
             EMLYMessage.update(
                 rating=rating,
                 rated_at=datetime.utcnow(),
-                updated_on=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
             )
             .where(
                 (EMLYMessage.bot == bot_id) & (EMLYMessage.id == message_id)
@@ -307,7 +307,7 @@ class EMLYMessagesTable:
                     & (EMLYMessage.user_id == user_id)
                     & (EMLYMessage.session_id == session_id)
                 )
-                .order_by(EMLYMessage.created_on.desc())
+                .order_by(EMLYMessage.created_at.desc())
                 .limit(limit)
                 .offset(skip)
             )
@@ -327,7 +327,7 @@ class EMLYMessagesTable:
             query = query.where(EMLYMessage.user_id == user_id)
         if session_id:
             query = query.where(EMLYMessage.session_id == session_id)
-        query = query.order_by(EMLYMessage.created_on.desc()).offset(skip).limit(limit)
+        query = query.order_by(EMLYMessage.created_at.desc()).offset(skip).limit(limit)
         return [_row_to_model(m) for m in query]
 
     def count_all(
@@ -362,7 +362,7 @@ class EMLYMessagesTable:
                     & (EMLYMessage.session_id == session_id)
                     & (EMLYMessage.topic == topic)
                 )
-                .order_by(EMLYMessage.created_on.desc())
+                .order_by(EMLYMessage.created_at.desc())
                 .limit(limit)
                 .offset(skip)
             )
@@ -375,7 +375,7 @@ class EMLYMessagesTable:
     ) -> Optional[EMLYMessageModel]:
         try:
             (
-                EMLYMessage.update(not_useful=not_useful, updated_on=datetime.utcnow())
+                EMLYMessage.update(not_useful=not_useful, updated_at=datetime.utcnow())
                 .where((EMLYMessage.id == id) & (EMLYMessage.bot == bot_id))
                 .execute()
             )
@@ -436,7 +436,7 @@ class EMLYMessagesTable:
                 EMLYMessage.session_id,
                 EMLYMessage.message,
                 EMLYMessage.role,
-                EMLYMessage.created_on,
+                EMLYMessage.created_at,
                 EMLYMessage.not_useful,
                 EMLYMessage.page,
                 EMLYMessage.topic,
@@ -453,8 +453,8 @@ class EMLYMessagesTable:
             .join(EMLYUser, on=(EMLYUser.id == EMLYMessage.user_id))
             .where(
                 (EMLYMessage.bot == bot_id)
-                & (EMLYMessage.created_on >= from_date)
-                & (EMLYMessage.created_on <= to_date)
+                & (EMLYMessage.created_at >= from_date)
+                & (EMLYMessage.created_at <= to_date)
             )
         )
         if session_id:
@@ -491,8 +491,8 @@ class EMLYMessagesTable:
 
         base = EMLYMessage.select().where(
             (EMLYMessage.bot == bot_id)
-            & (EMLYMessage.created_on >= from_date)
-            & (EMLYMessage.created_on <= to_date)
+            & (EMLYMessage.created_at >= from_date)
+            & (EMLYMessage.created_at <= to_date)
         )
         if channel_id:
             base = base.where(EMLYMessage.channel_id == channel_id)
@@ -627,8 +627,8 @@ class EMLYMessagesTable:
             _row_to_model(m)
             for m in EMLYMessage.select().where(
                 (EMLYMessage.bot == bot_id)
-                & (EMLYMessage.created_on >= from_date)
-                & (EMLYMessage.created_on <= to_date)
+                & (EMLYMessage.created_at >= from_date)
+                & (EMLYMessage.created_at <= to_date)
             )
             if m.expanded_query not in ("VIEW_BOT", "BOT_VIEWED")
         ]
@@ -652,7 +652,7 @@ class EMLYMessagesTable:
                     | (EMLYMessage.expanded_query == "")
                 )
             )
-            .order_by(EMLYMessage.created_on.desc())
+            .order_by(EMLYMessage.created_at.desc())
         )
         return [_row_to_model(m) for m in query]
 

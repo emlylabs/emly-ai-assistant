@@ -15,7 +15,7 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -75,7 +75,17 @@ class OidcProvider:
         jwks_cache_ttl: int = 3600,
         leeway_seconds: int = 30,
         audience_fallback_to_client_id: bool = False,
+        trust_email_unconditionally: bool = False,
+        request_offline_access: bool = True,
+        email_claims: tuple[str, ...] = ("email",),
         http_client: httpx.Client | None = None,
+        # In-process injection used when the issuer is this same app's
+        # embedded one — avoids a self-loopback HTTP call that DNS often
+        # can't resolve from inside the pod (the external hostname isn't
+        # reachable from within the cluster).
+        discovery_override: Optional[dict[str, Any]] = None,
+        jwks_provider: Optional[Callable[[], dict[str, Any]]] = None,
+        token_exchanger: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
     ) -> None:
         self._issuer = issuer.rstrip("/")
         self._audience = audience
@@ -85,14 +95,31 @@ class OidcProvider:
         self._jwks_cache_ttl = jwks_cache_ttl
         self._leeway = leeway_seconds
         self._audience_fallback_to_client_id = audience_fallback_to_client_id
+        # When True (embedded issuer, or explicit opt-in for IdPs known to
+        # always verify), ``email_verified`` is forced to True regardless
+        # of the claim. When False (hosted IdPs by default), we surface
+        # the actual claim and let ``user_resolver`` refuse activation.
+        self._trust_email_unconditionally = trust_email_unconditionally
+        # Google rejects or ignores ``offline_access``; operators turn it off
+        # with AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false. Sessions then end at
+        # id_token expiry and the BFF refresh path reports
+        # ``missing_refresh_token`` (the UI stops refreshing and re-logs in).
+        self._request_offline_access = request_offline_access
+        # Ordered claim names to read the admin's email from. Entra ID often
+        # omits ``email``; e.g. ("email", "upn") falls back to the UPN.
+        self._email_claims = tuple(email_claims) or ("email",)
 
         self._http = http_client or httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT)
         self._jwt_codec = JsonWebToken(["RS256"])
         self._lock = threading.Lock()
         self._jwks_keyset: Any = None
         self._jwks_loaded_at: float = 0.0
+        self._jwks_provider = jwks_provider
+        self._token_exchanger = token_exchanger
 
-        self._discovery: dict[str, Any] = self._fetch_discovery()
+        self._discovery: dict[str, Any] = (
+            discovery_override if discovery_override is not None else self._fetch_discovery()
+        )
         self._refresh_jwks()  # pre-warm
 
     # -------- discovery + JWKS --------
@@ -130,6 +157,17 @@ class OidcProvider:
         return doc
 
     def _refresh_jwks(self) -> None:
+        # Embedded-issuer fast path: read the keystore in-process so the
+        # pod doesn't have to resolve its own external hostname to fetch
+        # its own JWKS.
+        if self._jwks_provider is not None:
+            jwks_doc = self._jwks_provider()
+            with self._lock:
+                self._jwks_keyset = JsonWebKey.import_key_set(jwks_doc)
+                self._jwks_loaded_at = time.time()
+            log.debug("OIDC: refreshed JWKS from in-process provider")
+            return
+
         jwks_uri = self._discovery.get("jwks_uri")
         if not jwks_uri:
             raise RuntimeError(f"OIDC discovery has no jwks_uri: {self._discovery_url()}")
@@ -202,20 +240,36 @@ class OidcProvider:
         sub = claims.get("sub")
         if not sub:
             raise MissingClaimError("token missing `sub`")
-        email = claims.get("email")
+        email, source = None, None
+        for claim in self._email_claims:
+            value = claims.get(claim)
+            # Fallback claims (upn, preferred_username) aren't always
+            # addresses; only take a value that looks like one.
+            if isinstance(value, str) and "@" in value.strip():
+                email, source = value.strip(), claim
+                break
         if not email:
-            raise MissingClaimError("token missing `email`")
+            raise MissingClaimError(
+                "token has no email in any of: " + ", ".join(self._email_claims)
+            )
+        # For the embedded issuer (or an IdP the operator has explicitly
+        # marked trusted via env), a successful OIDC sign-in proves the
+        # user controls the address — we own the password gate. For
+        # other IdPs we pass the claim through so ``user_resolver`` can
+        # refuse activation if verification didn't happen at the IdP.
+        # ``email_verified`` describes the ``email`` claim only, so an
+        # address read from a fallback claim counts as unverified.
+        if self._trust_email_unconditionally:
+            email_verified = True
+        elif source == "email":
+            email_verified = _coerce_email_verified(claims.get("email_verified"))
+        else:
+            email_verified = False
         return Principal(
             issuer=self._issuer,
             subject=str(sub),
             email=str(email),
-            # Trust the IdP: a successful OIDC sign-in proves the user controls
-            # the address. IdPs vary in whether they emit `email_verified` and
-            # what value they put there (Okta's Org Auth Server, for example,
-            # often emits False or omits it for activated users). Gating on the
-            # raw claim creates spurious rejections, so we treat OIDC auth as
-            # implicit email verification.
-            email_verified=True,
+            email_verified=email_verified,
             name=str(claims["name"]) if claims.get("name") else None,
             raw_claims=claims,
         )
@@ -226,17 +280,38 @@ class OidcProvider:
         self,
         oauth_state: OAuthState,
         redirect_uri: str,
-        state_override: str | None = None,
+        *,
+        state_override: Optional[str] = None,
     ) -> str:
+        """Build the IdP authorize URL.
+
+        ``state_override``, when supplied, replaces ``oauth_state.state`` in
+        the URL's ``state`` parameter. The route uses this to wrap its inner
+        state in a gateway HMAC envelope while keeping the server-side state
+        store keyed by the original inner state (what the gateway forwards
+        back on the callback).
+
+        Unless disabled (``request_offline_access=False``), we append
+        ``offline_access`` to the requested scope so the
+        IdP returns a ``refresh_token`` alongside the id_token. This is the
+        OIDC-defined scope that gates refresh-token issuance (RFC 6749 §6).
+        Some IdPs (Auth0 in particular) only honour it after a consent
+        screen — for the admin auth flow this is acceptable: the first
+        login shows the consent pane once, subsequent logins reuse the
+        existing consent grant.
+        """
         endpoint = self._discovery.get("authorization_endpoint")
         if not endpoint:
             raise RuntimeError("OIDC discovery has no authorization_endpoint")
+        scope_tokens = self._scopes.split()
+        if self._request_offline_access and "offline_access" not in scope_tokens:
+            scope_tokens.append("offline_access")
         params = {
             "response_type": "code",
             "client_id": self._client_id,
             "redirect_uri": redirect_uri,
-            "scope": self._scopes,
-            "state": state_override or oauth_state.state,
+            "scope": " ".join(scope_tokens),
+            "state": state_override if state_override is not None else oauth_state.state,
             "nonce": oauth_state.nonce,
             "code_challenge": _pkce_challenge(oauth_state.code_verifier),
             "code_challenge_method": "S256",
@@ -261,12 +336,23 @@ class OidcProvider:
         }
         if self._client_secret:
             data["client_secret"] = self._client_secret
-        r = self._http.post(endpoint, data=data)
-        if r.status_code >= 400:
-            raise InvalidTokenError(
-                f"token endpoint returned {r.status_code}: {r.text[:200]}"
-            )
-        body = r.json()
+
+        # Embedded-issuer fast path: call the local token flow in-process so
+        # the pod doesn't have to dial its own external hostname.
+        if self._token_exchanger is not None:
+            try:
+                body = self._token_exchanger(data)
+            except InvalidTokenError:
+                raise
+            except Exception as e:
+                raise InvalidTokenError(f"local token exchange failed: {e}") from e
+        else:
+            r = self._http.post(endpoint, data=data)
+            if r.status_code >= 400:
+                raise InvalidTokenError(
+                    f"token endpoint returned {r.status_code}: {r.text[:200]}"
+                )
+            body = r.json()
 
         access_token = body.get("access_token")
         id_token = body.get("id_token")
@@ -292,6 +378,77 @@ class OidcProvider:
                 expires_at=expires_at,
             ),
             principal,
+        )
+
+    def refresh_tokens(self, refresh_token: str) -> TokenSet:
+        """Use a refresh_token to mint a fresh access + id token from the IdP.
+
+        Implements the OAuth 2.0 ``refresh_token`` grant (RFC 6749 §6).
+        Some IdPs rotate the refresh_token on every refresh (Auth0, Keycloak
+        with rotation enabled) — when the response carries a new
+        ``refresh_token`` we surface it on the returned ``TokenSet``;
+        otherwise the caller keeps using the existing refresh_token.
+
+        The id_token is verified (signature + standard claims) before being
+        returned, so a token-refresh call doubles as a "still trusted?"
+        probe — if the IdP has revoked the session, the id_token will fail
+        signature/claim validation and ``InvalidTokenError`` will surface.
+
+        Raises ``InvalidTokenError`` on any failure (bad refresh_token,
+        expired, IdP-down, etc.). The caller is responsible for clearing
+        the session and redirecting to the login flow on error.
+        """
+        if not refresh_token or not isinstance(refresh_token, str):
+            raise InvalidTokenError("missing or non-string refresh_token")
+
+        endpoint = self._discovery.get("token_endpoint")
+        if not endpoint:
+            raise RuntimeError("OIDC discovery has no token_endpoint")
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self._client_id,
+        }
+        if self._client_secret:
+            data["client_secret"] = self._client_secret
+
+        # Embedded-issuer fast path: call the local token flow in-process so
+        # the pod doesn't have to dial its own external hostname.
+        if self._token_exchanger is not None:
+            try:
+                body = self._token_exchanger(data)
+            except InvalidTokenError:
+                raise
+            except Exception as e:
+                raise InvalidTokenError(f"local token refresh failed: {e}") from e
+        else:
+            r = self._http.post(endpoint, data=data)
+            if r.status_code >= 400:
+                raise InvalidTokenError(
+                    f"token refresh endpoint returned {r.status_code}: {r.text[:200]}"
+                )
+            body = r.json()
+
+        access_token = body.get("access_token")
+        id_token = body.get("id_token")
+        new_refresh_token = body.get("refresh_token") or refresh_token
+        expires_in = int(body.get("expires_in", 3600))
+        expires_at = datetime.fromtimestamp(_now() + expires_in, tz=timezone.utc)
+
+        if not access_token:
+            raise InvalidTokenError("token refresh response missing access_token")
+        if not id_token:
+            raise InvalidTokenError("token refresh response missing id_token (OIDC requires it)")
+
+        # Verify the freshly-minted id_token so a tampered/forged response
+        # is rejected before the caller ever writes the new cookie.
+        self.verify_token(id_token)
+
+        return TokenSet(
+            access_token=access_token,
+            id_token=id_token,
+            refresh_token=new_refresh_token,
+            expires_at=expires_at,
         )
 
     def logout_url(self, redirect_uri: str | None) -> str | None:
@@ -322,3 +479,20 @@ def generate_state() -> str:
 
 def generate_nonce() -> str:
     return secrets.token_urlsafe(16)
+
+
+def _coerce_email_verified(raw: Any) -> bool:
+    """Map the OIDC ``email_verified`` claim to a bool. IdPs vary: some
+    emit a JSON bool, some emit the string ``"true"`` / ``"false"``.
+    Anything we can't read as True maps to False."""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    # Numbers, etc.
+    try:
+        return bool(int(raw))
+    except (TypeError, ValueError):
+        return False

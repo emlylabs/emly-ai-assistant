@@ -1,7 +1,8 @@
 """Origin-check middleware for cookie-authenticated mutating requests.
 
-The admin UI authenticates via a ``SameSite=Strict`` cookie. ``SameSite``
-already blocks most cross-site CSRF; this middleware adds belt-and-braces
+The admin UI authenticates via a ``SameSite=Lax`` cookie (not Strict — see
+``services.auth.cookie_policy.cookie_samesite``). Lax blocks cookies on
+cross-site POSTs from other sites' forms; this middleware adds belt-and-braces
 ``Origin`` validation so a leaked cookie can't be replayed from a third-party
 page even via complex routing edge cases.
 
@@ -24,11 +25,13 @@ from starlette.types import ASGIApp
 
 log = logging.getLogger(__name__)
 
-_PROTECTED_PATH_PREFIXES = ("/api/admin/",)
+_PROTECTED_PATH_PREFIXES = ("/api/admin/", "/api/auth/")
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Routes that legitimately need an unauthenticated POST (no cookie, by design).
 # The login form posts into the embedded issuer with form-encoded creds — there
-# is no session cookie at that point; CSRF doesn't apply.
+# is no session cookie at that point; CSRF doesn't apply. The BFF refresh
+# endpoints (/api/auth/refresh, /api/auth/refresh-claims) are NOT in this list
+# — they require the session + refresh cookies and must pass the Origin check.
 _BYPASS_PATHS = ("/api/auth/local/authorize", "/api/auth/local/token", "/api/auth/local/logout")
 
 

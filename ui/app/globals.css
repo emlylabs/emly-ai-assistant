@@ -373,6 +373,14 @@ button.danger:hover:not(:disabled) {
   margin-bottom: 16px;
 }
 
+/* Opt-in flex-grow for fields inside a `.row` — replaces the inline
+ * `style={{ flex: 1 }}` previously sprinkled in CrawlTab and the
+ * invite-admin form. Class-based specificity lets the mobile A5 rule
+ * override without `!important`. */
+.field-grow {
+  flex: 1;
+}
+
 .field label {
   display: block;
   margin-bottom: 6px;
@@ -380,6 +388,72 @@ button.danger:hover:not(:disabled) {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* ---------- Horizontal-scroll wrapper for data tables ---------- */
+/* Wrap every <table> in `<div className="table-scroll">…</div>` so the
+ * table scrolls horizontally on narrow viewports instead of letting the
+ * page scroll. `min-width: max-content` on the inner table ensures the
+ * scroll triggers cleanly instead of crushing columns. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+.table-scroll > table {
+  min-width: max-content;
+}
+
+/* ---------- Stacked-row wrapper (Phase 13 alternative) ----------
+ * Some tables (members, admins, audit) don't need horizontal scroll on
+ * phones — they fit fine as a stacked column of rows where each row
+ * looks like a small card. Opt in with `<div className="table-stack">`
+ * instead of `.table-scroll`. Each `<td>` declares a `data-label` so the
+ * column header rides along as a muted caption above the cell value;
+ * action cells (no meaningful header) just omit `data-label`. */
+.table-stack {
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .table-stack > table,
+  .table-stack > table > thead,
+  .table-stack > table > tbody,
+  .table-stack > table > tbody > tr,
+  .table-stack > table > tbody > tr > td {
+    display: block;
+    width: auto;
+  }
+
+  .table-stack > table > thead {
+    display: none;
+  }
+
+  .table-stack > table > tbody > tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 8px 0;
+    background: var(--paper);
+  }
+
+  .table-stack > table > tbody > tr > td {
+    padding: 4px 0;
+    border: 0;
+    text-align: left !important;
+  }
+
+  .table-stack > table > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+  }
 }
 
 /* ---------- Status / signal text ---------- */
@@ -592,7 +666,9 @@ pre.snippet {
   line-height: 1;
 }
 
-/* Hamburger toggle — hidden on desktop, shown on mobile */
+/* Hamburger toggle — hidden on desktop and on mobile (bottom-nav
+ * replaces it). Kept in the DOM so existing wiring doesn't break; just
+ * never shown. */
 .topbar-hamburger {
   display: none;
   background: transparent;
@@ -601,6 +677,52 @@ pre.snippet {
   padding: 4px;
   min-height: 0;
   cursor: pointer;
+}
+
+/* ---------- Bottom navigation bar (mobile) ----------
+ * Replaces the left-slide drawer as the primary mobile nav surface.
+ * Hidden on desktop; revealed in the `@media (max-width: 900px)` block
+ * below. Used by `BottomNav.tsx`; items render as `<Link>` for nav and
+ * `<button>` for actions (e.g., BotShell's "More" → opens the drawer). */
+.bottom-nav {
+  display: none;
+}
+
+.bottom-nav-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.bottom-nav-item.active {
+  color: var(--fg);
+}
+
+.bottom-nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.bottom-nav-item > span {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- App shell ---------- */
@@ -631,6 +753,14 @@ pre.snippet {
   padding: 16px 8px;
 }
 
+/* `overflow-y: auto` on `.sidebar-nav` makes overflow-x compute to auto too,
+ * which surfaces a horizontal scrollbar if any descendant escapes the 56px
+ * rail. Clip horizontally in collapsed mode so nothing accidentally adds
+ * one. */
+.sidebar.collapsed .sidebar-nav {
+  overflow-x: hidden;
+}
+
 .sidebar.collapsed .nav-item {
   justify-content: center;
   padding: 10px;
@@ -641,13 +771,20 @@ pre.snippet {
   display: none;
 }
 
-/* Tooltip on hover in collapsed mode */
-.sidebar.collapsed .nav-item::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
+/* Tooltip primitive — composed by <Tooltip> (ui/components/Tooltip.tsx).
+ * The anchor span wraps the trigger so the inline-flex layout (e.g. the
+ * collapsed sidebar rail) keeps the trigger sized correctly. The popover
+ * itself is portal'd to `document.body` and positioned with the trigger's
+ * bounding rect, so it escapes any ancestor `overflow: hidden` clipping. */
+.tooltip-anchor {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The component sets `position: fixed` inline with computed coordinates;
+ * left/top are deliberately omitted here so the inline values win without
+ * a specificity fight. */
+.tooltip-popover {
   background: var(--fg);
   color: var(--surface);
   font-size: 12px;
@@ -657,12 +794,39 @@ pre.snippet {
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.15s ease;
-  z-index: 30;
+  transition: opacity 0.12s ease;
+  z-index: 70;
 }
 
-.sidebar.collapsed .nav-item:hover::after {
+.tooltip-popover[data-visible="true"] {
   opacity: 1;
+}
+
+/* Footer row: collapse toggle on the left, build version on the right.
+ * `border-top` + `margin-top` live on the wrap (not the button) so the
+ * divider spans the full sidebar width even when the version label is
+ * present. Collapsed sidebar hides the version; the button stays. */
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-version {
+  flex: 1;
+  min-width: 0;
+  padding-right: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
 }
 
 /* Collapse toggle button */
@@ -672,10 +836,8 @@ pre.snippet {
   justify-content: center;
   min-height: 0;
   padding: 8px;
-  margin-top: 8px;
   background: transparent;
   border: none;
-  border-top: 1px solid var(--border);
   border-radius: 0;
   color: var(--muted);
   cursor: pointer;
@@ -835,6 +997,7 @@ a>svg {
 }
 
 .bot-card {
+  position: relative;
   display: block;
   text-align: left;
   width: 100%;
@@ -844,19 +1007,47 @@ a>svg {
   padding: 22px;
   color: var(--fg);
   cursor: pointer;
-  transition: border-color .15s, transform .08s;
+  transition: border-color .15s, transform .08s, background .12s;
   font: inherit;
   font-weight: 400;
   letter-spacing: normal;
   white-space: normal;
 }
 
-/* Override the default button:hover (which flips bg to dark var(--fg)) —
- * the card has dark text on a light surface and must stay readable on hover. */
-button.bot-card:hover:not(:disabled) {
+.bot-card:hover {
   border-color: var(--fg);
   background: var(--fg-soft);
   color: var(--fg);
+}
+
+/* Card-wide overlay link. Covers the entire card surface so a click on
+ * "inert" cells navigates, but sits *behind* the pin toggle (z-index)
+ * so the pin's own button stays interactive. Visually invisible — the
+ * card's :hover/:focus-visible chrome lights up via the link's focus. */
+.bot-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  text-decoration: none;
+  outline: none;
+}
+
+.bot-card-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.bot-card-pin {
+  position: relative;
+  z-index: 2;
+}
+
+/* Same focus treatment for the new table row-link pattern. The row itself
+ * is focusable; this gives the keyboard ring a visible target. */
+table.table tbody tr.row-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .bot-card-name {
@@ -1026,7 +1217,11 @@ button.bot-card:hover:not(:disabled) {
   color: var(--fg);
 }
 
-/* ---------- Responsive ---------- */
+/* ---------- Responsive ----------
+ * Phase 12 — the sidebar-overlay breakpoint moved from 520 → 768. Phase
+ * 13 — moved again 768 → 900 so the iPad-portrait sliver (768–900px)
+ * also gets the drawer. The smaller breakpoint (520) still adjusts the
+ * stat grid. */
 @media (max-width: 800px) {
   .main {
     padding: 24px 18px;
@@ -1041,20 +1236,102 @@ button.bot-card:hover:not(:disabled) {
   }
 }
 
-@media (max-width: 520px) {
-  .stat-grid {
-    grid-template-columns: 1fr;
+@media (max-width: 900px) {
+  /* Bottom nav replaces hamburger + side-drawer as primary mobile nav.
+   * AdminShell's 4 workspace items map 1:1 to bottom-nav tabs; BotShell
+   * shows 4 primary tabs + a "More" tab that opens the drawer for the
+   * long-tail items (Analytics, Retrieval, Channels, etc.). */
+  .bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 16;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
-  .topbar-hamburger {
-    display: inline-flex;
+  .bottom-nav-item {
+    min-height: 56px;
   }
 
+  /* Brand mark stays for tap recognition; the text label is hidden so
+   * the topbar can fit a usable bot picker + theme switcher. */
+  .brand-text {
+    display: none;
+  }
+
+  /* Collapse the bot-page breadcrumb on mobile: the "Workspace" prefix
+   * duplicates the brand mark (which already links to /bots), and the
+   * trailing tab name is already highlighted in the bottom nav. Leaves
+   * just the bot picker — matching the AdminShell topbar's density. */
+  .crumbs > .crumb-item:first-child,
+  .crumbs > .crumb-item:last-child {
+    display: none;
+  }
+  .crumbs > .crumb-item:nth-child(2) > .crumb-sep {
+    display: none;
+  }
+
+  /* Role chip is reference info, not actionable. Drop it on mobile —
+   * users can see their role on the Members page when they need it. */
+  .topbar-role {
+    display: none;
+  }
+
+  /* Theme switcher collapses to icon-only on mobile. The button's
+   * `aria-label` and `title` still surface "Paper" / "Ink" for assistive
+   * tech and tooltips. */
+  .seg .theme-label {
+    display: none;
+  }
+  .seg button {
+    padding: 2px 8px;
+  }
+
+  /* Cap the bot-picker trigger so a long bot name truncates with `…`
+   * instead of pushing the theme switcher and sign-out button off the
+   * right edge of the topbar. */
+  .bot-picker-trigger {
+    max-width: 160px;
+  }
+
+  /* Promote the bot-picker popover to a viewport-anchored sheet on
+   * mobile. The desktop placement (absolute, anchored to the trigger
+   * with `left: -8px`) shrinks to fit content on narrow screens, which
+   * makes the dropdown read as a stray search bar with the list
+   * clipped or invisible. Fixed positioning under the topbar gives the
+   * user a clear sheet they can scroll through. */
+  .bot-picker-popover {
+    position: fixed;
+    top: calc(48px + 6px);
+    left: 12px;
+    right: 12px;
+    min-width: 0;
+    max-width: none;
+    max-height: calc(100dvh - 48px - 72px - env(safe-area-inset-bottom));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  /* Clear the bottom-nav so the last row of page content isn't covered
+   * by the fixed bar. 72px = ~56px bar + 16px breathing room. */
+  .main {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  }
+
+  /* Stop the sidebar above the bottom-nav so its bottom rows aren't
+   * obscured by the fixed bar. 56px bar height + safe-area inset is
+   * the same offset used by the bottom-nav itself. `height: auto` is
+   * required to override the desktop `height: calc(100vh - 48px)` so
+   * the `bottom` offset isn't over-constrained away. */
   .sidebar {
     position: fixed;
     top: 48px;
     left: 0;
-    bottom: 0;
+    bottom: calc(56px + env(safe-area-inset-bottom));
+    height: auto;
     width: 260px;
     z-index: 15;
     transform: translateX(-100%);
@@ -1066,11 +1343,13 @@ button.bot-card:hover:not(:disabled) {
     transform: translateX(0);
   }
 
-  /* Overlay behind sidebar when open */
+  /* Overlay sits behind the sidebar AND above the main content, but
+   * stops at the bottom-nav so the user can still tap navigation while
+   * the drawer is open. */
   .sidebar-overlay {
     display: none;
     position: fixed;
-    inset: 48px 0 0 0;
+    inset: 48px 0 calc(56px + env(safe-area-inset-bottom)) 0;
     background: rgba(0, 0, 0, 0.4);
     z-index: 14;
   }
@@ -1083,6 +1362,228 @@ button.bot-card:hover:not(:disabled) {
     overflow-y: visible;
     min-height: auto;
   }
+}
+
+@media (max-width: 520px) {
+  .stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Phase 13 — stack `.row` form layouts on phones. Now that the inline
+ * `style={{ flex: 1 }}` callsites moved to the `.field-grow` class
+ * (CrawlTab, invite-admin), the descendant-combinator specificity of
+ * `.row > .field` is enough to override `.field-grow` here without
+ * `!important`. */
+@media (max-width: 640px) {
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .row > .field {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
+/* Phase 13 — at narrow viewports the 8-tab config strip stops wrapping
+ * (the wrap mode crams tabs into a tiny multi-row block) and instead
+ * scrolls horizontally with scroll-snap so each tap snaps a tab into
+ * view. `!important` overrides the inline `flexWrap: "wrap"` in
+ * `config/page.tsx`; remove it if/when that style is moved into a
+ * className. */
+@media (max-width: 768px) {
+  .config-tab-strip {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .config-tab-strip > button {
+    scroll-snap-align: start;
+    flex-shrink: 0;
+  }
+}
+
+/* Phase 12 — iOS doesn't zoom inputs whose computed font-size is at least
+ * 16px. Bump form-control sizing on touch-leaning viewports so a focus
+ * tap on an input doesn't trigger a jarring zoom + viewport reflow. The
+ * primary button target also grows to 44px to clear the WCAG 2.5.5
+ * "Target Size" minimum on phones.
+ *
+ * Phase 13 — `compact-icon` and other icon-only buttons join the 44px
+ * floor on mobile. Visually they grow a bit; we accept the trade because
+ * the previous 32px target was a routine source of mis-taps. Tertiary
+ * text buttons (`.compact`) stay at 32 — paired with a primary CTA they
+ * remain easy to reach. */
+@media (max-width: 768px) {
+  input[type="email"],
+  input[type="password"],
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  input[type="url"],
+  select,
+  textarea {
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  button {
+    min-height: 44px;
+  }
+
+  button.compact {
+    /* Tertiary text actions stay compact — paired with a primary target
+     * nearby, so the small surface isn't load-bearing. */
+    min-height: 32px;
+  }
+
+  button.compact-icon,
+  button.icon-only,
+  .btn-icon,
+  .sidebar-collapse-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Long inline snippets (embed code, CSP directives, etc.) wrap instead
+   * of forcing a horizontal page scroll. Desktop keeps `overflow-x: auto`
+   * via the `pre.snippet` rule above. */
+  pre,
+  pre.snippet,
+  code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+/* ============================================================================
+ * Phase 12 — `prefers-reduced-motion`. Strip transitions and animations
+ * for users with the motion-sensitivity OS pref enabled. Focus rings and
+ * outline transitions stay (useful at any motion preference); the rest
+ * (.sidebar slide, .cmdk-backdrop fade, .spin rotation, modal mount/
+ * unmount, tooltip opacity) drop to instant.
+ * ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+ * Phase 12 — Forced-colors (Windows High Contrast). Many tokens in this
+ * sheet are low-opacity color-mix values that disappear under forced-
+ * colors. Re-derive the load-bearing surfaces from the system palette
+ * (CanvasText, Canvas, LinkText, ButtonText) so the UI stays usable.
+ * Focus rings switch to outline (which forced-colors respects) instead
+ * of box-shadow (which it ignores).
+ * ============================================================================ */
+@media (forced-colors: active) {
+  :root {
+    --border: CanvasText;
+    --fg: CanvasText;
+    --muted: CanvasText;
+    --surface: Canvas;
+    --bg: Canvas;
+    --accent: LinkText;
+  }
+
+  button,
+  .card,
+  .nav-item,
+  .modal-card,
+  table.table tbody td,
+  table.table thead th {
+    border: 1px solid CanvasText;
+  }
+
+  /* Outline-based focus ring — box-shadow rings are invisible in
+   * forced-colors mode. */
+  *:focus-visible {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 2px;
+    box-shadow: none !important;
+  }
+
+  /* Status pills carry information via color today; rely on their text
+   * label (Live / Paused / etc.) instead of the swatch. */
+  .pill,
+  .status-pill {
+    forced-color-adjust: none;
+    background: Canvas;
+    color: CanvasText;
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ============================================================================
+ * Phase 12 — Print. Strips the shell chrome (topbar, sidebar) so a
+ * `Cmd+P` (or the Channels-tab "Print embed instructions" button) emits
+ * a clean document with just the content. Pre/code blocks add page-
+ * break-avoidance so the embed snippet and CSP block don't get chopped
+ * across pages.
+ * ============================================================================ */
+@media print {
+  .topbar,
+  .sidebar,
+  .sidebar-overlay,
+  .cmdk-backdrop,
+  .skip-link,
+  .modal-backdrop,
+  .tooltip-popover {
+    display: none !important;
+  }
+
+  .app-shell {
+    grid-template-columns: 1fr !important;
+  }
+
+  .main {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  pre,
+  code {
+    background: #f6f6f6 !important;
+    color: black !important;
+    border: 1px solid #ccc !important;
+    page-break-inside: avoid;
+  }
+
+  .card {
+    background: white !important;
+    border: 1px solid #ccc !important;
+    page-break-inside: avoid;
+  }
+
+  /* Print-only chrome a consumer can drop near a section to label what
+   * the printout is for. */
+  .print-only {
+    display: block !important;
+  }
+
+  .print-hidden {
+    display: none !important;
+  }
+}
+
+.print-only {
+  display: none;
 }
 
 /* ============================================================================
@@ -1363,8 +1864,24 @@ button.bot-card:hover:not(:disabled) {
   min-width: 0;
 }
 
-.crumbs > a,
-.crumbs > span {
+/* Each crumb is a real flex item (rather than display:contents) so the
+ * mobile rules below can hide first/last segments. The internal gap keeps
+ * the leading separator and the label visually paired. */
+.crumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Text-bearing crumbs get truncation styling. We deliberately scope
+ * this to a `.crumb-text` class (and `a` / `strong`) rather than "any
+ * non-separator span" — the bot-picker is a span and would otherwise
+ * inherit `overflow: hidden`, which clips its absolutely-positioned
+ * popover (the popover's containing block is the bot-picker, since
+ * .bot-picker is position:relative). */
+.crumb-item > a,
+.crumb-item > .crumb-text {
   text-decoration: none;
   color: var(--muted);
   white-space: nowrap;
@@ -1372,13 +1889,33 @@ button.bot-card:hover:not(:disabled) {
   text-overflow: ellipsis;
 }
 
-.crumbs > a:hover {
+.crumb-item > a:hover {
   color: var(--fg);
 }
 
-.crumbs > strong {
+.crumb-item > strong {
   color: var(--fg);
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Phase 13 — cap each crumb segment at ~18ch on phones so a long bot
+ * name doesn't push the topbar off-screen; the full label remains
+ * available via the `title` attribute set in `Crumbs.tsx`. Stop wrapping
+ * so segments truncate instead of stacking. */
+@media (max-width: 768px) {
+  .crumbs {
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .crumb-item > a,
+  .crumb-item > strong,
+  .crumb-item > .crumb-text {
+    max-width: 18ch;
+  }
 }
 
 .crumb-sep {
@@ -1428,8 +1965,15 @@ button.bot-card:hover:not(:disabled) {
 }
 
 .bot-picker-trigger > span:first-child {
+  /* Flex items default to `min-width: auto`, which keeps them from
+   * shrinking below their content's intrinsic width — so without this
+   * the bot name would clip but never show `…`. Setting `min-width: 0`
+   * lets the span shrink within the trigger's `max-width` cap and the
+   * ellipsis takes over. */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bot-picker-caret {
@@ -1447,8 +1991,8 @@ button.bot-card:hover:not(:disabled) {
   position: absolute;
   top: calc(100% + 6px);
   left: -8px;
-  min-width: 240px;
-  max-width: 320px;
+  min-width: 280px;
+  max-width: 360px;
   max-height: 60vh;
   overflow-y: auto;
   background: var(--surface);
@@ -1456,6 +2000,348 @@ button.bot-card:hover:not(:disabled) {
   border-radius: var(--radius);
   z-index: 30;
   padding: 4px;
+}
+
+.bot-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.bot-picker-search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  padding: 0;
+}
+
+.bot-picker-section {
+  list-style: none;
+}
+
+.bot-picker-section + .bot-picker-section {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.bot-picker-section-header {
+  padding: 4px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.bot-picker-section > ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bot-picker-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.bot-picker-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.bot-picker-pin:hover {
+  color: var(--fg);
+  background: var(--fg-soft);
+}
+
+/* ---------- Command palette (Cmd/Ctrl-K) ----------
+ * A single overlay mounted by both BotShell and AdminShell. Always opens
+ * centered, narrow column, dismissed by Esc / outside click / Enter on a
+ * row. Visual style stays close to the bot-picker popover so the two read
+ * as siblings. */
+.cmdk-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 100;
+}
+
+.cmdk-dialog {
+  width: min(640px, 90vw);
+  /* `dvh` keeps the dialog inside the viewport even when iOS Safari's
+   * URL bar is showing and on short landscape phones. 64px gutter clears
+   * the topbar plus a comfortable margin. */
+  max-height: min(640px, calc(100dvh - 64px));
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+[data-theme="ink"] .cmdk-dialog {
+  background: var(--paper);
+}
+
+.cmdk-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.cmdk-search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+.cmdk-search kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+}
+
+.cmdk-list {
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.cmdk-section {
+  padding: 4px 0;
+}
+
+.cmdk-section + .cmdk-section {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+
+.cmdk-section-header {
+  padding: 4px 14px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.cmdk-item.active {
+  background: var(--accent-soft);
+}
+
+.cmdk-item:hover {
+  background: var(--fg-soft);
+}
+
+.cmdk-item.active:hover {
+  background: var(--accent-soft);
+}
+
+.cmdk-item-label {
+  flex: 1;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cmdk-item-hint {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.cmdk-item-arrow {
+  color: var(--muted);
+  opacity: 0;
+}
+
+.cmdk-item.active .cmdk-item-arrow {
+  opacity: 1;
+}
+
+.cmdk-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- /bots row affordances ----------
+ * Pin toggle, inline tag editor popover, and a small "this bot has hard
+ * config errors" badge. The pin sits in its own column so the row click
+ * target doesn't fight the button. */
+.pin-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.pin-toggle:hover {
+  background: var(--fg-soft);
+  color: var(--fg);
+}
+
+.pin-toggle[aria-pressed="true"] {
+  color: var(--accent, var(--fg));
+}
+
+.tag-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tag-row .tag {
+  min-height: 18px;
+  padding: 1px 6px;
+  font-size: 11px;
+  gap: 4px;
+}
+
+.tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.tag-remove:hover {
+  color: var(--fg);
+  background: var(--fg-soft);
+}
+
+.tag-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag-cell-trigger {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  border-radius: 3px;
+  min-height: 22px;
+  text-align: left;
+}
+
+.tag-cell-trigger:hover {
+  background: var(--fg-soft);
+}
+
+.tag-cell-trigger .muted {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+.tag-cell-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+[data-theme="ink"] .tag-cell-popover {
+  background: var(--paper);
+}
+
+.tag-filter-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.health-bad {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--danger, #b91c1c);
+}
+
+.health-bad.inline {
+  vertical-align: middle;
 }
 
 [data-theme="ink"] .bot-picker-popover {
@@ -2386,4 +3272,152 @@ table.table .col-right {
 table.table .col-narrow {
   width: 1%;
   white-space: nowrap;
+}
+
+/* ============================================================================
+ * Phase 12 — Modal primitive. Every centered dialog in the admin UI now
+ * renders inside `<Modal>` (ui/components/Modal.tsx). The backdrop and card
+ * shells use these classes; the dialog body composes its own .field / .row.
+ * Sizing is driven by inline width (size tier → min(maxPx, 100vw - 32px)).
+ * ============================================================================ */
+
+.modal-backdrop {
+  /* Most layout is inline on the backdrop element so `padding: 16px` keeps
+   * a visible gutter on phones; the card itself caps `width` at the size
+   * tier. */
+}
+
+.modal-card {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  /* Override the default .card padding so the header/body/footer compose
+   * their own spacing — see modal-header / .field reset on inner cards. */
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: var(--fs-h2);
+  line-height: 1.2;
+}
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.modal-body {
+  padding: 16px 20px;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--paper);
+}
+
+/* When the dialog body doesn't want a header (small confirms), the
+ * children still need top padding. Consumers can opt in by wrapping their
+ * content in `.modal-body`. */
+
+/* ============================================================================
+ * Phase 12 — skip-to-content link. Hidden visually until focus lands on it;
+ * then pinned to the top of the viewport so a keyboard user can jump past
+ * the sidebar/topbar into the main content region.
+ * ============================================================================ */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  background: var(--fg);
+  color: var(--surface);
+  padding: 8px 14px;
+  border-radius: 6px;
+  z-index: 100;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+  transition: transform 0.15s ease;
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ============================================================================
+ * Phase 12 — keyboard chord chips for the shortcuts help modal and the
+ * opt-in sidebar hints. Borrowing the existing `kbd` styling from the
+ * command palette so the visual language stays consistent.
+ * ============================================================================ */
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  background: var(--surface-alt, var(--paper));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.kbd-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Sidebar chord hints — only visible when the user opts in via
+ * KeyboardShortcutsHelp. The provider sets `data-shortcut-hints="1"` on
+ * <html>. Hidden in collapsed sidebar (no room) and on mobile. */
+.nav-chord-hint {
+  display: none;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+html[data-shortcut-hints="1"] .nav-item:not(.collapsed-only) .nav-chord-hint {
+  display: inline-flex;
+}
+
+/* Specificity matches the rule above (0,4,1) so source order wins — without
+ * this, chord chips render next to icons in the icon-only rail, overflow the
+ * 56px width, and force a horizontal scrollbar across the sidebar nav. */
+html .sidebar.collapsed .nav-item .nav-chord-hint {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .nav-chord-hint {
+    display: none !important;
+  }
 }

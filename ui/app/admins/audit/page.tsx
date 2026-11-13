@@ -93,7 +93,7 @@ export default function AuditPage() {
           </span>
         </div>
 
-        <table className="table">
+        <div className="table-stack"><table className="table">
           <thead>
             <tr>
               <th>When</th>
@@ -114,18 +114,18 @@ export default function AuditPage() {
             ) : (
               visible.map((row) => (
                 <tr key={row.id}>
-                  <td className="muted text-mono" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  <td data-label="When" className="muted text-mono" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
                     {relativeTime(row.created_at)}
                   </td>
-                  <td className="text-mono" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                  <td data-label="Action" className="text-mono" style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
                     {row.action}
                   </td>
-                  <td className="muted">{row.admin_id ?? "—"}</td>
-                  <td className="muted">{row.bot_id ?? "—"}</td>
-                  <td className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  <td data-label="Admin" className="muted">{row.admin_id ?? "—"}</td>
+                  <td data-label="Bot" className="muted">{row.bot_id ?? "—"}</td>
+                  <td data-label="Target" className="muted" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
                     {row.target_type ? `${row.target_type}:${row.target_id ?? ""}` : "—"}
                   </td>
-                  <td>
+                  <td data-label="Status">
                     <StatusPill variant={row.success ? "success" : "danger"} noDot={false}>
                       {row.success ? "ok" : "failed"}
                     </StatusPill>
@@ -134,7 +134,7 @@ export default function AuditPage() {
               ))
             )}
           </tbody>
-        </table>
+        </table></div>
 
         <div className="pagination" style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", margin: 0 }}>
           <span className="muted">

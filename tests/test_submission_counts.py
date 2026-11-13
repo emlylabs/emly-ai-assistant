@@ -71,8 +71,8 @@ def _insert_action(bot_id: str, user_id: str, action_name: str, action_value: st
         user=user_id,
         action_name=action_name,
         action_value=action_value,
-        created_on=now,
-        updated_on=now,
+        created_at=now,
+        updated_at=now,
     )
 
 

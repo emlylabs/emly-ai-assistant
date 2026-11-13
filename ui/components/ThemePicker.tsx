@@ -61,7 +61,7 @@ export default function ThemePicker() {
         title="Paper"
       >
         <Sun size={13} strokeWidth={1.75} />
-        Paper
+        <span className="theme-label">Paper</span>
       </button>
       <button
         type="button"
@@ -71,7 +71,7 @@ export default function ThemePicker() {
         title="Ink"
       >
         <Moon size={13} strokeWidth={1.75} />
-        Ink
+        <span className="theme-label">Ink</span>
       </button>
     </div>
   );

@@ -46,8 +46,8 @@ class EMLYUser(Model):
     region = TextField(null=True)
     latitude = FloatField(null=True)
     longitude = FloatField(null=True)
-    created_on = DateTimeField(null=True)
-    updated_on = DateTimeField(null=True)
+    created_at = DateTimeField(null=True)
+    updated_at = DateTimeField(null=True)
     meta = JSONField(null=True)
 
     class Meta:
@@ -71,8 +71,8 @@ class EMLYUserModel(BaseModel):
     region: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    created_on: Optional[datetime] = None
-    updated_on: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     meta: Optional[dict] = None
 
 
@@ -93,8 +93,8 @@ def _row_to_model(row: EMLYUser) -> EMLYUserModel:
         region=data.get("region"),
         latitude=data.get("latitude"),
         longitude=data.get("longitude"),
-        created_on=data.get("created_on"),
-        updated_on=data.get("updated_on"),
+        created_at=data.get("created_at"),
+        updated_at=data.get("updated_at"),
         meta=data.get("meta"),
     )
 
@@ -155,8 +155,8 @@ class EMLYUsersTable:
             region=region,
             latitude=latitude,
             longitude=longitude,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
             meta=meta,
         )
         return self.get_user_by_id(bot_id, id)
@@ -175,7 +175,7 @@ class EMLYUsersTable:
         query = (
             EMLYUser.select()
             .where(EMLYUser.bot == bot_id)
-            .order_by(EMLYUser.created_on.desc())
+            .order_by(EMLYUser.created_at.desc())
             .offset(skip)
             .limit(limit)
         )
@@ -194,7 +194,7 @@ class EMLYUsersTable:
                     last_name=emly_user.last_name,
                     email=emly_user.email,
                     phone=emly_user.phone,
-                    updated_on=datetime.now(),
+                    updated_at=datetime.now(),
                     meta=emly_user.meta,
                     country=emly_user.country,
                     city=emly_user.city,

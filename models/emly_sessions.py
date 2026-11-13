@@ -361,6 +361,31 @@ class EMLYSessionsTable:
         )
         return rows > 0
 
+    def claim_takeover(
+        self,
+        bot_id: str,
+        session_id: str,
+        *,
+        admin_id: str,
+        force: bool = False,
+    ) -> bool:
+        """Claim a session for ``admin_id``. Without ``force`` the update
+        only applies while the session is free or already held by the same
+        admin, so two admins racing can't both win. Returns False when
+        nothing was updated (missing session, or held by someone else)."""
+        query = EMLYSession.update(
+            taken_over_by=admin_id,
+            taken_over_at=datetime.utcnow(),
+            taken_over_until=None,
+        ).where((EMLYSession.bot_id == bot_id) & (EMLYSession.id == session_id))
+        if not force:
+            query = query.where(
+                EMLYSession.taken_over_by.is_null(True)
+                | (EMLYSession.taken_over_by == "")
+                | (EMLYSession.taken_over_by == admin_id)
+            )
+        return query.execute() > 0
+
     def is_taken_over(self, bot_id: str, session_id: str) -> bool:
         """Used by the agent reply path to short-circuit the bot when an
         admin is in control of the session."""

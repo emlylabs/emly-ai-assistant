@@ -55,7 +55,26 @@ class LocalCredentialModel(BaseModel):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    # Naive UTC. DateTimeField has no timezone support: SQLite handed an
+    # aware value back as a *string* and Postgres ("timestamp without time
+    # zone") as a naive datetime, so comparing either with an aware "now"
+    # raised TypeError — every sign-in to a locked account crashed.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _as_naive_utc(value) -> Optional[datetime]:
+    """Coerce a stored timestamp (naive/aware datetime, or the string SQLite
+    returns for values written with an offset) to naive UTC."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _to_pydantic(row: LocalCredential) -> LocalCredentialModel:
@@ -65,14 +84,13 @@ def _to_pydantic(row: LocalCredential) -> LocalCredentialModel:
         password_set_at=data["password_set_at"],
         must_change=data["must_change"],
         failed_attempts=data["failed_attempts"],
-        locked_until=data["locked_until"],
+        locked_until=_as_naive_utc(data["locked_until"]),
     )
 
 
 class LocalCredentialsTable:
     def __init__(self, db):
         self.db = db
-        self.db.create_tables([LocalCredential])
 
     def upsert(
         self,
@@ -144,14 +162,27 @@ class LocalCredentialsTable:
         )
         return rows > 0
 
+    def rehash_password(self, admin_id: str, password_hash: str) -> bool:
+        """Replace the stored hash with an upgraded one (Argon2 parameter
+        bump). Does not reset ``failed_attempts`` / ``locked_until`` or
+        ``password_set_at`` — this is a hash-format upgrade, not a
+        password rotation."""
+        rows = (
+            LocalCredential.update(password_hash=password_hash)
+            .where(LocalCredential.admin_id == admin_id)
+            .execute()
+        )
+        return rows > 0
+
     def is_locked(self, admin_id: str) -> bool:
         try:
             row = LocalCredential.get(LocalCredential.admin_id == admin_id)
         except DoesNotExist:
             return False
-        if row.locked_until is None:
+        locked_until = _as_naive_utc(row.locked_until)
+        if locked_until is None:
             return False
-        return row.locked_until > _now()
+        return locked_until > _now()
 
     def list_all(self) -> List[LocalCredentialModel]:
         return [_to_pydantic(r) for r in LocalCredential.select()]

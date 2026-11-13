@@ -1,9 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { KeyboardShortcutsProvider } from "@/components/KeyboardShortcuts";
+import KeyboardShortcutsHelp from "@/components/KeyboardShortcutsHelp";
 
 export const metadata: Metadata = {
   title: "Emly Admin",
   description: "Admin console for the Emly AI Agents service",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 // Inline pre-paint script: read theme/density from localStorage before
@@ -29,7 +37,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
       <body>
-        {children}
+        <a href="#main" className="skip-link">Skip to main content</a>
+        <KeyboardShortcutsProvider>
+          {children}
+          <KeyboardShortcutsHelp />
+        </KeyboardShortcutsProvider>
       </body>
     </html>
   );

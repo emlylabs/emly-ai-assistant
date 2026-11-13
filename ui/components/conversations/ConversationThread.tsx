@@ -135,7 +135,7 @@ export default function ConversationThread({ bot, session }: ConversationThreadP
           // short status notices that we control, also plain.
           const renderMarkdown = role === "bot";
           return (
-            <div key={m.id ?? `${m.session_id}:${m.created_on}`} className={`msg msg-${role}`}>
+            <div key={m.id ?? `${m.session_id}:${m.created_at}`} className={`msg msg-${role}`}>
               <div className="msg-bubble">
                 {renderMarkdown ? (
                   <MarkdownBubble>{m.message ?? ""}</MarkdownBubble>
@@ -144,7 +144,7 @@ export default function ConversationThread({ bot, session }: ConversationThreadP
                 )}
               </div>
               <div className="msg-meta">
-                {shortClock(m.created_on)}
+                {shortClock(m.created_at)}
                 {m.user_id ? ` · ${m.user_id}` : ""}
                 {m.topic ? ` · ${m.topic}` : ""}
               </div>

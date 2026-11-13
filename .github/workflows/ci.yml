@@ -1,0 +1,106 @@
+# Tests, dependency audit, image build + scan, and secret scan.
+#
+# Supply-chain notes: third-party actions are pinned to commit SHAs and the
+# scanners run from digest-pinned images or checksum-verified binaries. To
+# update one, look up the new release's commit SHA / image digest / checksum
+# and change it here (the version is kept in a comment for readability).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.8"
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Model caches outside DATA_DIR so actions/cache can keep them.
+      SENTENCE_TRANSFORMERS_HOME: ${{ github.workspace }}/.models/embedding
+      RE_RANKING_MODEL_HOME: ${{ github.workspace }}/.models/re_ranking
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Cache pinned Hugging Face models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .models
+          key: hf-models-${{ hashFiles('utils/model_pins.py') }}
+      - name: Install dependencies (locked)
+        run: uv sync --locked
+      - name: Download pinned models
+        run: uv run python -m utils.model_pins
+      - name: Run tests
+        run: uv run pytest -q
+
+  pip-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Report-only for now: the locked dependencies have known advisories
+    # that need an upgrade pass first (see SECURITY.md). Remove this line
+    # to make new advisories fail the build.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Export locked runtime dependencies
+        run: uv export --frozen --no-dev --no-hashes --no-emit-project -o requirements-audit.txt
+      - name: Audit
+        run: |
+          uvx pip-audit==2.10.1 -r requirements-audit.txt --disable-pip --no-deps \
+            --progress-spinner off -f markdown -o pip-audit.md || status=$?
+          cat pip-audit.md >> "$GITHUB_STEP_SUMMARY"
+          exit "${status:-0}"
+
+  image:
+    name: docker build + trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -t emly-ai-assistant:ci .
+      - name: Trivy (fail on fixable critical vulnerabilities)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" \
+            image --quiet --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 \
+            emly-ai-assistant:ci
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the whole history
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+      - name: Scan
+        # Reviewed false positives are listed in .gitleaksignore.
+        run: ./gitleaks git . --redact --no-banner

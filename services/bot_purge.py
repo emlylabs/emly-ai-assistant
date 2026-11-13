@@ -51,7 +51,19 @@ def purge_one(bot: BotModel) -> None:
     except Exception:
         log.exception("delete_bot in Qdrant failed for bot=%s", bot_id)
 
-    # 2. Filesystem: remove the bot's upload tree.
+    # 2. Filesystem: chat attachments live outside the bot's folder
+    # (attachments/{user_id}/{file_id}); remove them while their rows still
+    # say which ones are this bot's. Then the bot's own upload tree.
+    try:
+        from models.emly_files import EMLYFiles
+        from services.data_retention import _remove_attachment_dirs
+
+        _remove_attachment_dirs(
+            (f.user_id, f.id) for f in EMLYFiles.select(EMLYFiles.id, EMLYFiles.user)
+            .where((EMLYFiles.bot == bot_id) & EMLYFiles.user.is_null(False))
+        )
+    except Exception:
+        log.exception("Attachment cleanup failed for bot=%s", bot_id)
     bot_dir = _bot_dir(bot_id)
     if bot_dir.exists():
         try:
@@ -59,10 +71,26 @@ def purge_one(bot: BotModel) -> None:
         except Exception:
             log.exception("Filesystem cleanup failed for bot=%s at %s", bot_id, bot_dir)
 
-    # 3. Relational rows: every user-data table FKs to ``bots(id)`` with
-    # ``ON DELETE CASCADE``, so the row delete cleans up the rest.
+    # 3. Relational rows. Most tables FK to ``bots(id)`` with ON DELETE
+    # CASCADE, so the bot row delete clears them. These don't, so they are
+    # deleted first. The audit log is kept (it has its own retention).
     try:
-        Bot.delete().where(Bot.id == bot_id).execute()
+        from models.bot_config_history import BotConfigHistory
+        from models.crawl_jobs import CrawlJob, CrawlJobPage
+        from models.crawl_schedules import CrawlSchedule
+        from models.emly_sessions import EMLYSession
+
+        from db.db import DB
+
+        with DB.atomic():
+            job_ids = [j.id for j in CrawlJob.select(CrawlJob.id).where(CrawlJob.bot_id == bot_id)]
+            if job_ids:
+                CrawlJobPage.delete().where(CrawlJobPage.job_id.in_(job_ids)).execute()
+            CrawlJob.delete().where(CrawlJob.bot_id == bot_id).execute()
+            CrawlSchedule.delete().where(CrawlSchedule.bot_id == bot_id).execute()
+            BotConfigHistory.delete().where(BotConfigHistory.bot_id == bot_id).execute()
+            EMLYSession.delete().where(EMLYSession.bot_id == bot_id).execute()
+            Bot.delete().where(Bot.id == bot_id).execute()
         log.info("Hard-purged bot=%s", bot_id)
     except Exception:
         log.exception("Hard delete failed for bot=%s", bot_id)

@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from peewee import (
     BooleanField,
@@ -138,6 +138,44 @@ class AdminAuditLogTable:
             q = q.where(AdminAuditLog.success == success)
         q = q.offset(skip).limit(min(max(limit, 1), 500))
         return [_row_to_model(r) for r in q]
+
+    def iter_filtered(
+        self,
+        *,
+        admin_id: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        action: Optional[str] = None,
+        success: Optional[bool] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        batch_size: int = 1000,
+    ) -> Iterator[AdminAuditLogModel]:
+        """Every matching row, oldest first, fetched in batches (CSV export)."""
+        q = AdminAuditLog.select().order_by(AdminAuditLog.created_at.asc(), AdminAuditLog.id.asc())
+        if admin_id is not None:
+            q = q.where(AdminAuditLog.admin_id == admin_id)
+        if bot_id is not None:
+            q = q.where(AdminAuditLog.bot_id == bot_id)
+        if action is not None:
+            q = q.where(AdminAuditLog.action == action)
+        if success is not None:
+            q = q.where(AdminAuditLog.success == success)
+        if since is not None:
+            q = q.where(AdminAuditLog.created_at >= since)
+        if until is not None:
+            q = q.where(AdminAuditLog.created_at < until)
+        offset = 0
+        while True:
+            rows = list(q.offset(offset).limit(batch_size))
+            if not rows:
+                return
+            for r in rows:
+                yield _row_to_model(r)
+            offset += len(rows)
+
+    def purge_older_than(self, cutoff: datetime) -> int:
+        """Delete rows created before ``cutoff``. Returns the count."""
+        return AdminAuditLog.delete().where(AdminAuditLog.created_at < cutoff).execute()
 
 
 AdminAuditLogs = AdminAuditLogTable(DB)

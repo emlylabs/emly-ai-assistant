@@ -1,12 +1,24 @@
-# React + TypeScript + Vite
+# Emly Widget
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This directory contains the embeddable React chat widget for Emly AI Assistant.
+It can run in Vite during development or build into a standalone UMD bundle for
+external websites.
 
-## Environment
+## Development
 
-The widget calls the multi-bot endpoint at
-`${VITE_BACKEND_BASE_URL}/widget/${VITE_BOT_ID}/chat`. Set both in
-`.env.local`:
+```bash
+cd widget
+npm install
+npm run dev
+```
+
+Vite runs on:
+
+```text
+http://localhost:5173
+```
+
+Create `widget/.env.local` for local defaults:
 
 ```env
 VITE_BACKEND_BASE_URL=http://localhost:8080
@@ -14,71 +26,51 @@ VITE_BOT_ID=support-faq
 VITE_USER_ID_EXPIRY_DAYS=5
 ```
 
-Either env var can be overridden at runtime by passing `baseUrl` /
-`botId` to `ChatbotWidget.initialize()`.
+The widget calls:
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```text
+${VITE_BACKEND_BASE_URL}/widget/${VITE_BOT_ID}/chat
+${VITE_BACKEND_BASE_URL}/widget/${VITE_BOT_ID}/config
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Runtime values passed to `ChatbotWidget.initialize({ baseUrl, botId })` override
+the build-time defaults.
+
+## UMD Build
+
+```bash
+npm run build-widget
+```
+
+Output:
+
+```text
+dist/emly-widget.js
+```
+
+For the integrated FastAPI app:
+
+```bash
+cd ..
+cp widget/dist/emly-widget.js ui/public/emly-widget.js
+```
+
+Then rebuild `ui/` so the static export includes the current widget script.
+
+## Public API
 
 ```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
+window.ChatbotWidget.initialize(
   {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
+    baseUrl: "https://your-domain.example.com",
+    botId: "support-faq",
+    position: "bottom-right",
+    theme: "slate"
   },
-])
+  "emly-chat"
+);
+
+window.ChatbotWidget.destroy();
 ```
+
+See [EMBED.md](EMBED.md) for the full embed guide.

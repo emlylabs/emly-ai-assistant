@@ -139,24 +139,22 @@ def _build_llm_for_bot(bot_id: str):
     try:
         from langchain_openai import ChatOpenAI
 
-        from config import OPENAI_API_KEY, OPENAI_BASE_URL
         from models.bots import Bots
-        from services.bot_config import get_decrypted_api_key
+        from services import llm_settings
 
         bot = Bots.get_by_id(bot_id)
         if bot is None:
             return None
         cfg = dict(bot.config_json or {})
-        # Allow opting into a cheaper enrichment model than the chat
-        # model — defaults to gpt-4o-mini which is suitable for short
-        # classification tasks.
-        model = cfg.get("enrichment_model") or cfg.get("model_name") or "gpt-4o-mini"
-        api_key = get_decrypted_api_key(bot_id) or OPENAI_API_KEY
-        kwargs: Dict[str, Any] = {"model": model, "temperature": 0.0, "timeout": 20, "max_retries": 1}
-        if api_key:
-            kwargs["api_key"] = api_key
-        if OPENAI_BASE_URL:
-            kwargs["base_url"] = OPENAI_BASE_URL
+        # Allow opting into a cheaper enrichment model than the chat model.
+        settings = llm_settings.resolve(
+            bot_id, cfg.get("llm") or {}, model_override=cfg.get("enrichment_model")
+        )
+        if settings.missing:
+            # Not cached: the admin may finish setting the bot up later.
+            log.debug("enrichment: LLM not configured for bot=%s (missing %s)", bot_id, settings.missing)
+            return None
+        kwargs: Dict[str, Any] = {**settings.chat_kwargs(), "temperature": 0.0, "timeout": 20, "max_retries": 1}
         llm = ChatOpenAI(**kwargs)
         _LLM_CACHE[bot_id] = llm
         return llm
@@ -182,7 +180,7 @@ def _classify_one(job: _EnrichmentJob) -> Optional[Dict[str, Any]]:
 
     parsed = _parse_classifier_json(content)
     if parsed is None:
-        log.debug("enrichment: classifier returned non-JSON output: %s", content[:200])
+        log.debug("enrichment: classifier returned non-JSON output (len=%d)", len(content or ""))
     return parsed
 
 

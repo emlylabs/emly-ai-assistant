@@ -1,6 +1,6 @@
 "use client";
 
-import type { BotFile, DocumentType } from "@/lib/api";
+import type { DocumentType } from "@/lib/api";
 
 /** Logical buckets shown in the rail. We collapse the 6-value `DocumentType`
  * enum into 5 user-facing groups so the rail isn't cluttered with
@@ -11,48 +11,32 @@ type CollectionKey = "all" | "documents" | "pages" | "faq" | "products" | "other
 type Collection = {
   key: CollectionKey;
   label: string;
-  /** Filter predicate run against each `BotFile`. */
-  match: (f: BotFile) => boolean;
+  /** The raw `document_type` values that fall into this bucket. Empty
+   * for `all`, which means "no filter". */
+  documentTypes: DocumentType[];
 };
 
 const COLLECTIONS: Collection[] = [
-  { key: "all", label: "All files", match: () => true },
-  {
-    key: "documents",
-    label: "Documents",
-    match: (f) => f.document_type === "document" || f.document_type === "support_article",
-  },
-  {
-    key: "pages",
-    label: "Web pages",
-    match: (f) => f.document_type === "web_page",
-  },
-  {
-    key: "faq",
-    label: "FAQ",
-    match: (f) => f.document_type === "faq",
-  },
-  {
-    key: "products",
-    label: "Products",
-    match: (f) => f.document_type === "product",
-  },
-  {
-    key: "other",
-    label: "Other",
-    match: (f) => f.document_type === "other",
-  },
+  { key: "all", label: "All", documentTypes: [] },
+  { key: "documents", label: "Documents", documentTypes: ["document", "support_article"] },
+  { key: "pages", label: "Web pages", documentTypes: ["web_page"] },
+  { key: "faq", label: "FAQ", documentTypes: ["faq"] },
+  { key: "products", label: "Products", documentTypes: ["product"] },
+  { key: "other", label: "Other", documentTypes: ["other"] },
 ];
 
 type CollectionsRailProps = {
-  files: BotFile[];
+  /** Per-raw-document-type counts from the server. We sum the relevant
+   * subset for each bucket. */
+  documentTypeCounts: Partial<Record<DocumentType, number>>;
+  /** Total file count for the bot, drives the "All" bucket. */
+  grandTotal: number;
   selected: CollectionKey;
   onSelect: (key: CollectionKey) => void;
   /** Optional embedding model name for the small info block at the bottom
    * of the rail. Hidden when not supplied. */
   embeddingModel?: string;
-  /** Optional ISO timestamp shown as "last reindex" — derive from the most
-   * recent `BotFile.updated_on` on the caller side. */
+  /** Optional ISO timestamp shown as "last reindex". */
   lastSyncedAt?: string | null;
 };
 
@@ -62,7 +46,8 @@ type CollectionsRailProps = {
  * — no schema change.
  */
 export default function CollectionsRail({
-  files,
+  documentTypeCounts,
+  grandTotal,
   selected,
   onSelect,
   embeddingModel,
@@ -71,7 +56,13 @@ export default function CollectionsRail({
   // Pre-compute counts so empty buckets still show "0" rather than vanishing.
   const counts = COLLECTIONS.reduce<Record<CollectionKey, number>>(
     (acc, c) => {
-      acc[c.key] = files.filter(c.match).length;
+      acc[c.key] =
+        c.key === "all"
+          ? grandTotal
+          : c.documentTypes.reduce(
+              (sum, dt) => sum + (documentTypeCounts[dt] ?? 0),
+              0,
+            );
       return acc;
     },
     { all: 0, documents: 0, pages: 0, faq: 0, products: 0, other: 0 },
@@ -123,11 +114,11 @@ export default function CollectionsRail({
   );
 }
 
-/** Re-export the keyed predicate so the page can filter rows with the same
- * logic the rail buckets them. */
-export function matchCollection(key: CollectionKey, file: BotFile): boolean {
+/** Return the raw `document_type` values backing a rail bucket, so the
+ * page can pass them to the paginated list endpoint. Empty for `all`. */
+export function collectionDocumentTypes(key: CollectionKey): DocumentType[] {
   const c = COLLECTIONS.find((x) => x.key === key);
-  return c ? c.match(file) : true;
+  return c ? c.documentTypes : [];
 }
 
 export type { CollectionKey };
