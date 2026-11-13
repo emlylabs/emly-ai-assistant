@@ -71,8 +71,10 @@ class TelegramAdapter(ChannelAdapter):
     # ------------------------------------------------------------------
     async def verify_signature(self, request: Request, secrets: TelegramSecrets) -> bool:
         if not secrets.secret_token:
-            log.warning("Telegram channel has no secret_token configured — accepting anyway")
-            return True
+            # Without a secret anyone who learns the webhook URL can post
+            # forged updates. Re-installing the channel generates one.
+            log.warning("Telegram channel has no secret_token configured — rejecting update")
+            return False
         provided = request.headers.get("x-telegram-bot-api-secret-token", "")
         return _ct_eq(provided, secrets.secret_token)
 

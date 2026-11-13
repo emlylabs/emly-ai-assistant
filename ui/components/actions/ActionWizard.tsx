@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Sparkles, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import Modal from "@/components/Modal";
 import {
   Action,
   ActionAlertConfig,
@@ -104,107 +105,85 @@ export default function ActionWizard({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="action-wizard-title"
-      onClick={onCancel}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 60,
-        padding: 20,
-      }}
+    <Modal
+      open
+      onClose={onCancel}
+      size="lg"
+      ariaLabel="New action wizard"
+      showClose={false}
     >
       <div
-        className="card"
-        onClick={(e) => e.stopPropagation()}
+        className="row"
         style={{
-          width: "min(720px, 100%)",
-          maxHeight: "90vh",
-          overflow: "auto",
-          padding: 0,
-          display: "flex",
-          flexDirection: "column",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "16px 20px",
+          borderBottom: "1px solid var(--panel-border)",
         }}
       >
-        <div
-          className="row"
-          style={{
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "16px 20px",
-            borderBottom: "1px solid var(--panel-border)",
-          }}
-        >
-          <h2 id="action-wizard-title" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
-            <Sparkles size={16} strokeWidth={1.75} />
-            New action
-          </h2>
-          <button className="ghost" onClick={onCancel} aria-label="Close">
-            <X size={16} strokeWidth={1.75} />
-          </button>
-        </div>
-
-        <StepIndicator order={order} current={step} />
-
-        <div style={{ padding: 20, flex: 1 }}>
-          {step === "kind" && (
-            <KindStep
-              draft={draft}
-              onChange={setDraft}
-            />
-          )}
-          {step === "trigger" && (
-            <TriggerStep
-              draft={draft}
-              onChange={setDraft}
-            />
-          )}
-          {step === "rule" && (
-            <RuleStep
-              draft={draft}
-              onChange={setDraft}
-            />
-          )}
-          {step === "configure" && (
-            <ConfigureStep
-              draft={draft}
-              onChange={setDraft}
-              skillIds={skillIds}
-            />
-          )}
-          {step === "review" && (
-            <ReviewStep draft={draft} />
-          )}
-        </div>
-
-        <div
-          className="row"
-          style={{
-            justifyContent: "space-between",
-            padding: "16px 20px",
-            borderTop: "1px solid var(--panel-border)",
-            background: "var(--paper)",
-          }}
-        >
-          <button className="ghost" onClick={back} disabled={!canGoBack}>
-            <ChevronLeft size={14} strokeWidth={1.75} /> Back
-          </button>
-          {step === "review" ? (
-            <button onClick={save}>Create action</button>
-          ) : (
-            <button onClick={next} disabled={!canGoNext}>
-              Continue <ChevronRight size={14} strokeWidth={1.75} />
-            </button>
-          )}
-        </div>
+        <h2 id="action-wizard-title" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+          <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
+          New action
+        </h2>
+        <button className="ghost" onClick={onCancel} aria-label="Close dialog">
+          <span aria-hidden="true">×</span>
+        </button>
       </div>
-    </div>
+
+      <StepIndicator order={order} current={step} />
+
+      <div style={{ padding: 20, flex: 1 }}>
+        {step === "kind" && (
+          <KindStep
+            draft={draft}
+            onChange={setDraft}
+          />
+        )}
+        {step === "trigger" && (
+          <TriggerStep
+            draft={draft}
+            onChange={setDraft}
+          />
+        )}
+        {step === "rule" && (
+          <RuleStep
+            draft={draft}
+            onChange={setDraft}
+          />
+        )}
+        {step === "configure" && (
+          <ConfigureStep
+            draft={draft}
+            onChange={setDraft}
+            skillIds={skillIds}
+          />
+        )}
+        {step === "review" && (
+          <ReviewStep draft={draft} />
+        )}
+      </div>
+
+      <div
+        className="row"
+        style={{
+          justifyContent: "space-between",
+          padding: "16px 20px",
+          borderTop: "1px solid var(--panel-border)",
+          background: "var(--paper)",
+        }}
+      >
+        <button className="ghost" onClick={back} disabled={!canGoBack}>
+          <ChevronLeft size={14} strokeWidth={1.75} /> Back
+        </button>
+        {step === "review" ? (
+          <button onClick={save}>Create action</button>
+        ) : (
+          <button onClick={next} disabled={!canGoNext}>
+            Continue <ChevronRight size={14} strokeWidth={1.75} />
+          </button>
+        )}
+      </div>
+    </Modal>
   );
 }
 

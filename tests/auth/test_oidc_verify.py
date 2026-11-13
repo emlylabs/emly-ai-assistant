@@ -119,22 +119,41 @@ def test_verify_token_within_leeway_accepted():
     assert principal.subject == "user-123"
 
 
-def test_email_verified_always_true_when_idp_says_false():
-    """Successful OIDC sign-in is treated as proof of email control, regardless
-    of whatever the IdP emits in the ``email_verified`` claim."""
+def test_email_verified_surfaces_idp_false_by_default():
+    """Default posture (external IdP): the actual ``email_verified`` claim is
+    surfaced. ``user_resolver`` then refuses activation when it's falsy so a
+    self-hosted IdP with verification disabled can't silently inherit invites."""
     provider, _ = _provider()
     token = mint(_make_claims(email_verified="false"))
     principal = provider.verify_token(token)
-    assert principal.email_verified is True
+    assert principal.email_verified is False
 
 
-def test_email_verified_always_true_when_claim_missing():
+def test_email_verified_false_when_claim_missing_by_default():
+    """No claim ⇒ False (safe default). The pre-rewrite shortcut of forcing
+    True is now opt-in via ``trust_email_unconditionally`` (which the embedded
+    issuer enables, since it owns the password gate)."""
     provider, _ = _provider()
     claims = _make_claims()
     claims.pop("email_verified")
     token = mint(claims)
     principal = provider.verify_token(token)
+    assert principal.email_verified is False
+
+
+def test_email_verified_forced_true_when_trust_unconditionally():
+    """Opt-in path (embedded issuer, or operator-trusted external IdP): the
+    claim is ignored and ``email_verified`` is True regardless."""
+    provider, _ = _provider(trust_email_unconditionally=True)
+    token = mint(_make_claims(email_verified="false"))
+    principal = provider.verify_token(token)
     assert principal.email_verified is True
+    # Also true when the claim is missing entirely.
+    claims = _make_claims()
+    claims.pop("email_verified")
+    token2 = mint(claims)
+    principal2 = provider.verify_token(token2)
+    assert principal2.email_verified is True
 
 
 def test_token_missing_sub_rejected():

@@ -46,7 +46,10 @@ def test_tampered_payload_rejected():
 def test_tampered_signature_rejected():
     token = issue(bot_id="bot-1", user_id="u", session_id="s", key_version=1)
     payload, sig = token.rsplit(".", 1)
-    tampered = payload + "." + sig[:-1] + ("A" if sig[-1] != "A" else "B")
+    # Change the FIRST signature character: every bit of it is significant.
+    # (The last character of a 43-char base64url string carries 2 padding
+    # bits the decoder ignores, so swapping it was a no-op 1 time in 16.)
+    tampered = payload + "." + ("A" if sig[0] != "A" else "B") + sig[1:]
     with pytest.raises(WidgetTokenError, match="bad_signature"):
         verify(tampered, expected_bot_id="bot-1", current_key_version=1)
 

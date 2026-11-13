@@ -28,6 +28,7 @@ from services.auth.factory import get_auth_provider as _get_provider
 from services.auth.user_resolver import (
     AdminNotProvisioned,
     EmailLinkedToOtherProvider,
+    EmailNotVerified,
     resolve_or_create_admin,
 )
 
@@ -92,6 +93,11 @@ def get_admin(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "email_linked_to_other_provider"},
+        ) from e
+    except EmailNotVerified as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "email_not_verified", "email": principal.email},
         ) from e
 
     if not admin.is_active:

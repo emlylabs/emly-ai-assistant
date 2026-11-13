@@ -6,6 +6,7 @@ import { rehydrateForBot } from './redux/messageReducer';
 import ChatbotWidget from './components/ChatbotWidget';
 import { CHATBOT_THEMES } from './utils/chatbotThemes';
 import { setBotId } from './utils/botContext';
+import { widgetFetch } from './utils/widgetAuth';
 
 // Global type definitions
 declare global {
@@ -95,7 +96,7 @@ export const recordImpression = (kind: 'short' | 'long'): void => {
   } catch {
     // Private mode / storage disabled — still fire, accept the dupe.
   }
-  void fetch(url, {
+  void widgetFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type: kind }),
@@ -132,7 +133,7 @@ export const rateMessage = async (
 ): Promise<void> => {
   const url = getRateUrl(messageId);
   if (!url) throw new Error('rate endpoint not configured');
-  const response = await fetch(url, {
+  const response = await widgetFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -189,7 +190,7 @@ export interface WidgetBotConfig {
   whatsapp_message?: string | null;
 
   /** Launcher tooltip cycle. Mirrors the `nudges` sub-tree in
-   * `BotConfigV1`. The widget reads `nudge[]` for entries (each with
+   * `BotConfig`. The widget reads `nudge[]` for entries (each with
    * `nudge_label` + `nudge_query`), `wait_time` ms before the first
    * appearance, `duration` ms each is shown, and `count` for how many
    * appearances total before stopping. */

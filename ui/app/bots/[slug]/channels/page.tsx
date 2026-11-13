@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useBot } from "@/components/BotShell";
 import {
   ApiError,
@@ -26,6 +27,8 @@ export default function BotChannelsPage() {
   // Null until the first fetch resolves, in which case we degrade to an
   // unpinned URL — better than blocking the snippet on a network call.
   const [widgetVersion, setWidgetVersion] = useState<string | null>(null);
+  // Allowed widget origins from the bot config; null until loaded.
+  const [widgetOrigins, setWidgetOrigins] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") setOrigin(window.location.origin);
@@ -63,6 +66,26 @@ export default function BotChannelsPage() {
     if (!bot.slug) return;
     void refresh();
   }, [bot.slug, refresh]);
+
+  useEffect(() => {
+    if (!bot.slug) return;
+    let cancelled = false;
+    api
+      .getBotConfig(bot.slug)
+      .then((res) => {
+        const limits = (res.config?.limits ?? {}) as { widget_allowed_origins?: unknown };
+        const list = Array.isArray(limits.widget_allowed_origins)
+          ? (limits.widget_allowed_origins as unknown[]).filter((o): o is string => typeof o === "string")
+          : [];
+        if (!cancelled) setWidgetOrigins(list);
+      })
+      .catch(() => {
+        // Non-fatal — the warning simply doesn't render.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bot.slug]);
 
   // Surface the post-install redirect signal from `/channels/.../oauth/callback`.
   useEffect(() => {
@@ -209,6 +232,25 @@ export default function BotChannelsPage() {
       {/* Web widget */}
       <div className="card" style={{ marginTop: 16 }}>
         <h2 style={{ marginTop: 0 }}>Web widget</h2>
+        {widgetOrigins !== null && (widgetOrigins.length === 0 || widgetOrigins.includes("*")) && (
+          <div className="banner warning" role="status" style={{ marginBottom: 12 }}>
+            {widgetOrigins.length === 0 ? (
+              <>
+                <strong>No sites are allowed to embed this widget yet.</strong> It
+                works on this app&apos;s preview and test pages only. Add the
+                sites you embed it on under{" "}
+                <Link href={`/bots/${bot.slug}/config?tab=limits`}>Limits → Allowed widget origins</Link>.
+              </>
+            ) : (
+              <>
+                <strong>Any website can embed this widget</strong> (allowed origins
+                include <code>*</code>). Replace it with the sites you actually
+                use under{" "}
+                <Link href={`/bots/${bot.slug}/config?tab=limits`}>Limits → Allowed widget origins</Link>.
+              </>
+            )}
+          </div>
+        )}
         <p className="muted">
           Paste this snippet into your site&apos;s HTML. The loader injects a
           chat launcher in the corner; clicking it opens the chat widget

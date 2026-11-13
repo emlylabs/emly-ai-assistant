@@ -107,9 +107,22 @@ class AdminBotMembershipsTable:
         return [_row_to_model(r) for r in rows]
 
     def count_owners(self, bot_id: str) -> int:
+        """Count active owners on the bot.
+
+        Deactivated admins are skipped: keeping last-owner protection
+        keyed on them would otherwise strand the bot (the only "owner"
+        can't log in to transfer ownership). A superadmin can still act
+        via the transfer-ownership route.
+        """
         return (
-            AdminBotMembership.select()
-            .where((AdminBotMembership.bot == bot_id) & (AdminBotMembership.role == "owner"))
+            AdminBotMembership
+            .select()
+            .join(AdminUser, on=(AdminBotMembership.admin == AdminUser.id))
+            .where(
+                (AdminBotMembership.bot == bot_id)
+                & (AdminBotMembership.role == "owner")
+                & (AdminUser.is_active == True)  # noqa: E712
+            )
             .count()
         )
 

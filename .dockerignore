@@ -27,8 +27,10 @@ gen-lang-client-*.json
 # Stale dep manifests — the image installs from pyproject.toml + uv.lock
 requirements.txt
 
-# Untracked dev helpers
-scripts/
+# Untracked dev helpers — except the operational scripts that ship in the image
+scripts/*
+!scripts/__init__.py
+!scripts/rotate_bot_secrets.py
 
 # UI artifacts (rebuilt inside the ui-builder stage)
 ui/node_modules/

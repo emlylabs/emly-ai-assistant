@@ -1,13 +1,25 @@
 // Pure validation rules for the bot config blob. Surfaced by the
 // validation panel above each section in `config/page.tsx`.
 //
-// Severity:
-//   - "error"   = something will demonstrably break in chat
-//   - "warning" = something is likely misconfigured but won't crash
+// This module is the *client-side preview* — instant feedback as the
+// admin types. Authoritative validation lives server-side in
+// `services/config_validation.py`; the publish / save gates trust the
+// server. Keep the rule keys and severity tags in sync between the two.
+//
+// Severity contract (consumed by the publish/save gates):
+//   - "error"   = blocks publish; blocks save when the workspace
+//                 `validation.block_save_on_errors` flag is on
+//   - "warning" = surfaces in the workspace overview + picker tooltips,
+//                 but doesn't block save or publish
 //   - "info"    = advisory observation, dismissible
 //
-// Adding a rule: append to `validateConfig` and document it in
-// ux-redesign.md §X.1.
+// Runtime checks (missing API key with no fallback, empty origin
+// allowlist, unrecognized model) only live on the server (the RT*
+// family in `services/config_validation.py`) because the client can't
+// read encrypted keys or deployment envs.
+//
+// Adding a rule: append to `validateConfig`, mirror it in the Python
+// validator, and document it in ux-redesign.md §X.1.
 
 import { Action, actionsFromConfig } from "@/lib/actions";
 
@@ -41,6 +53,8 @@ function num(v: unknown): number | undefined {
 export type ValidationContext = {
   /** File count for the bot, fetched out-of-band by the page. */
   fileCount?: number;
+  /** Bot slug, used to build absolute hrefs for CTAs. */
+  botSlug?: string;
 };
 
 export function validateConfig(config: Cfg, ctx: ValidationContext = {}): Issue[] {
@@ -87,7 +101,7 @@ export function validateConfig(config: Cfg, ctx: ValidationContext = {}): Issue[
         key: `R2_rag_no_files_${name}`,
         section: "topics",
         message: `Skill "${name}" answers from your knowledge base, but no files are uploaded yet.`,
-        cta: { label: "Upload files", href: "../files" },
+        cta: { label: "Upload files", href: ctx.botSlug ? `/bots/${ctx.botSlug}/files` : undefined },
       });
     }
 

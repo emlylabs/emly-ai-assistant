@@ -1,6 +1,14 @@
 "use client";
 
-import { Bot, FileText, MessageSquare, Settings, Sparkles, Wrench } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  FileText,
+  MessageSquare,
+  Settings,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
 import { actionsFromConfig } from "@/lib/actions";
 import { LLM_DEFAULTS } from "@/lib/defaults";
 
@@ -11,6 +19,11 @@ type Props = {
   config: Record<string, unknown>;
   fileCount?: number;
   hasApiKey?: boolean;
+  /** Whether the deployment has a fallback LLM key set
+   * (``OPENAI_API_KEY``). When both this and ``hasApiKey`` are falsy
+   * the Advanced tile turns red — that's RT1 in the server validator,
+   * "chat will fail on the next visitor message." */
+  hasDeploymentFallback?: boolean;
   onJump: (tab: string) => void;
 };
 
@@ -21,7 +34,13 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
-export default function SummaryCard({ config, fileCount, hasApiKey, onJump }: Props) {
+export default function SummaryCard({
+  config,
+  fileCount,
+  hasApiKey,
+  hasDeploymentFallback,
+  onJump,
+}: Props) {
   const topics = asObj(config.topics);
   const skillNames = Object.keys(topics);
   const actions = actionsFromConfig(config.c_forms_selected);
@@ -34,6 +53,11 @@ export default function SummaryCard({ config, fileCount, hasApiKey, onJump }: Pr
   const model = str(llm.model) || "(deployment default)";
 
   const ragSkillCount = skillNames.filter((n) => Boolean(asObj(topics[n]).requires_rag)).length;
+
+  // RT1: no per-bot key + no deployment fallback ⇒ the chat endpoint
+  // will 4xx on the next visitor message. We only judge when both
+  // probes have resolved (avoid a false-positive flash during load).
+  const rt1 = hasApiKey === false && hasDeploymentFallback === false;
 
   return (
     <div className="card" style={{ marginBottom: 16, padding: 16 }}>
@@ -87,18 +111,27 @@ export default function SummaryCard({ config, fileCount, hasApiKey, onJump }: Pr
           ctaLabel="Edit →"
         />
         <SummaryTile
-          icon={<Wrench size={14} strokeWidth={1.75} />}
+          icon={
+            rt1 ? (
+              <AlertTriangle size={14} strokeWidth={1.75} />
+            ) : (
+              <Wrench size={14} strokeWidth={1.75} />
+            )
+          }
           label="Advanced"
-          primary={model}
+          primary={rt1 ? "No key configured" : model}
           secondary={
-            hasApiKey === undefined
+            rt1
+              ? "Chat will fail — set a bot key or configure a deployment fallback."
+              : hasApiKey === undefined
               ? `Temp ${typeof llm.temperature === "number" ? llm.temperature : LLM_DEFAULTS.temperature}`
               : hasApiKey
               ? "API key set"
               : "Falls back to deployment key"
           }
           onClick={() => onJump("llm")}
-          ctaLabel="Edit →"
+          ctaLabel={rt1 ? "Fix →" : "Edit →"}
+          tone={rt1 ? "danger" : undefined}
         />
       </div>
     </div>
@@ -112,6 +145,7 @@ function SummaryTile({
   secondary,
   onClick,
   ctaLabel,
+  tone,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -119,7 +153,18 @@ function SummaryTile({
   secondary: string;
   onClick?: () => void;
   ctaLabel?: string;
+  /** When set to "danger", the tile borders + heading shift to the
+   * error palette so RT* failures stand out from the neutral grid. */
+  tone?: "danger";
 }) {
+  const dangerStyles =
+    tone === "danger"
+      ? {
+          border: "1px solid color-mix(in oklch, var(--error, #c4314b) 45%, transparent)",
+          background: "color-mix(in oklch, var(--error, #c4314b) 8%, transparent)",
+          color: "var(--error, #c4314b)",
+        }
+      : {};
   return (
     <div
       style={{
@@ -129,14 +174,30 @@ function SummaryTile({
         display: "flex",
         flexDirection: "column",
         gap: 6,
+        ...dangerStyles,
       }}
     >
-      <div className="row" style={{ alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12 }}>
+      <div
+        className="row"
+        style={{
+          alignItems: "center",
+          gap: 6,
+          color: tone === "danger" ? "var(--error, #c4314b)" : "var(--text-muted)",
+          fontSize: 12,
+        }}
+      >
         {icon}
         <span>{label}</span>
       </div>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>{primary}</div>
-      <div className="muted" style={{ fontSize: 11, lineHeight: 1.4 }}>{secondary}</div>
+      <div style={{ fontSize: 16, fontWeight: 600, color: tone === "danger" ? "var(--error, #c4314b)" : undefined }}>
+        {primary}
+      </div>
+      <div
+        className={tone === "danger" ? undefined : "muted"}
+        style={{ fontSize: 11, lineHeight: 1.4, color: tone === "danger" ? "var(--error, #c4314b)" : undefined }}
+      >
+        {secondary}
+      </div>
       {ctaLabel && onClick && (
         <button
           className="ghost compact"

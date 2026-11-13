@@ -21,3 +21,11 @@ gen-lang-client-0125099398-bd121e70f658.json
 .env
 .env.local
 .env.*.local
+# Editor backups (may hold secrets, e.g. .env~)
+*~
+
+# Build outputs
+.next/
+*.tsbuildinfo
+# Built by the widget stage in the Dockerfile (widget/dist/emly-widget.js)
+ui/public/emly-widget.js

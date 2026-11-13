@@ -11,7 +11,7 @@ def test_first_init_generates_a_keypair(tmp_path):
     ks = Keystore(tmp_path)
     assert len(list(tmp_path.glob("*.pem"))) == 2  # priv + pub
     assert ks.current_kid()
-    assert ks.current_private_pem().startswith(b"-----BEGIN PRIVATE KEY-----")
+    assert ks.current_private_pem().startswith(b"-----BEGIN PRIVATE KEY-----")  # gitleaks:allow (test fixture / not a secret)
 
 
 def test_second_init_loads_existing_keys(tmp_path):

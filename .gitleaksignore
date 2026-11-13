@@ -1,0 +1,9 @@
+# Gitleaks findings reviewed and accepted. All are test fixtures or rule
+# names, not real secrets; the lines now also carry `gitleaks:allow` so
+# rewritten commits stay clean. Format: commit:file:rule:line.
+dee999de80ac84e9236287f0f2ced623bde89a9c:tests/conftest.py:generic-api-key:30
+3bb661bab96bdd8751973e803814bd0731a4d15a:tests/auth/test_local_issuer_hardening.py:generic-api-key:15
+0da79f191c38d02ca50f40794fe5857d6fe0b6f1:tests/security/test_bootstrap_password.py:generic-api-key:60
+3436c7ee5581d3f52d4fae1c029400d9bf8467ab:tests/security/test_log_hygiene.py:generic-api-key:119
+4070e872e01b1536f26138cf74735e4675384db1:services/config_validation.py:generic-api-key:487
+91b8a871f7202067942b2c6c146bce9785693346:tests/auth/test_keystore.py:private-key:14

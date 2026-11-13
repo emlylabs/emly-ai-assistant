@@ -26,7 +26,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -35,6 +35,9 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
+from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
+from services.auth.ratelimit import client_ip, hit, rate_limit
+from services.auth.widget_hmac import WidgetPrincipal
 from services.bot_config import get_config_for_bot
 
 router = APIRouter()
@@ -73,6 +76,15 @@ def resolve_bot(bot_ref: str) -> BotModel:
 
 # Backwards-compatibility alias for existing callsites in this module.
 _resolve_bot = resolve_bot
+
+
+def widget_principal(bot_ref: str, request: Request) -> WidgetPrincipal:
+    """Dependency: the verified widget-token identity for ``bot_ref``.
+
+    Runs before body validation, so a request without a valid token gets
+    401 rather than a 422 for its body."""
+    require_bearer(request)
+    return require_widget_principal(request, resolve_bot(bot_ref))
 
 
 def _safe_url(value: Optional[str]) -> Optional[str]:
@@ -259,8 +271,8 @@ class WidgetSubmissionCountsResponse(BaseModel):
     Powers the "N of M submissions remaining" footnote and the
     post-limit engagement bubble. The widget consults this on mount and
     after each successful submission. Public-safe: only counts the
-    requesting visitor's own actions (filtered by the trusted
-    ``X-Emly-UserID`` header — same header model as the chat surface)."""
+    requesting visitor's own actions (the user in the verified widget
+    token)."""
 
     counts: Dict[str, int]
 
@@ -269,15 +281,9 @@ class WidgetSubmissionCountsResponse(BaseModel):
     "/widget/{bot_ref}/submissions/counts",
     response_model=WidgetSubmissionCountsResponse,
 )
-def widget_submission_counts(bot_ref: str, request: Request):
+def widget_submission_counts(bot_ref: str, principal: WidgetPrincipal = Depends(widget_principal)):
     bot = _resolve_bot(bot_ref)
-    user_id = request.headers.get("X-Emly-UserID")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Emly-UserID header is required",
-        )
-    counts = USER_ACTIONS.submission_counts(bot.id, user_id)
+    counts = USER_ACTIONS.submission_counts(bot.id, principal.user_id)
     return WidgetSubmissionCountsResponse(counts=counts)
 
 
@@ -285,10 +291,13 @@ def widget_submission_counts(bot_ref: str, request: Request):
 # POST /widget/{bot_id}/init — issue a widget HMAC token
 # ---------------------------------------------------------------------------
 class WidgetInitRequest(BaseModel):
-    """Optional ``user_id`` lets a returning visitor keep their conversation
-    history; if absent we generate a fresh ID and return it."""
+    """``user_id`` is the widget's stored visitor id. It is kept only when
+    ``previous_token`` proves it was issued to this caller, or when it has
+    no history on this bot yet; otherwise a fresh id is returned and the
+    widget adopts it (see ``services.auth.widget_auth.resolve_init_user``)."""
 
     user_id: Optional[str] = None
+    previous_token: Optional[str] = None
 
 
 class WidgetInitResponse(BaseModel):
@@ -314,7 +323,11 @@ class WidgetImpressionPayload(BaseModel):
 
 
 @router.post("/widget/{bot_ref}/impressions", status_code=status.HTTP_204_NO_CONTENT)
-def widget_impression(bot_ref: str, payload: WidgetImpressionPayload):
+def widget_impression(
+    bot_ref: str,
+    payload: WidgetImpressionPayload,
+    _principal: WidgetPrincipal = Depends(widget_principal),
+):
     bot = _resolve_bot(bot_ref)
     kind = (payload.type or "").lower()
     if kind not in ("short", "long"):
@@ -325,19 +338,28 @@ def widget_impression(bot_ref: str, payload: WidgetImpressionPayload):
     Bot_Impressions.insert_impression(bot_id=bot.id, impression_type=kind.upper())
 
 
-@router.post("/widget/{bot_ref}/init", response_model=WidgetInitResponse)
+@router.post(
+    "/widget/{bot_ref}/init",
+    response_model=WidgetInitResponse,
+    dependencies=[Depends(rate_limit("widget_init", per_path_param="bot_ref"))],
+)
 def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
     """Mint a per-bot HMAC token for a widget visitor.
 
-    The widget calls this on mount; subsequent ``POST /widget/{ref}/chat``
-    submissions will (Phase 7-followup) require the returned token in the
-    ``Authorization: Bearer`` header rather than trusting the spoofable
-    ``X-Emly-UserID`` header.
+    The widget calls this on mount and sends the returned token as
+    ``Authorization: Bearer`` on every per-visitor widget route. The
+    visitor id in the response may differ from the one requested; the
+    widget adopts it.
     """
     from services.auth.widget_hmac import _ttl_seconds, issue
     bot = _resolve_bot(bot_ref)
-    requested_uid = payload.user_id if payload else None
-    user_id = requested_uid or f"emly-gs-{uuid.uuid4()}"
+    from services.auth.widget_auth import resolve_init_user
+
+    user_id, _how = resolve_init_user(
+        bot,
+        payload.user_id if payload else None,
+        payload.previous_token if payload else None,
+    )
     session_id = f"sess-{uuid.uuid4()}"
     ttl = _ttl_seconds()
     token = issue(
@@ -358,16 +380,10 @@ def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
 # ---------------------------------------------------------------------------
 # POST /widget/{bot_id}/action — form submissions / OTP
 # ---------------------------------------------------------------------------
-# Helpers from `routes.actions` are imported at module top — there's no
-# circular-import pressure (actions doesn't import widget) and hoisting
-# the import keeps each request handler from re-running the import
-# machinery.
-from routes.actions import (  # noqa: E402  — import after router/router-helpers for clarity
-    authorize_otp,
-    create_otp,
-    handle_file_uploads,
-    send_email_with_attachments,
-)
+from services.email_service import email_enabled  # noqa: E402
+from services.otp import authorize_otp, create_otp  # noqa: E402
+from services.widget_email import send_email_with_attachments  # noqa: E402
+from services.widget_uploads import handle_file_uploads  # noqa: E402
 
 
 def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
@@ -443,18 +459,18 @@ def widget_rate_message(
     bot_ref: str,
     message_id: int,
     payload: WidgetRatePayload,
+    principal: WidgetPrincipal = Depends(widget_principal),
 ):
     """Public rating endpoint for end users — backs CSAT.
 
     Verification model (v1):
         - The message must belong to (bot, session_id) the rater claims.
         - rating must be in {-1, 0, +1}.
-        - Anyone with a valid (session_id, message_id) pair can rate.
-          That's the same trust level as ``POST /widget/{ref}/chat`` today —
-          a follow-up can plug in widget HMAC token verification once the
-          embed bundle threads it through.
+        - A valid widget token is required, and the message must belong
+          to the token's user.
     """
     bot = _resolve_bot(bot_ref)
+    ensure_same_user(principal, payload.user_id)
     if payload.rating not in (-1, 0, 1):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -463,7 +479,7 @@ def widget_rate_message(
     msg = EMLYMessages.get_message_by_id(bot.id, message_id)
     if msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
-    if msg.session_id != payload.session_id:
+    if msg.session_id != payload.session_id or (msg.user_id and str(msg.user_id) != principal.user_id):
         # Don't leak which one mismatched — message vs session — to keep
         # the endpoint awkward to enumerate.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Message not in this session")
@@ -495,12 +511,16 @@ def widget_rate_message(
     return WidgetRateResponse(ok=True, message_id=message_id, rating=payload.rating)
 
 
-@router.post("/widget/{bot_ref}/action")
+@router.post(
+    "/widget/{bot_ref}/action",
+    dependencies=[Depends(rate_limit("widget_action", per_path_param="bot_ref"))],
+)
 async def widget_action(
     bot_ref: str,
     request: Request,
     payload: str = Form(...),
     files: List[UploadFile] = File(default=None),
+    principal: WidgetPrincipal = Depends(widget_principal),
 ):
     """Bot-scoped form-submission / OTP endpoint.
 
@@ -518,8 +538,12 @@ async def widget_action(
     bot = _resolve_bot(bot_ref)
     page = request.headers.get("X-Emly-PageID")
 
-    # Reject abusive uploads (size / count / MIME) up front. The widget
-    # is unauthenticated, so caps come from the bot's ``LimitsConfig``.
+    # Uploads write to disk, so they get their own, tighter rate limit.
+    if files:
+        hit("widget_upload", client_ip(request), bot.id)
+
+    # Reject abusive uploads (size / count / MIME) up front. Caps come
+    # from the bot's ``LimitsConfig``.
     _validate_uploads(files, bot)
 
     try:
@@ -529,6 +553,15 @@ async def widget_action(
 
     form_title = (payload_data.get("form_title") or "").strip().lower()
 
+    # The OTP flows key their rows by the email being verified, so their
+    # body ``user_id`` is that email rather than the visitor. Every other
+    # action must name the token's user (or omit it).
+    if form_title in ("auth_authentication", "auth_verification"):
+        ensure_same_user(principal, payload_data.get("visitor_id"))
+    else:
+        ensure_same_user(principal, payload_data.get("user_id"))
+        payload_data["user_id"] = principal.user_id
+
     # OTP flows (auth_authentication / auth_verification) — handled by
     # the same helpers the legacy route uses, but bot-scoped.
     if form_title == "auth_authentication":
@@ -537,6 +570,21 @@ async def widget_action(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"status": "failed", "message": "user_id is required"},
             )
+        # Without an SMTP relay the code could never arrive; say so instead
+        # of reporting success.
+        if not email_enabled():
+            log.warning("OTP requested for bot=%s but email is disabled (EMAIL_SERVER unset)", bot.id)
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "status": "failed",
+                    "message": "Email verification isn't available right now. Please try again later.",
+                },
+            )
+        # Per-recipient limit stops email-bombing one address; per-IP limit
+        # stops one client spraying many addresses.
+        hit("otp_send_ip", client_ip(request), bot.id)
+        hit("otp_send_target", bot.id, str(payload_data["user_id"]).strip().lower())
         create_otp(payload_data, bot_id=bot.id)
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -549,6 +597,7 @@ async def widget_action(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"status": "failed", "message": "user_id is required"},
             )
+        hit("otp_verify", client_ip(request), bot.id)
         result = authorize_otp(payload_data, bot_id=bot.id)
         return JSONResponse(
             status_code=result["code"],
@@ -580,7 +629,8 @@ async def widget_action(
     message_id = payload_data.get("message_id")
     if message_id:
         msg = EMLYMessages.get_message_by_id(bot.id, int(message_id)) if str(message_id).isdigit() else None
-        if msg is None:
+        # Another visitor's message is reported as "not found", not 403.
+        if msg is None or (msg.user_id and str(msg.user_id) != principal.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
     user_action = USER_ACTIONS.insert_new_action(
@@ -597,7 +647,9 @@ async def widget_action(
     # see them and admins of bot B don't.
     uploaded_files = await handle_file_uploads(files, user.id, bot_id=bot.id)
 
-    recipients = _resolve_alert_recipients(bot.id, payload_data.get("form_title"))
+    recipients, analysis_prompt = _resolve_alert_trigger(
+        bot.id, payload_data.get("form_title")
+    )
     if recipients:
         form_data = EMLYUserActionsFormData(**{
             "user_id": user.id,
@@ -615,7 +667,7 @@ async def widget_action(
                 payload_data.get("form_title"),
                 uploaded_files,
                 page,
-                payload_data.get("prompt", ""),
+                analysis_prompt,
                 bot_id=bot.id,
             )
 
@@ -634,25 +686,22 @@ def _parse_payload(payload: str) -> Dict[str, Any]:
     return json.loads(payload)
 
 
-def _resolve_alert_recipients(bot_id: str, form_title: Optional[str]) -> List[str]:
-    """Look up the configured ``alert_emails`` for a submitted form.
+def _resolve_alert_trigger(
+    bot_id: str, form_title: Optional[str]
+) -> tuple[List[str], str]:
+    """Look up the configured alert recipients and summary prompt for a form.
 
-    Matches ``form_title`` (which the widget derives from
-    ``form_schema.name`` or ``form_schema.id``) against each
-    ``c_forms_selected`` entry's outer key, ``form_schema.name``, and
-    ``form_schema.id``. ``alert_emails`` may be a list or a
-    comma-separated string; both shapes are accepted.
-
-    Recipients are server-only: ``_TRIGGER_PRIVATE_KEYS`` strips them
-    from the public widget config, so the browser never sees them and
-    can't be the source of truth here.
+    Both live under ``c_forms_selected[*].trigger`` and are server-only
+    (``_TRIGGER_PRIVATE_KEYS`` strips them from the public widget config).
+    Returns ``(recipients, analysis_prompt)`` — the prompt is "" when
+    unset so the summarizer falls back to the deployment-wide default.
     """
     if not form_title:
-        return []
+        return [], ""
     try:
         cfg = get_config_for_bot(bot_id)
     except LookupError:
-        return []
+        return [], ""
 
     target = form_title.strip().lower()
     raw = cfg.model_dump(mode="json")
@@ -671,8 +720,11 @@ def _resolve_alert_recipients(bot_id: str, form_title: Optional[str]) -> List[st
             if target not in keys:
                 continue
             trigger = body.get("trigger") or {}
-            return _coerce_email_list(trigger.get("alert_emails"))
-    return []
+            return (
+                _coerce_email_list(trigger.get("alert_emails")),
+                str(trigger.get("analysis_prompt") or ""),
+            )
+    return [], ""
 
 
 def _coerce_email_list(value: Any) -> List[str]:

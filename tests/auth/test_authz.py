@@ -18,7 +18,7 @@ def _admin(*, id="adm-1", email="a@b.c", is_superadmin=False, is_active=True) ->
     return AdminUserModel(
         id=id, email=email, is_active=is_active, issuer=None, subject=None,
         email_verified=True, is_superadmin=is_superadmin, last_login_at=None,
-        name=None, created_on=now, updated_on=now,
+        name=None, created_at=now, updated_at=now,
     )
 
 

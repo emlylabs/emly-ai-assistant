@@ -47,7 +47,7 @@ def _config_for_bot(bot_id: str) -> Dict[str, Any]:
     error so we never block message persistence on config reads.
 
     Reads the raw `bots.config_json` dict directly rather than the
-    Pydantic-validated `ActiveBotConfig` so feature-flag fields that
+    Pydantic-validated `BotConfig` so feature-flag fields that
     haven't been added to the schema yet (like
     `deflection_heuristic_enabled`) don't trip validation.
     """

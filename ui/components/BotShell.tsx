@@ -14,24 +14,41 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   BarChart3,
-  ChevronsLeft,
-  ChevronsRight,
   FileText,
   LayoutDashboard,
+  Menu,
   MessagesSquare,
   Radio,
   ScrollText,
+  Search,
   Settings,
   SlidersHorizontal,
   UserCog,
   Users,
   type LucideIcon,
 } from "lucide-react";
-import { AdminUser, ApiError, Bot, Membership, Role, api, loginUrl } from "@/lib/api";
+import {
+  AdminUser,
+  ApiError,
+  Bot,
+  Membership,
+  Role,
+  api,
+  forceRefreshClaims,
+  loginUrl,
+  startProactiveRefresh,
+} from "@/lib/api";
 import SystemBanners from "@/components/SystemBanners";
+import SidebarFooter from "@/components/SidebarFooter";
 import TopBar from "@/components/TopBar";
+import BottomNav, { type BottomNavItem } from "@/components/BottomNav";
 import Crumbs from "@/components/Crumbs";
 import BotPickerDropdown from "@/components/BotPickerDropdown";
+import CommandPalette from "@/components/CommandPalette";
+import Tooltip from "@/components/Tooltip";
+import { useShortcut, useShortcuts } from "@/components/KeyboardShortcuts";
+import { noteRecentSlug, readLastTab, writeLastTab } from "@/lib/bot-prefs";
+import { useSwipeLeftToClose } from "@/lib/useSwipeLeftToClose";
 
 // Per-bot navigation. Each tab knows its slug from the URL.
 //
@@ -40,22 +57,23 @@ import BotPickerDropdown from "@/components/BotPickerDropdown";
 // up" (Configure). Phase 7 will insert "Analytics" into WORKSPACE_NAV; we
 // don't add it now because the route doesn't exist yet — broken nav links
 // hurt more than missing labels.
-type NavItem = { href: string; label: string; icon: LucideIcon };
+type NavItem = { href: string; label: string; icon: LucideIcon; chord?: string };
 
 const WORKSPACE_NAV: NavItem[] = [
-  { href: "dashboard",     label: "Dashboard",     icon: LayoutDashboard },
-  { href: "analytics",     label: "Analytics",     icon: BarChart3 },
-  { href: "conversations", label: "Conversations", icon: MessagesSquare },
-  { href: "files",         label: "Files",         icon: FileText },
-  { href: "channels",      label: "Channels",      icon: Radio },
+  { href: "dashboard",     label: "Dashboard",     icon: LayoutDashboard,   chord: "g d" },
+  { href: "analytics",     label: "Analytics",     icon: BarChart3,         chord: "g a" },
+  { href: "conversations", label: "Conversations", icon: MessagesSquare,    chord: "g v" },
+  { href: "files",         label: "Knowledge",     icon: FileText,          chord: "g k" },
+  { href: "retrieval",     label: "Retrieval",     icon: Search,            chord: "g r" },
+  { href: "channels",      label: "Channels",      icon: Radio,             chord: "g h" },
 ];
 
 const CONFIGURE_NAV: NavItem[] = [
-  { href: "config",        label: "Config",        icon: SlidersHorizontal },
-  { href: "users",         label: "Bot users",     icon: Users },
-  { href: "members",       label: "Members",       icon: UserCog },
+  { href: "config",        label: "Config",        icon: SlidersHorizontal, chord: "g c" },
+  { href: "users",         label: "Bot users",     icon: Users,             chord: "g u" },
+  { href: "members",       label: "Members",       icon: UserCog,           chord: "g m" },
   { href: "audit",         label: "Audit",         icon: ScrollText },
-  { href: "settings",      label: "Settings",      icon: Settings },
+  { href: "settings",      label: "Settings",      icon: Settings,          chord: "g s" },
 ];
 
 /** Combined list, used to look up the current tab's friendly label for the
@@ -156,12 +174,26 @@ export default function BotShell({ children }: { children: ReactNode }) {
   }, [slug, me]);
 
   useEffect(() => {
+    // Kick off the BFF proactive silent-refresh loop. The middleware
+    // (or the FastAPI catchall in static-export prod) has already
+    // guaranteed a session cookie is present by the time this
+    // component mounts, so the timer will land on a real expiry.
+    startProactiveRefresh();
+
+    // Initial `me()` probe. The middleware already did the cheap
+    // "is the cookie there?" check; this is the real verification
+    // (signature + audience + claim shape). Non-blocking — we render
+    // the empty shell with a "Loading…" state while it runs, and
+    // bounce to /login if it 401s.
     api
       .me()
       .then(setMe)
       .catch((err: any) => {
         if (err?.status === 401) {
-          router.replace("/login");
+          // Preserve the deep-linked URL so the user lands back on the
+          // same page (e.g. ?conversation=<id>) after signing in.
+          const target = window.location.pathname + window.location.search;
+          router.replace(`/login?return_to=${encodeURIComponent(target)}`);
           return;
         }
         setError(err?.message ?? "Failed to load profile");
@@ -215,18 +247,101 @@ export default function BotShell({ children }: { children: ReactNode }) {
     router.replace("/login");
   }
 
-  function refreshPermissions() {
-    // Memberships only refresh on the next /me call. Bounce through /login,
-    // which redirects through the IdP to mint a fresh access token + cookie.
-    window.location.href = loginUrl(window.location.pathname);
+  async function refreshPermissions() {
+    // Hit the BFF in the background. The backend mints a fresh id_token
+    // from the encrypted refresh_token cookie, rolls the session cookies
+    // forward, and returns the resolved AdminUser so we can drop it
+    // into state without bouncing through the IdP. If the refresh
+    // fails (cookie expired / revoked), fall back to the full login
+    // flow — that's the same fallback the 401 interceptor uses.
+    try {
+      const { admin } = await forceRefreshClaims();
+      setMe(admin);
+      // The bot list also depends on memberships; reload so any
+      // newly-granted bot appears in the picker immediately.
+      api
+        .listBots()
+        .then(setAllBots)
+        .catch(() => setAllBots([]));
+      // Force a re-fetch of the active bot too, since role
+      // memberships drive destructive-control visibility.
+      loadBot();
+    } catch (err) {
+      const target = window.location.pathname + window.location.search;
+      window.location.href = loginUrl(target);
+    }
   }
 
   function onSwitchBot(targetSlug: string) {
     if (!targetSlug || targetSlug === slug) return;
-    // Preserve the active tab when switching bots.
-    const tab = pathname?.split("/").slice(3, 4)[0] ?? "dashboard";
+    // Prefer the user's last-viewed tab on the target bot (so switching to
+    // a bot they were last reading conversations on doesn't bounce them to
+    // its dashboard). Fall back to the current tab — same as before — when
+    // we don't have a memory of where they were.
+    const currentTab = pathname?.split("/").slice(3, 4)[0] ?? "dashboard";
+    const remembered = readLastTab(me?.id, targetSlug);
+    const tab = remembered || currentTab;
+    noteRecentSlug(me?.id, targetSlug);
     router.push(`/bots/${targetSlug}/${tab}`);
   }
+
+  // Per-bot `g <key>` jump shortcuts. Mirrors the sidebar tab order so
+  // muscle memory builds with hand-eye: g d = dashboard, g a = analytics,
+  // g v = conversations, g k = knowledge (files), g r = retrieval,
+  // g h = channels, g c = config, g u = bot users, g m = members,
+  // g s = settings.
+  useShortcuts(
+    [
+      ["g d", "dashboard", "Dashboard"],
+      ["g a", "analytics", "Analytics"],
+      ["g v", "conversations", "Conversations"],
+      ["g k", "files", "Knowledge (files)"],
+      ["g r", "retrieval", "Retrieval"],
+      ["g h", "channels", "Channels"],
+      ["g c", "config", "Config"],
+      ["g u", "users", "Bot users"],
+      ["g m", "members", "Members"],
+      ["g s", "settings", "Settings"],
+    ].map(([chord, tab, label]) => ({
+      chord,
+      description: `Jump to ${label}`,
+      group: "bot" as const,
+      when: () => Boolean(slug),
+      handler: () => router.push(`/bots/${slug}/${tab}`),
+    })),
+  );
+  useShortcut({
+    chord: "c",
+    description: "Create a new bot",
+    group: "global",
+    handler: () => router.push("/bots?new=1"),
+  });
+  useShortcut({
+    chord: "/",
+    description: "Focus the search input on this page",
+    group: "global",
+    handler: () => {
+      const target =
+        document.querySelector<HTMLElement>('input[type="search"]') ??
+        document.querySelector<HTMLElement>('input[placeholder*="earch" i]');
+      if (target) target.focus();
+    },
+  });
+
+  // Remember the last tab the user visited on this bot so the next time
+  // they switch to it the shell jumps back to the same screen.
+  useEffect(() => {
+    if (!me?.id || !slug) return;
+    const tab = pathname?.split("/")[3];
+    if (!tab) return;
+    writeLastTab(me.id, slug, tab);
+  }, [me?.id, slug, pathname]);
+
+  // Note the bot in the recents list so the next picker open surfaces it.
+  useEffect(() => {
+    if (!me?.id || !slug) return;
+    noteRecentSlug(me.id, slug);
+  }, [me?.id, slug]);
 
   // Build the context value unconditionally so the hook count stays
   // stable across renders (Rules of Hooks). Consumers gate on the
@@ -242,14 +357,16 @@ export default function BotShell({ children }: { children: ReactNode }) {
     [bot, currentRole, loadBot]
   );
 
-  if (!me && !error) {
-    return (
-      <div className="center">
-        <p className="muted">Loading…</p>
-      </div>
-    );
-  }
+  // Hook order matters — must be called every render, before any of the
+  // early-return branches below.
+  const swipeHandlers = useSwipeLeftToClose(() => setSidebarOpen(false));
 
+  // No blocking "Loading…" for the initial `me()` fetch — the
+  // middleware (and the FastAPI catchall in static-export prod)
+  // already guarantee a session cookie is present. The shell
+  // renders immediately; ``me`` populates in the background. If the
+  // server-side verifier rejects the cookie (signature, expiry, …)
+  // the catch on the `me()` useEffect above redirects to /login.
   if (notFound) {
     return (
       <div className="center">
@@ -260,13 +377,13 @@ export default function BotShell({ children }: { children: ReactNode }) {
             <code>{slug}</code> doesn&apos;t exist or you don&apos;t have access.
           </p>
           <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
-            If a teammate just granted you access, your sign-in token is stale —
-            sign in again to refresh permissions.
+            If a teammate just granted you access, your memberships are stale.
+            Click below to roll the session forward and reload your bot list.
           </p>
           <div className="row" style={{ marginTop: 20 }}>
             <button onClick={() => router.replace("/bots")}>Back to bots</button>
-            <button className="ghost" onClick={refreshPermissions}>
-              Refresh permissions
+            <button className="ghost" onClick={refreshPermissions} title="Roll the session cookies forward and reload memberships">
+              Refresh to load new bots
             </button>
           </div>
         </div>
@@ -310,6 +427,7 @@ export default function BotShell({ children }: { children: ReactNode }) {
             <BotPickerDropdown
               current={{ slug, name: bot.name }}
               bots={allBots}
+              adminId={me?.id}
               onSwitch={onSwitchBot}
             />
           ),
@@ -320,25 +438,47 @@ export default function BotShell({ children }: { children: ReactNode }) {
   ) : null;
 
   function renderNavGroup(items: NavItem[]) {
-    return items.map(({ href: tab, label, icon: Icon }) => {
+    return items.map(({ href: tab, label, icon: Icon, chord }) => {
       const href = `/bots/${slug}/${tab}`;
       const active = pathname === href || pathname?.startsWith(`${href}/`);
-      return (
+      const link = (
         <Link
-          key={tab}
           href={href}
           className={active ? "nav-item active" : "nav-item"}
-          data-tooltip={label}
+          aria-current={active ? "page" : undefined}
+          aria-label={label}
         >
-          <Icon strokeWidth={1.75} />
+          <Icon strokeWidth={1.75} aria-hidden="true" />
           <span className="nav-item-label">{label}</span>
+          {chord && !collapsed && (
+            <span className="nav-chord-hint" aria-hidden="true">
+              {chord}
+            </span>
+          )}
         </Link>
+      );
+      // Collapsed sidebar hides the inline label, so the tooltip becomes
+      // load-bearing — both visually (so the icon means something on hover)
+      // and for assistive tech (aria-describedby links the popover to the
+      // link). Expanded sidebar already has the inline label; skip the
+      // tooltip there.
+      return collapsed ? (
+        <Tooltip key={tab} label={label} placement="right">
+          {link}
+        </Tooltip>
+      ) : (
+        <span key={tab}>{link}</span>
       );
     });
   }
 
   return (
     <BotContext.Provider value={ctxValue}>
+      <CommandPalette
+        adminId={me?.id}
+        currentBotSlug={slug}
+        onCreateBot={() => router.push("/bots?new=1")}
+      />
       <TopBar
         email={me?.email}
         role={currentRole}
@@ -355,30 +495,22 @@ export default function BotShell({ children }: { children: ReactNode }) {
           className={`sidebar-overlay${sidebarOpen ? " open" : ""}`}
           onClick={() => setSidebarOpen(false)}
         />
-        <aside className={sidebarClasses}>
+        <aside
+          className={sidebarClasses}
+          aria-label="Bot navigation"
+          {...swipeHandlers}
+        >
           <nav className="sidebar-nav">
             <div className="nav-label">Workspace</div>
             {renderNavGroup(WORKSPACE_NAV)}
             <div className="nav-label">Configure</div>
             {renderNavGroup(CONFIGURE_NAV)}
           </nav>
-          <button
-            type="button"
-            className="sidebar-collapse-toggle"
-            onClick={toggleCollapse}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            title={collapsed ? "Expand" : "Collapse"}
-          >
-            {collapsed ? (
-              <ChevronsRight size={16} strokeWidth={1.75} />
-            ) : (
-              <ChevronsLeft size={16} strokeWidth={1.75} />
-            )}
-          </button>
+          <SidebarFooter collapsed={collapsed} onToggle={toggleCollapse} />
         </aside>
-        <main className="main">
+        <main id="main" className="main">
           {error ? (
-            <div className="error">{error}</div>
+            <div className="error" role="alert">{error}</div>
           ) : (
             <>
               <SystemBanners />
@@ -387,6 +519,36 @@ export default function BotShell({ children }: { children: ReactNode }) {
           )}
         </main>
       </div>
+      <BottomNav
+        items={[
+          {
+            href: `/bots/${slug}/dashboard`,
+            label: "Home",
+            icon: LayoutDashboard,
+          },
+          {
+            href: `/bots/${slug}/conversations`,
+            label: "Chats",
+            icon: MessagesSquare,
+          },
+          {
+            href: `/bots/${slug}/files`,
+            label: "Knowledge",
+            icon: FileText,
+          },
+          {
+            href: `/bots/${slug}/config`,
+            label: "Config",
+            icon: SlidersHorizontal,
+          },
+          {
+            label: "More",
+            icon: Menu,
+            onClick: () => setSidebarOpen(true),
+            active: sidebarOpen,
+          },
+        ] satisfies BottomNavItem[]}
+      />
     </BotContext.Provider>
   );
 }

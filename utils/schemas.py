@@ -1,5 +1,6 @@
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, Any, List, Dict
 
 
 class Message(BaseModel):
@@ -8,9 +9,6 @@ class Message(BaseModel):
 
 
 class AgentRequest(BaseModel):
-    """
-    Request model for agent requests
-    """
     user_id: str
     session_id: str
     timestamp: int
@@ -22,12 +20,3 @@ class AgentRequest(BaseModel):
     bot_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class FileModel(BaseModel):
-    file_name: str
-    extension: str
-
-
-class FileDeleteRequest(BaseModel):
-    files: List[FileModel]

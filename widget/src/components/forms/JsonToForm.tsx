@@ -191,10 +191,19 @@ const JsonToForm: React.FC<JsonToFormProps> = ({ schema, onSubmit, onCancel, bus
           // map to `<input>` with the corresponding native type.
           const inputType =
             f.type === 'phone' || f.d_type === 'cphone' ? 'tel' : f.type ?? 'text';
+          // Pair `inputMode` with `type` so mobile keyboards surface the
+          // right layout (@/.com on email, digits-only on tel, etc.).
+          const inputModeMap: Record<string, React.HTMLAttributes<HTMLInputElement>['inputMode']> = {
+            email: 'email',
+            tel: 'tel',
+            url: 'url',
+            number: 'numeric',
+          };
           control = (
             <input
               {...common}
               type={inputType}
+              inputMode={inputModeMap[inputType]}
               value={(values[name] as string) ?? ''}
               onChange={e => setVal(name, e.target.value)}
             />

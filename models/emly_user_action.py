@@ -22,8 +22,8 @@ class EMLYUserActions(pw.Model):
     )
     action_name = pw.CharField(max_length=255, null=True)
     action_value = pw.CharField(max_length=255, null=True)
-    created_on = pw.DateTimeField()
-    updated_on = pw.DateTimeField()
+    created_at = pw.DateTimeField()
+    updated_at = pw.DateTimeField()
     action_payload = JSONField(null=True)
 
     def to_dict(self, include_relations=True):
@@ -33,8 +33,8 @@ class EMLYUserActions(pw.Model):
             "session_id": self.session_id,
             "action_name": self.action_name,
             "action_value": self.action_value,
-            "created_on": self.created_on.isoformat() if self.created_on else None,
-            "updated_on": self.updated_on.isoformat() if self.updated_on else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "action_payload": self.action_payload,
         }
 
@@ -48,8 +48,8 @@ class EMLYUserActions(pw.Model):
                 "ip": self.user.ip,
                 "browser": self.user.browser,
                 "meta": self.user.meta,
-                "created_on": self.created_on.isoformat() if self.user.created_on else None,
-                "updated_on": self.user.updated_on.isoformat() if self.user.updated_on else None,
+                "created_at": self.created_at.isoformat() if self.user.created_at else None,
+                "updated_at": self.user.updated_at.isoformat() if self.user.updated_at else None,
             }
 
             if self.message:
@@ -59,8 +59,8 @@ class EMLYUserActions(pw.Model):
                     "session_id": self.message.session_id,
                     "message": self.message.message,
                     "role": self.message.role,
-                    "created_on": self.message.created_on.isoformat() if self.message.created_on else None,
-                    "updated_on": self.message.updated_on.isoformat() if self.message.updated_on else None,
+                    "created_at": self.message.created_at.isoformat() if self.message.created_at else None,
+                    "updated_at": self.message.updated_at.isoformat() if self.message.updated_at else None,
                     "not_useful": self.message.not_useful,
                 }
             else:
@@ -80,8 +80,8 @@ class EMLYUserActionsForm(BaseModel):
     message_id: Optional[int] = None
     action_name: str
     action_value: str
-    created_on: datetime
-    updated_on: datetime
+    created_at: datetime
+    updated_at: datetime
     action_payload: Optional[dict] = None
 
 
@@ -118,8 +118,8 @@ class EMLYUserActionsTable:
             message=message_id,
             action_name=action_name,
             action_value=action_value,
-            created_on=now,
-            updated_on=now,
+            created_at=now,
+            updated_at=now,
             action_payload=action_payload,
         )
         return row.to_dict() if row else None

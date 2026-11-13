@@ -48,6 +48,16 @@ DEFAULT_CONCURRENCY = 3
 DEFAULT_THIN_THRESHOLD = 200
 DEFAULT_POLITE_DELAY_MS = 250
 
+# How long terminal crawl jobs stick around before the supervisor purges
+# them. 90 days matches the §11 T7 task spec; tune via this constant
+# rather than introducing a workspace setting until there's demand.
+CRAWL_JOB_RETENTION_DAYS = 90
+# Run the purge sweep at most once an hour to keep the supervisor loop
+# cheap. Wall-clock-based so two restarts in quick succession don't both
+# purge.
+_CRAWL_PURGE_INTERVAL_S = 3600.0
+_last_purge_at: float = 0.0
+
 # In-process registry of jobs being driven by this worker. Multi-process
 # coordination is out of scope; CLAUDE.md notes this is a single-replica
 # deployment until S3 + Redis ship.
@@ -57,6 +67,37 @@ _supervisor_task: Optional[asyncio.Task] = None
 
 def _bot_uploads_dir(bot_id: str) -> Path:
     return Path(DATA_DIR) / "bots" / bot_id / "uploads"
+
+
+def _audit_crawl_terminal(job: dict, outcome: str, error: Optional[str] = None) -> None:
+    """Emit a crawl.completed / crawl.failed audit event for the worker.
+
+    Best-effort: a failed audit write must never derail the crawl
+    pipeline, so we swallow exceptions and log. No request context is
+    available (this runs inside a background task), so IP/UA are absent.
+    """
+    try:
+        from services.audit import audit
+        payload = {
+            "seed_url": job.get("seed_url"),
+            "pages_total": job.get("pages_total"),
+            "pages_done": job.get("pages_done"),
+            "pages_skipped": job.get("pages_skipped"),
+            "pages_failed": job.get("pages_failed"),
+        }
+        if error is not None:
+            payload["error"] = error
+        audit(
+            f"crawl.{outcome}",
+            admin_id=job.get("created_by_admin_id"),
+            bot_id=job.get("bot_id"),
+            target_type="crawl_job",
+            target_id=job.get("id"),
+            payload=payload,
+            success=(outcome != "failed"),
+        )
+    except Exception:
+        log.exception("crawl audit emit failed for job=%s outcome=%s", job.get("id"), outcome)
 
 
 def _canonicalize(raw: str) -> Optional[str]:
@@ -431,6 +472,7 @@ async def _run_job(job_id: str) -> None:
     seed_canon = _canonicalize(job["seed_url"])
     if not seed_canon:
         Crawl_Jobs.update_status(job_id, "failed", error_message="invalid seed URL")
+        _audit_crawl_terminal(job, "failed", error="invalid seed URL")
         return
     seed_host = urlparse(seed_canon).hostname or ""
 
@@ -498,12 +540,82 @@ async def _run_job(job_id: str) -> None:
     final = Crawl_Jobs.get_any(job_id)
     if final and final["status"] == JOB_STATUS_RUNNING:
         Crawl_Jobs.update_status(job_id, JOB_STATUS_COMPLETED, completed=True)
+        _audit_crawl_terminal(final, "completed")
+
+
+def _maybe_purge_old_jobs() -> None:
+    """Hourly sweep that hard-deletes crawl jobs older than the
+    retention window. Cheap when there's nothing to purge; the alternative
+    of letting the table grow forever makes the workspace crawl monitor
+    progressively slower."""
+    global _last_purge_at
+    now = time.time()
+    if now - _last_purge_at < _CRAWL_PURGE_INTERVAL_S:
+        return
+    _last_purge_at = now
+    try:
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=CRAWL_JOB_RETENTION_DAYS)
+        deleted = Crawl_Jobs.purge_older_than(cutoff)
+        if deleted:
+            log.info(
+                "crawl.retention.purged %d job(s) completed before %s",
+                deleted,
+                cutoff.isoformat(),
+            )
+    except Exception:
+        log.exception("crawl retention purge failed")
+
+
+def _spawn_due_schedules() -> int:
+    """Fire one ``CrawlJob`` for each due ``CrawlSchedule``.
+
+    Returns the number of jobs spawned. Errors on a single schedule are
+    isolated so one bad row doesn't block the others.
+    """
+    from datetime import datetime
+    try:
+        from models.crawl_schedules import Crawl_Schedules
+    except Exception:
+        # Table may not exist yet on a partial migration boot — defer.
+        return 0
+    now = datetime.now()
+    spawned = 0
+    for sched in Crawl_Schedules.due(now):
+        try:
+            job = Crawl_Jobs.create(
+                bot_id=sched["bot_id"],
+                seed_url=sched["seed_url"],
+                options=sched["options"] or {},
+                document_type=sched["document_type"],
+                created_by_admin_id=sched.get("created_by_admin_id"),
+            )
+            Crawl_Schedules.mark_run(sched["id"], job["id"], now)
+            spawned += 1
+            log.info(
+                "crawl.schedule.fired schedule=%s -> job=%s bot=%s",
+                sched["id"],
+                job["id"],
+                sched["bot_id"],
+            )
+        except Exception:
+            log.exception(
+                "crawl.schedule.fire_failed schedule=%s bot=%s",
+                sched["id"],
+                sched["bot_id"],
+            )
+    return spawned
 
 
 async def _supervisor_loop() -> None:
     """Periodically pick up running jobs and drive them."""
     while True:
         try:
+            # 1. Spawn jobs for any due schedules. Done before the
+            #    running-job sweep so the new job is picked up on the
+            #    same tick.
+            _spawn_due_schedules()
+
             running = Crawl_Jobs.list_running()
             for job in running:
                 job_id = job["id"]
@@ -515,6 +627,8 @@ async def _supervisor_loop() -> None:
             for job_id in list(_active_jobs.keys()):
                 if _active_jobs[job_id].done():
                     _active_jobs.pop(job_id, None)
+
+            _maybe_purge_old_jobs()
         except Exception:
             log.exception("Crawl supervisor tick failed")
         await asyncio.sleep(SUPERVISOR_INTERVAL_S)

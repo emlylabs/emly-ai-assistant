@@ -27,7 +27,9 @@ from models.admin_bot_memberships import ROLES as ALL_ROLES, AdminBotMemberships
 from models.admin_users import AdminUserModel
 from models.bot_channels import BotChannelModel, BotChannels
 from models.bots import BotModel, Bots
+from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.authz import has_role_at_least
 from services.secrets import encrypt as fernet_encrypt
 
 # Role groupings used by every mutation route. Reads (list, types,
@@ -55,12 +57,26 @@ def _resolve_bot_for_admin(
     Default ``allowed_roles=ALL_ROLES`` is a read gate — any member,
     including viewers, can fetch the row. Mutations pass
     ``WRITE_ROLES`` and hard-delete passes ``OWNER_ONLY``.
+
+    Superadmins bypass the per-bot membership check (matches
+    ``services.authz`` predicates).
     """
     bot = Bots.get_by_slug(slug)
     if bot is None or bot.is_deleted:
         raise HTTPException(status_code=404, detail="bot not found")
-    membership = AdminBotMemberships.get(admin.id, bot.id)
-    if membership is None or membership.role not in allowed_roles:
+    if admin.is_superadmin:
+        return bot
+    # Map ``allowed_roles`` to the minimum role tier and reuse the
+    # canonical predicate so the bypass / role-tier rules stay in one
+    # place. ``OWNER_ONLY`` → "owner"; ``WRITE_ROLES`` → "admin";
+    # everything else (the read gate) → "viewer".
+    if "viewer" not in allowed_roles and "admin" not in allowed_roles:
+        min_role = "owner"
+    elif "viewer" not in allowed_roles:
+        min_role = "admin"
+    else:
+        min_role = "viewer"
+    if not has_role_at_least(admin, bot.id, min_role):
         # Same opaque 403 for "not a member" and "wrong role" — neither
         # case justifies leaking which one to the caller.
         raise HTTPException(status_code=403, detail="not a member of this bot")
@@ -298,6 +314,19 @@ async def create_channel(
     # which doubles as the JWT audience) now that we know the channel id.
     channel = _stamp_managed_secrets(channel, secrets_model)
 
+    audit(
+        "channel.created",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={
+            "type": payload.type,
+            "external_id": external_id,
+            "display_name": display_name,
+        },
+    )
+
     # Adapter post-create hook: e.g. Telegram registers the webhook
     # with setWebhook so the operator doesn't have to. If this fails,
     # the row is unusable — roll it back (and call the adapter's
@@ -359,6 +388,14 @@ async def update_channel_secrets(
     # Re-stamp server-managed fields after rotate so admins never have to
     # hand-type the canonical webhook URL.
     channel = _stamp_managed_secrets(channel, secrets_model)
+    audit(
+        "channel.secrets_rotated",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={"type": channel.type},
+    )
     return await _channel_to_response(channel)
 
 
@@ -374,6 +411,14 @@ async def update_channel_config(
     if channel is None or channel.bot_id != bot.id:
         raise HTTPException(status_code=404, detail="channel not found")
     BotChannels.update_config(channel.id, payload.config)
+    audit(
+        "channel.config_updated",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={"type": channel.type},
+    )
     return await _channel_to_response(BotChannels.get_by_id(channel_id))
 
 
@@ -389,6 +434,14 @@ async def set_channel_active(
     if channel is None or channel.bot_id != bot.id:
         raise HTTPException(status_code=404, detail="channel not found")
     BotChannels.set_active(channel.id, payload.is_active)
+    audit(
+        "channel.active_set",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={"type": channel.type, "is_active": payload.is_active},
+    )
     return await _channel_to_response(BotChannels.get_by_id(channel_id))
 
 
@@ -414,8 +467,24 @@ async def delete_channel(
             except Exception:
                 log.exception("auth.revoke failed channel=%s — continuing with hard-delete", channel.id)
         BotChannels.delete(channel.id)
+        audit(
+            "channel.hard_deleted",
+            admin_id=admin.id,
+            bot_id=bot.id,
+            target_type="bot_channel",
+            target_id=channel.id,
+            payload={"type": channel.type, "external_id": channel.external_id},
+        )
         return {"status": "deleted"}
     BotChannels.set_active(channel.id, False)
+    audit(
+        "channel.deactivated",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot_channel",
+        target_id=channel.id,
+        payload={"type": channel.type},
+    )
     return {"status": "deactivated"}
 
 

@@ -7,6 +7,8 @@ from sentence_transformers import SentenceTransformer
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+from utils import model_pins
+
 
 SRC_LOG_LEVELS = {"DB": logging.INFO, "MODELS": logging.INFO, "ACTIONS": logging.INFO}
 BACKEND_DIR = Path(__file__).parent
@@ -14,7 +16,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", BACKEND_DIR / "data")).resolve()
 QDRANT_DATA_PATH = f"{DATA_DIR}/qdrant_db"
 IMPRESSION_USER = "emly-gs-53f89d90-67a0-4326-b55b-3d97178ff454"
 TOP_K = int(os.getenv("RAG_TOP_K", 5))
-MODEL = os.getenv("MODEL", "google/gemma-4-26b-a4b-it:free")
+# The chat model / endpoint / key (and their MODEL, OPENAI_BASE_URL,
+# OPENAI_API_KEY deployment defaults) are resolved in services/llm_settings.py.
 MAX_TOKENS = os.getenv("MAX_TOKENS", 1024)
 
 ############# Load chunk size and chunk overlap #############
@@ -26,12 +29,13 @@ CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 256))
 ############# Load LLm and Embedding model configuration #############
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "huggingface")
-SENTENCE_TRANSFORMERS_HOME = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/embedding")
-RE_RANKING_MODEL_CACHE_FOLDER = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "./data/models/re_ranking")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
+# Model names, pinned revisions and cache folders: utils/model_pins.py (D2).
+SENTENCE_TRANSFORMERS_HOME = model_pins.embedding_cache_dir()
+RE_RANKING_MODEL_CACHE_FOLDER = model_pins.rerank_cache_dir()
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
 
 EMBEDDING_MODEL_INSTANCE = None
-EMBEDDING_MODEL_NAME = os.environ.get("RAG_EMBEDDING_MODEL", "Alibaba-NLP/gte-base-en-v1.5")
+EMBEDDING_MODEL_NAME = model_pins.embedding_model_name()
 if EMBEDDING_PROVIDER == "openai":
     OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL")
     EMBEDDING_MODEL_NAME = OPENAI_EMBEDDING_MODEL or EMBEDDING_MODEL_NAME
@@ -41,11 +45,17 @@ if EMBEDDING_PROVIDER == "openai":
         base_url=OPENAI_BASE_URL,
     )
 elif EMBEDDING_PROVIDER == "huggingface":
-    EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
-                    EMBEDDING_MODEL_NAME,
-                    cache_folder=SENTENCE_TRANSFORMERS_HOME,
-                    trust_remote_code=True, device='cpu', local_files_only=False
-                )
+    try:
+        EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
+            EMBEDDING_MODEL_NAME,
+            cache_folder=SENTENCE_TRANSFORMERS_HOME,
+            device="cpu",
+            **model_pins.embedding_load_kwargs(),
+        )
+    except OSError as exc:
+        if not model_pins.hf_offline():
+            raise
+        raise model_pins.missing_model_error("embedding", EMBEDDING_MODEL_NAME, SENTENCE_TRANSFORMERS_HOME, exc) from exc
     class SentenceTransformerEmbeddings:
         def __init__(self, model):
             self.model = model
@@ -105,15 +115,6 @@ The summary and analysis should contain
         </div>
 
         Important: Provide ONLY the HTML content without any markdown code fences or additional formatting. Start directly with <div> and end with </div>""")
-GENERATE_SUMMARY_PROMPT = """Analyze User-Assistant(bot) interactions to identify trends, issues, and improvement areas. Integrate key metrics into the analysis where relevant.
-
-1.Summary – Concisely describe the conversation's main topic.
-2. Sentiment – Determine overall sentiment (positive, neutral, negative) and key emotions.
-3. Key Issues – Highlight recurring concerns, questions, or pain points.
-4. Bot Performance – Evaluate response accuracy, relevance, and impact on engagement, conversion, and user satisfaction.
-5. Metrics Integration – Contextually reference metrics (e.g., engagement, impressions, conversion rate) to support findings.
-6. Actionable Insights – Recommend improvements based on user behavior, conversation trends, and metric performance.
-7. Focus on clarity, efficiency, and driving actionable improvements."""
 #############################################################
 
 ############ Load previous message configuration #############
@@ -124,7 +125,9 @@ NUMBER_OF_LAST_MESSAGES = os.getenv("MAX_MESSAGE_CONTEXT", 5)
 ####################################
 # Load Email settings
 ####################################
-EMAIL_SERVER = os.getenv("EMAIL_SERVER", "smtp.resend.com")
+# No default relay: when EMAIL_SERVER is unset, email features (OTP, invites,
+# form alerts) are disabled rather than sending through a third party.
+EMAIL_SERVER = (os.getenv("EMAIL_SERVER") or "").strip() or None
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", 465))
 EMAIL_USER = os.getenv("EMAIL_USER", "resend")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
@@ -145,9 +148,15 @@ with open(UTILS_DIR / FILE_NAME, "r") as f:
 # Load Reranking model
 ####################################
 ENABLE_RAG_HYBRID_SEARCH = os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "false").lower() == "true"
-RE_RANKING_MODEL = "cross-encoder/" + os.getenv("RE_RANKING_MODEL", "ms-marco-TinyBERT-L-2-v2")
+RE_RANKING_MODEL = model_pins.rerank_model_name()
 if ENABLE_RAG_HYBRID_SEARCH:
-    RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER)
+    try:
+        RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
+                                        **model_pins.rerank_load_kwargs())
+    except OSError as exc:
+        if not model_pins.hf_offline():
+            raise
+        raise model_pins.missing_model_error("re-ranking", RE_RANKING_MODEL, RE_RANKING_MODEL_CACHE_FOLDER, exc) from exc
 
 
 SESSION_TIMEOUT = timedelta(minutes=30)

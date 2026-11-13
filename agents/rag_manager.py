@@ -136,6 +136,89 @@ class RAGManager:
     # ------------------------------------------------------------------
     # Deletes
     # ------------------------------------------------------------------
+    def clone_file(
+        self,
+        source_bot_id: str,
+        source_file_id: str,
+        target_bot_id: str,
+        target_file_id: str,
+    ) -> int:
+        """Deep-copy a file's points from one bot to another.
+
+        Used by §11 T11 cross-bot file copy. The deployment runs a single
+        global embedding model (``RAG_EMBEDDING_MODEL``), so the source
+        vectors are byte-identical to what re-embedding the target would
+        produce — there's no correctness reason to re-encode. We scroll
+        the source's points, copy each payload with ``bot_id`` /
+        ``file_id`` rewritten to the target identifiers, and upsert under
+        fresh point UUIDs. Returns the number of points written.
+
+        Idempotent on the target side: any pre-existing points for
+        ``(target_bot_id, target_file_id)`` are dropped first so a retry
+        doesn't double up.
+        """
+        # Drop any prior target points so retries are clean.
+        self.delete_file(bot_id=target_bot_id, file_id=target_file_id)
+
+        # Scroll the source side. Qdrant's scroll API returns
+        # ``(points, next_offset)``; we page through everything since
+        # crawl + upload files cap chunks well below memory limits.
+        next_offset: Any = None
+        copied = 0
+        while True:
+            points, next_offset = self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=qm.Filter(
+                    must=[
+                        qm.FieldCondition(
+                            key="bot_id", match=qm.MatchValue(value=source_bot_id)
+                        ),
+                        qm.FieldCondition(
+                            key="file_id", match=qm.MatchValue(value=source_file_id)
+                        ),
+                    ]
+                ),
+                limit=256,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            if not points:
+                break
+            new_points: List[qm.PointStruct] = []
+            for p in points:
+                payload = dict(p.payload or {})
+                payload["bot_id"] = target_bot_id
+                payload["file_id"] = target_file_id
+                vector = p.vector
+                # ``with_vectors=True`` returns a list for the default
+                # unnamed vector. Defensive cast keeps the upsert call
+                # well-typed even if the client returns a dict.
+                if isinstance(vector, dict):
+                    vector = next(iter(vector.values()))
+                new_points.append(
+                    qm.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=vector,
+                        payload=payload,
+                    )
+                )
+            self.client.upsert(
+                collection_name=self.collection, points=new_points, wait=True
+            )
+            copied += len(new_points)
+            if next_offset is None:
+                break
+        log.info(
+            "Cloned %d points: bot=%s file=%s -> bot=%s file=%s",
+            copied,
+            source_bot_id,
+            source_file_id,
+            target_bot_id,
+            target_file_id,
+        )
+        return copied
+
     def delete_file(self, bot_id: str, file_id: str) -> None:
         self.client.delete(
             collection_name=self.collection,
@@ -196,7 +279,10 @@ class RAGManager:
         if not hits:
             return "", []
 
-        # Optional cross-encoder re-rank (hybrid mode).
+        # Optional cross-encoder re-rank (hybrid mode). When the rerank runs,
+        # we keep the cross-encoder's score alongside the cosine score so the
+        # admin debug surfaces can show how aggressively the rerank reorders.
+        rerank_by_id: Dict[Any, float] = {}
         if ENABLE_RAG_HYBRID_SEARCH and RE_RANKING_MODEL is not None and not isinstance(RE_RANKING_MODEL, str):
             pairs = [(query, (h.payload or {}).get("chunk_text", "")) for h in hits]
             try:
@@ -205,6 +291,7 @@ class RAGManager:
                     zip(hits, scores), key=lambda item: float(item[1]), reverse=True
                 )[:top_k]
                 hits = [h for h, _ in ranked]
+                rerank_by_id = {h.id: float(s) for h, s in ranked}
             except Exception:
                 log.exception("Cross-encoder re-rank failed; falling back to vector order")
                 hits = hits[:top_k]
@@ -219,6 +306,8 @@ class RAGManager:
             payload = dict(h.payload or {})
             chunk = payload.pop("chunk_text", "")
             payload["relevance_score"] = score
+            if h.id in rerank_by_id:
+                payload["rerank_score"] = rerank_by_id[h.id]
             filtered.append({"metadata": payload, "chunk": chunk})
 
         if not filtered:

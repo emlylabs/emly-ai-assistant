@@ -22,37 +22,9 @@ import { buildCandidateSummary, extractCandidateArray } from '../utils/candidate
 import ChatSessionManager from './ChatSessionManager'; // Import ChatSessionManager
 // import { CHATBOT_THEMES, resolveChatbotTheme, type ChatbotTheme } from '../utils/chatbotThemes';
 import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, fetchBotConfig, recordImpression } from '../embed';
+import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
-
-const USER_ID_EXPIRY_DAYS = 5;  // Fallback default
-const EMLY_USER_ID_KEY = 'emly.chatbot.userId';
-const EMLY_USER_ID_EXPIRY_KEY = 'emly.chatbot.userId.expiry';
-
-const getEmlyUserId = (): string => {
-  try {
-    const config = getChatbotConfig();
-    const expiryDays = config.userIdExpiryDays || USER_ID_EXPIRY_DAYS;
-
-    const storedId = localStorage.getItem(EMLY_USER_ID_KEY);
-    const expiryStr = localStorage.getItem(EMLY_USER_ID_EXPIRY_KEY);
-
-    if (storedId && expiryStr) {
-      const expiryTime = Number(expiryStr);
-      if (Date.now() < expiryTime) {
-        return storedId;
-      }
-    }
-
-    const newId = `emly-${uuidv4()}`;
-    const expiryMs = Date.now() + expiryDays * 24 * 60 * 60 * 1000;
-    localStorage.setItem(EMLY_USER_ID_KEY, newId);
-    localStorage.setItem(EMLY_USER_ID_EXPIRY_KEY, String(expiryMs));
-    return newId;
-  } catch {
-    return `emly-${uuidv4()}`;
-  }
-};
 
 /* Theme utility functions - hidden
 const readStoredThemeId = (): string | null => {
@@ -305,12 +277,20 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   // remaining" footnote and post-limit engagement bubble. Keyed by
   // `action_value` (= the form_title written on submit).
   const [formCounts, setFormCounts] = useState<Record<string, number>>({});
+  // Settle the visitor id + widget token before the visitor can act, so
+  // chat/form bodies are built with the id the server issued.
+  useEffect(() => {
+    ensureWidgetIdentity().catch(() => {
+      // Retried lazily by the first widget request.
+    });
+  }, []);
+
   useEffect(() => {
     const url = getSubmissionCountsUrl();
     if (!url) return;
     let cancelled = false;
     const userId = getEmlyUserId();
-    fetch(url, { headers: { 'X-Emly-UserID': userId } })
+    widgetFetch(url, { headers: { 'X-Emly-UserID': userId } })
       .then(res => (res.ok ? res.json() : null))
       .then((body: { counts?: Record<string, number> } | null) => {
         if (cancelled || !body?.counts) return;
@@ -456,7 +436,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     fd.append('payload', JSON.stringify(payloadObj));
     const userId = getEmlyUserId();
     const sessionId = activeSessionId || `session-${uuidv4()}`;
-    const res = await fetch(actionUrl, {
+    const res = await widgetFetch(actionUrl, {
       method: 'POST',
       headers: { 'X-Emly-UserID': userId, 'X-Emly-SessionID': sessionId },
       body: fd,
@@ -577,7 +557,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       fd.append('files', file, file.name);
     }
     try {
-      const res = await fetch(actionUrl, {
+      const res = await widgetFetch(actionUrl, {
         method: 'POST',
         headers: { 'X-Emly-UserID': userId, 'X-Emly-SessionID': sessionId },
         body: fd,
@@ -736,7 +716,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       // path returns a hardcoded placeholder). Tokens are accumulated
       // before rendering — the widget UX is still single-shot, but the
       // rating feature needs the real id from the done chunk.
-      const response = await fetch(chatUrl, {
+      const response = await widgetFetch(chatUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

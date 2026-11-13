@@ -95,7 +95,10 @@ def bootstrapped_admin(isolated_db):
     LocalCredentials.upsert(
         admin_id=f"bootstrap:{email}",
         password_hash=hash_password(password),
-        must_change=True,
+        # The real bootstrap credential has must_change=True, which adds a
+        # change-password step (tests/auth/test_local_issuer_hardening.py).
+        # These tests cover the OIDC dance itself, so skip that step.
+        must_change=False,
     )
     return {"email": email, "password": password}
 

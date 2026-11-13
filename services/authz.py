@@ -38,10 +38,26 @@ def _forbidden(code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=body)
 
 
+def _deny(admin: AdminUserModel, code: str, bot_id: str | None = None, **extra) -> HTTPException:
+    """Audit an authorization denial (``authz.denied``) and return the 403.
+    Every ``require_*`` check goes through here, so denials are recorded
+    centrally with the caller's IP and user agent."""
+    try:
+        from services.audit import audit
+
+        audit("authz.denied", admin_id=admin.id, bot_id=bot_id, success=False,
+              payload={"code": code, **extra})
+    except Exception:  # auditing must never change the response
+        log.debug("authz.denied audit failed", exc_info=True)
+    if bot_id is not None:
+        extra = {"bot_id": bot_id, **extra}
+    return _forbidden(code, **extra)
+
+
 def require_superadmin(admin: AdminUserModel) -> None:
     """Raises 403 unless the admin has the global ``is_superadmin`` flag."""
     if not admin.is_superadmin:
-        raise _forbidden("not_superadmin")
+        raise _deny(admin, "not_superadmin")
 
 
 def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel:
@@ -52,11 +68,11 @@ def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     superadmins so callers that need ``.role`` always get a value.
     """
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=member", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=member", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _READER_ROLES:
-        raise _forbidden("not_member", bot_id=bot_id)
+        raise _deny(admin, "not_member", bot_id)
     return membership
 
 
@@ -66,22 +82,22 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     Owners and admins pass; viewers do not. Superadmins bypass.
     """
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=writer", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=writer", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _WRITER_ROLES:
-        raise _forbidden("not_writer", bot_id=bot_id)
+        raise _deny(admin, "not_writer", bot_id)
     return membership
 
 
 def require_owner(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel:
     """Returns the membership row if the admin is an owner of the bot, else 403."""
     if admin.is_superadmin:
-        log.info("authz.superadmin_bypass admin=%s bot=%s action=owner", admin.id, bot_id)
+        log.debug("authz.superadmin_bypass admin=%s bot=%s action=owner", admin.id, bot_id)
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role != "owner":
-        raise _forbidden("not_owner", bot_id=bot_id)
+        raise _deny(admin, "not_owner", bot_id)
     return membership
 
 
@@ -119,3 +135,40 @@ def _synthetic_superadmin_membership(admin_id: str, bot_id: str) -> AdminBotMemb
         created_at=datetime.fromtimestamp(0, tz=timezone.utc),
         updated_at=datetime.fromtimestamp(0, tz=timezone.utc),
     )
+
+
+# -------- bot creation (C2) --------
+
+BOT_CREATION_POLICIES = ("writers", "any", "superadmin")
+
+
+def bot_creation_policy() -> str:
+    """``BOT_CREATION`` env: who may create bots in the workspace.
+
+    * ``writers`` (default) — superadmins, plus admins who are owner or
+      admin of at least one bot. Viewer-only members can't create bots.
+    * ``any`` — every active admin (the previous behaviour).
+    * ``superadmin`` — superadmins only.
+
+    Unknown values fall back to ``writers``.
+    """
+    import os
+
+    value = (os.environ.get("BOT_CREATION") or "writers").strip().lower()
+    return value if value in BOT_CREATION_POLICIES else "writers"
+
+
+def can_create_bots(admin: AdminUserModel) -> bool:
+    if admin.is_superadmin:
+        return True
+    policy = bot_creation_policy()
+    if policy == "any":
+        return True
+    if policy == "superadmin":
+        return False
+    return any(m.role in _WRITER_ROLES for m in AdminBotMemberships.list_for_admin(admin.id))
+
+
+def require_bot_creator(admin: AdminUserModel) -> None:
+    if not can_create_bots(admin):
+        raise _deny(admin, "bot_creation_not_allowed", policy=bot_creation_policy())

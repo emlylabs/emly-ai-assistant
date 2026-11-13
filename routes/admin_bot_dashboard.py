@@ -25,11 +25,24 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
+from services.authz import require_member, require_owner, require_writer
 from services.bot_config import (
-    ActiveBotConfig,
+    discard_draft_for_bot,
     get_config_for_bot,
+    get_draft_for_bot,
     save_config_for_bot,
+    save_draft_for_bot,
     set_api_key,
+)
+from services.config_validation import (
+    Issue,
+    ValidationContext,
+    count_by_severity,
+    has_deployment_api_key,
+    has_deployment_endpoint,
+    has_deployment_model,
+    probe_bot_api_key,
+    validate_config,
 )
 
 log = logging.getLogger(__name__)
@@ -46,17 +59,14 @@ def _resolve_bot(slug: str) -> BotModel:
     return bot
 
 
-def _require_member(admin_id: str, bot_id: str) -> str:
-    m = AdminBotMemberships.get(admin_id, bot_id)
-    if m is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this bot")
-    return m.role
+def _require_member(admin: AdminUserModel, bot_id: str) -> str:
+    """Thin wrapper around ``services.authz.require_member`` so existing call
+    sites keep the ``role`` return convenience. Honors ``is_superadmin``."""
+    return require_member(admin, bot_id).role
 
 
-def _require_writer(admin_id: str, bot_id: str) -> None:
-    role = _require_member(admin_id, bot_id)
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read-only role on this bot")
+def _require_writer(admin: AdminUserModel, bot_id: str) -> None:
+    require_writer(admin, bot_id)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +105,60 @@ class ConfigPayload(BaseModel):
     expected_version: Optional[int] = None
 
 
+class ValidateConfigPayload(BaseModel):
+    """Standalone validation request — no save, no version bump.
+
+    Used by the editor's preview path (mirrors the client-side
+    ``validateConfig`` for issues the client can't compute) and by the
+    publish / save gates which call validate before commit.
+    """
+
+    config: Dict[str, Any]
+
+
+class ValidationIssue(BaseModel):
+    severity: str
+    key: str
+    section: str
+    message: str
+    cta: Optional[Dict[str, str]] = None
+
+
+class ValidationResponse(BaseModel):
+    issues: List[ValidationIssue]
+    counts: Dict[str, int]  # {"error": N, "warning": N, "info": N}
+
+
+def _issues_to_response(issues: List[Issue]) -> ValidationResponse:
+    return ValidationResponse(
+        issues=[ValidationIssue(**i.to_dict()) for i in issues],
+        counts=count_by_severity(issues),
+    )
+
+
+def _build_validation_context(bot: BotModel) -> ValidationContext:
+    """Probe per-bot state the validator needs for RT* rules. File count
+    is the only DB hit; the rest are env / row reads we already have."""
+    try:
+        from models.emly_files import EMLYFiles
+        file_count = EMLYFiles.select().where(EMLYFiles.bot == bot.id).count()
+    except Exception:
+        log.exception("file count probe failed for bot=%s", bot.id)
+        file_count = None
+    return ValidationContext(
+        bot_id=bot.id,
+        bot_slug=bot.slug,
+        file_count=file_count,
+        has_bot_api_key=probe_bot_api_key(bot.id),
+        has_deployment_api_key=has_deployment_api_key(),
+        has_deployment_model=has_deployment_model(),
+        has_deployment_endpoint=has_deployment_endpoint(),
+        # known_model_names left None — RT3 stays dormant until we wire
+        # a per-provider cache. The rule already skips gracefully.
+        known_model_names=None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dashboard stats
 # ---------------------------------------------------------------------------
@@ -104,7 +168,7 @@ def bot_dashboard_stats(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     return BotDashboardStats(
         bot_id=bot.id,
         slug=bot.slug,
@@ -129,7 +193,7 @@ def _resolve_window(from_ts: Optional[int], to_ts: Optional[int]) -> tuple[datet
 
     Timestamps are interpreted as UTC seconds (the UI sends
     ``Math.floor(Date.now() / 1000)``) and returned as naive UTC datetimes
-    so they compare cleanly against ``EMLYMessage.created_on`` /
+    so they compare cleanly against ``EMLYMessage.created_at`` /
     ``EMLYSession.started_at`` (both written via ``datetime.utcnow()``).
     """
     from datetime import timedelta
@@ -206,7 +270,7 @@ def bot_messages_by_model(
     message list, which silently undercounts at high volume.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from peewee import fn
@@ -216,8 +280,8 @@ def bot_messages_by_model(
     where = (
         (EMLYMessage.bot == bot.id)
         & (EMLYMessage.role == "assistant")
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
         & (EMLYMessage.model_used.is_null(False))
     )
     if channel_id:
@@ -270,7 +334,7 @@ def bot_funnel(
 ):
     """Started → understood → resolved funnel for sessions in a window."""
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from peewee import fn
@@ -348,7 +412,7 @@ def bot_messages_by_topic(
     when the runtime stores both forms.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from peewee import fn
@@ -358,8 +422,8 @@ def bot_messages_by_topic(
     where = (
         (EMLYMessage.bot == bot.id)
         & (EMLYMessage.role == "user")
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
     )
     if channel_id:
         where = where & (EMLYMessage.channel_id == channel_id)
@@ -410,7 +474,7 @@ def bot_messages_daily(
     user / assistant overlays without a second fetch.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
     from datetime import timedelta
 
@@ -418,17 +482,17 @@ def bot_messages_daily(
 
     where = (
         (EMLYMessage.bot == bot.id)
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
     )
     if channel_id:
         where = where & (EMLYMessage.channel_id == channel_id)
 
     user_counts: dict[str, int] = {}
     asst_counts: dict[str, int] = {}
-    q = EMLYMessage.select(EMLYMessage.created_on, EMLYMessage.role).where(where)
+    q = EMLYMessage.select(EMLYMessage.created_at, EMLYMessage.role).where(where)
     for row in q.dicts():
-        ts = row["created_on"]
+        ts = row["created_at"]
         if ts is None:
             continue
         key = ts.date().isoformat()
@@ -464,7 +528,7 @@ def bot_get_report(
     aggregations to messages and sessions on a single ``bot_channel.id``.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     # Naive-UTC datetimes — see ``_resolve_window`` for the invariant.
     From = datetime.utcfromtimestamp(from_ts) if from_ts else None
     To = datetime.utcfromtimestamp(to_ts) if to_ts else None
@@ -500,7 +564,7 @@ def bot_messages_by_channel(
     """Aggregate messages by `channel_id` over a window. Powers the
     Channel-mix card and the channel filter dropdown."""
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from peewee import fn
@@ -516,8 +580,8 @@ def bot_messages_by_channel(
         )
         .where(
             (EMLYMessage.bot == bot.id)
-            & (EMLYMessage.created_on >= start)
-            & (EMLYMessage.created_on <= end)
+            & (EMLYMessage.created_at >= start)
+            & (EMLYMessage.created_at <= end)
         )
         .group_by(EMLYMessage.channel_id)
     )
@@ -593,7 +657,7 @@ def bot_enrichment_summary(
     out rather than rendering 100% unrated.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from peewee import fn
@@ -690,7 +754,7 @@ def bot_citation_stats(
     stays portable. Bots that never call RAG return ``citation_rate``
     null (no `citations` column ever populated)."""
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from models.emly_messages import EMLYMessage
@@ -698,8 +762,8 @@ def bot_citation_stats(
     where = (
         (EMLYMessage.bot == bot.id)
         & (EMLYMessage.role == "assistant")
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
     )
     if channel_id:
         where = where & (EMLYMessage.channel_id == channel_id)
@@ -783,7 +847,7 @@ def bot_latency_quantiles(
     in SQL, but the analytics page is not on that path today.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from models.emly_messages import EMLYMessage
@@ -791,8 +855,8 @@ def bot_latency_quantiles(
     where = (
         (EMLYMessage.bot == bot.id)
         & (EMLYMessage.role == "assistant")
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
         & (EMLYMessage.response_time_ms.is_null(False))
     )
     if channel_id:
@@ -849,23 +913,23 @@ def bot_messages_heatmap(
     surface is interested in load patterns, not who's talking.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     start, end = _resolve_window(from_ts, to_ts)
 
     from models.emly_messages import EMLYMessage
 
     where = (
         (EMLYMessage.bot == bot.id)
-        & (EMLYMessage.created_on >= start)
-        & (EMLYMessage.created_on <= end)
+        & (EMLYMessage.created_at >= start)
+        & (EMLYMessage.created_at <= end)
     )
     if channel_id:
         where = where & (EMLYMessage.channel_id == channel_id)
 
     grid = [[0] * 24 for _ in range(7)]
-    rows = EMLYMessage.select(EMLYMessage.created_on).where(where)
+    rows = EMLYMessage.select(EMLYMessage.created_at).where(where)
     for r in rows.dicts():
-        ts = r["created_on"]
+        ts = r["created_at"]
         if ts is None:
             continue
         grid[ts.weekday()][ts.hour] += 1
@@ -884,13 +948,13 @@ def bot_messages_heatmap(
 def bot_list_messages(
     slug: str,
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     user_id: Optional[str] = Query(None),
     session_id: Optional[str] = Query(None),
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     return MessageListResponse(
         items=EMLYMessages.list_all(bot.id, user_id=user_id, session_id=session_id, skip=skip, limit=limit),
         total=EMLYMessages.count_all(bot.id, user_id=user_id, session_id=session_id),
@@ -906,11 +970,20 @@ def bot_get_message(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     msg = EMLYMessages.get_message_by_id(bot.id, message_id)
     if msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
     return msg
+
+
+def _audit_config_change(action: str, admin, bot, before: Optional[dict], after: Optional[dict], **extra) -> None:
+    """Audit a live-config change with a masked before/after diff (C7)."""
+    from services.audit import audit
+    from services.audit_diff import config_diff
+
+    audit(action, admin_id=admin.id, bot_id=bot.id, target_type="bot", target_id=bot.id,
+          payload={**extra, **config_diff(before, after)})
 
 
 @router.patch("/bots/{slug}/messages/{message_id}", response_model=EMLYMessageModel)
@@ -921,12 +994,16 @@ def bot_update_message(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if payload.not_useful is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Nothing to update")
     updated = EMLYMessages.update_emly_message_by_id(bot.id, message_id, payload.not_useful)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    from services.audit import audit
+
+    audit("message.updated", admin_id=admin.id, bot_id=bot.id, target_type="message",
+          target_id=str(message_id), payload={"not_useful": payload.not_useful})
     return updated
 
 
@@ -937,9 +1014,13 @@ def bot_delete_message(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if not EMLYMessages.delete_message_by_id(bot.id, message_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    from services.audit import audit
+
+    audit("message.deleted", admin_id=admin.id, bot_id=bot.id, target_type="message",
+          target_id=str(message_id))
 
 
 # Phase 6 backend-backfill: admin override for the heuristic deflection
@@ -957,7 +1038,7 @@ def bot_set_deflection(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if not EMLYMessages.set_deflection(
         bot.id,
         message_id,
@@ -993,7 +1074,7 @@ def bot_admin_set_rating(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if payload.rating not in (-1, 0, 1):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rating must be -1, 0, or 1")
     if not EMLYMessages.set_rating(bot.id, message_id, rating=payload.rating):
@@ -1024,7 +1105,7 @@ def bot_list_end_users(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     return UserListResponse(
         items=EMLYUsers.get_users(bot.id, skip=skip, limit=limit),
         total=EMLYUsers.count(bot.id),
@@ -1040,11 +1121,36 @@ def bot_get_end_user(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     u = EMLYUsers.get_user_by_id(bot.id, user_id)
     if u is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return u
+
+
+@router.delete("/bots/{slug}/end-users/{user_id}")
+def bot_erase_end_user(
+    slug: str,
+    user_id: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Erase one visitor of this bot (owners only): profile, sessions,
+    messages, form submissions, attachments (rows and files), channel
+    identities and OTP rows. Audited as ``end_user.erased`` with counts
+    only. 404 when nothing was stored for that id."""
+    from services.audit import audit
+    from services.data_retention import erase_end_user
+    from utils.dependencies import get_agent_service
+
+    bot = _resolve_bot(slug)
+    require_owner(admin, bot.id)
+    counts = erase_end_user(bot.id, user_id)
+    get_agent_service().forget_user(bot.id, user_id)
+    if not any(counts.values()):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    audit("end_user.erased", admin_id=admin.id, bot_id=bot.id, target_type="end_user",
+          target_id=user_id, payload=counts)
+    return {"erased": counts}
 
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +1159,52 @@ def bot_get_end_user(
 class ConfigResponse(BaseModel):
     config: Dict[str, Any]
     config_version: int
+    # Attribution + draft metadata. ``last_updated_*`` populate the
+    # "Last saved by …" footer in the editor; the draft block is non-null
+    # only when the bot has an unpublished draft pending. ``draft.config``
+    # is included so a fresh page load can prime the editor with the
+    # in-progress state instead of the live config.
+    last_updated_by_admin_id: Optional[str] = None
+    last_updated_by_admin_email: Optional[str] = None
+    last_updated_at: Optional[datetime] = None
+    draft: Optional["DraftBlock"] = None
+
+
+class DraftBlock(BaseModel):
+    config: Dict[str, Any]
+    updated_at: datetime
+    updated_by_admin_id: Optional[str] = None
+    updated_by_admin_email: Optional[str] = None
+
+
+ConfigResponse.model_rebuild()
+
+
+def _build_config_response(bot: BotModel) -> ConfigResponse:
+    cfg = get_config_for_bot(bot.id)
+    draft_block: Optional[DraftBlock] = None
+    if bot.config_draft_json:
+        draft_email: Optional[str] = None
+        if bot.config_draft_updated_by_admin_id:
+            try:
+                a = AdminUsers.get_by_id(bot.config_draft_updated_by_admin_id)
+                draft_email = a.email if a else None
+            except Exception:
+                draft_email = None
+        draft_block = DraftBlock(
+            config=bot.config_draft_json,
+            updated_at=bot.config_draft_updated_at or datetime.utcnow(),
+            updated_by_admin_id=bot.config_draft_updated_by_admin_id,
+            updated_by_admin_email=draft_email,
+        )
+    return ConfigResponse(
+        config=cfg.model_dump(mode="json"),
+        config_version=bot.config_version,
+        last_updated_by_admin_id=bot.last_updated_by_admin_id,
+        last_updated_by_admin_email=bot.last_updated_by_admin_email,
+        last_updated_at=bot.updated_at,
+        draft=draft_block,
+    )
 
 
 @router.get("/bots/{slug}/config", response_model=ConfigResponse)
@@ -1061,9 +1213,27 @@ def bot_get_config(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
-    cfg = get_config_for_bot(bot.id)
-    return ConfigResponse(config=cfg.model_dump(mode="json"), config_version=bot.config_version)
+    _require_member(admin, bot.id)
+    return _build_config_response(bot)
+
+
+@router.post("/bots/{slug}/config/validate", response_model=ValidationResponse)
+def bot_validate_config(
+    slug: str,
+    payload: ValidateConfigPayload,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Run the server validator against an arbitrary config blob.
+
+    No DB write, no version bump. The editor calls this so the issue list
+    matches what the save / publish gates will enforce — keeping client
+    severity in sync with server enforcement. Read-level membership is
+    enough; anyone who can see the config can validate variations of it.
+    """
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    ctx = _build_validation_context(bot)
+    return _issues_to_response(validate_config(payload.config, ctx))
 
 
 @router.put("/bots/{slug}/config", response_model=ConfigResponse)
@@ -1071,9 +1241,16 @@ def bot_put_config(
     slug: str,
     payload: ConfigPayload,
     admin: AdminUserModel = Depends(get_admin),
+    force: bool = Query(
+        False,
+        description=(
+            "Bypass the workspace `validation.block_save_on_errors` gate. "
+            "Audited as `config.save.forced`. Has no effect when the gate is off."
+        ),
+    ),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
 
     # Optimistic-concurrency check (Prerequisite P5 contract).
     if payload.expected_version is not None and payload.expected_version != bot.config_version:
@@ -1086,8 +1263,75 @@ def bot_put_config(
             },
         )
 
-    save_config_for_bot(bot.id, payload.config)
+    # Optional save gate (§10 of improve-ux.md). Off by default — flipping
+    # it on must not retroactively lock admins out of bots that are
+    # already broken, hence the ``?force=1`` override + audit trail.
+    if not force:
+        try:
+            from models.workspace_settings import WorkspaceSettingsStore
+            ws_settings = WorkspaceSettingsStore.get().settings
+            gate_on = bool(ws_settings.get("validation", {}).get("block_save_on_errors")) \
+                if isinstance(ws_settings.get("validation"), dict) \
+                else bool(ws_settings.get("validation.block_save_on_errors"))
+        except Exception:
+            log.exception("workspace settings read failed; defaulting save gate off bot=%s", bot.id)
+            gate_on = False
+        if gate_on:
+            ctx = _build_validation_context(bot)
+            issues = validate_config(payload.config, ctx)
+            errors = [i for i in issues if i.severity == "error"]
+            if errors:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "validation_failed",
+                        "message": (
+                            f"Save blocked — {len(errors)} error"
+                            f"{'s' if len(errors) != 1 else ''} must be fixed first. "
+                            "Use ?force=1 to override (audited)."
+                        ),
+                        "issues": [i.to_dict() for i in issues],
+                        "can_force": True,
+                    },
+                )
+    elif force:
+        # Forced save — audit before the write so the trail is honest even
+        # if the underlying save fails downstream.
+        try:
+            from services.audit import audit
+            audit(
+                "config.save.forced",
+                admin_id=admin.id,
+                bot_id=bot.id,
+                target_type="bot",
+                target_id=bot.id,
+                payload={"slug": bot.slug},
+            )
+        except Exception:
+            log.exception("audit emit failed for config.save.forced bot=%s", bot.id)
+
+    before_config = dict(bot.config_json or {})
+    save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
     refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
+        config_version=refreshed.config_version if refreshed else None, forced=bool(force),
+    )
+    # Snapshot the just-saved config into ``bot_config_history`` so the
+    # per-bot History tab can show diffs and offer rollback. Failures
+    # here must not block the save (the user just clicked Save and the
+    # write already landed) — log and move on.
+    try:
+        from models.bot_config_history import BotConfigHistories
+        BotConfigHistories.snapshot(
+            bot_id=bot.id,
+            config_version=refreshed.config_version if refreshed else bot.config_version,
+            config_json=refreshed.config_json if refreshed and refreshed.config_json else payload.config,
+            admin_id=admin.id,
+            admin_email=admin.email,
+        )
+    except Exception:
+        log.exception("config history snapshot failed for bot=%s", bot.id)
     # Rebuild the per-bot runtime so the next chat picks up the new
     # config / topics / api_key.
     try:
@@ -1096,11 +1340,107 @@ def bot_put_config(
     except Exception:
         log.exception("invalidate_bot failed after config save bot=%s", bot.id)
 
-    cfg = get_config_for_bot(bot.id)
-    return ConfigResponse(
-        config=cfg.model_dump(mode="json"),
-        config_version=refreshed.config_version if refreshed else bot.config_version,
+    return _build_config_response(refreshed or bot)
+
+
+# ---------------------------------------------------------------------------
+# Drafts. The draft slot lets an admin save an in-progress edit without
+# affecting live traffic. Publish promotes the draft to ``config_json``;
+# discard wipes the slot. The Test/Preview surfaces read from the draft
+# when present so admins can iterate without subjecting visitors to
+# half-baked configs.
+# ---------------------------------------------------------------------------
+@router.put("/bots/{slug}/config/draft", response_model=ConfigResponse)
+def bot_put_config_draft(
+    slug: str,
+    payload: ConfigPayload,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    # Draft writes don't bump ``config_version`` and don't need
+    # optimistic-concurrency: the only thing they overwrite is the
+    # per-bot single-slot draft, and the editor is the only writer.
+    save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
+    refreshed = Bots.get_by_id(bot.id)
+    return _build_config_response(refreshed or bot)
+
+
+@router.delete("/bots/{slug}/config/draft", response_model=ConfigResponse)
+def bot_discard_config_draft(
+    slug: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    had_draft = bool(bot.config_draft_json)
+    discard_draft_for_bot(bot.id)
+    from services.audit import audit
+
+    audit("config.draft.discarded", admin_id=admin.id, bot_id=bot.id, target_type="bot",
+          target_id=bot.id, payload={"had_draft": had_draft})
+    refreshed = Bots.get_by_id(bot.id)
+    return _build_config_response(refreshed or bot)
+
+
+@router.post("/bots/{slug}/config/draft/publish", response_model=ConfigResponse)
+def bot_publish_config_draft(
+    slug: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Promote the pending draft to live. Same downstream side-effects as
+    a regular save (history snapshot + runtime invalidation).
+
+    Validation gate (§10 of improve-ux.md): drafts can be broken, but
+    published bots cannot. Any error-severity issue in the draft —
+    config (R*) or runtime (RT*) — returns 422 with the issue list so
+    the editor can surface them inline.
+    """
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    draft = get_draft_for_bot(bot.id)
+    if draft is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No draft to publish",
+        )
+    ctx = _build_validation_context(bot)
+    issues = validate_config(draft.model_dump(mode="json"), ctx)
+    errors = [i for i in issues if i.severity == "error"]
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "validation_failed",
+                "message": f"Publish blocked — {len(errors)} error{'s' if len(errors) != 1 else ''} must be fixed in the draft first.",
+                "issues": [i.to_dict() for i in issues],
+            },
+        )
+    before_config = dict(bot.config_json or {})
+    save_config_for_bot(bot.id, draft, admin_id=admin.id, admin_email=admin.email)
+    refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.draft.published", admin, bot, before_config,
+        refreshed.config_json if refreshed else draft.model_dump(mode="json"),
+        config_version=refreshed.config_version if refreshed else None,
     )
+    try:
+        from models.bot_config_history import BotConfigHistories
+        BotConfigHistories.snapshot(
+            bot_id=bot.id,
+            config_version=refreshed.config_version if refreshed else bot.config_version,
+            config_json=refreshed.config_json if refreshed and refreshed.config_json else draft.model_dump(mode="json"),
+            admin_id=admin.id,
+            admin_email=admin.email,
+        )
+    except Exception:
+        log.exception("config history snapshot failed after publish bot=%s", bot.id)
+    try:
+        from utils.dependencies import AGENT_SERVICE_INSTANCE
+        AGENT_SERVICE_INSTANCE.invalidate_bot(bot.id)
+    except Exception:
+        log.exception("invalidate_bot failed after draft publish bot=%s", bot.id)
+    return _build_config_response(refreshed or bot)
 
 
 # ---------------------------------------------------------------------------
@@ -1118,14 +1458,26 @@ def bot_put_api_key(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     set_api_key(bot.id, payload.api_key)
+    # Record that the key changed — never its value.
+    from services.audit import audit
+
+    audit("bot.api_key.cleared" if not payload.api_key else "bot.api_key.set",
+          admin_id=admin.id, bot_id=bot.id, target_type="bot", target_id=bot.id)
     # Force the runtime to pick up the new key on the next chat.
     try:
         from utils.dependencies import AGENT_SERVICE_INSTANCE
         AGENT_SERVICE_INSTANCE.invalidate_bot(bot.id)
     except Exception:
         log.exception("invalidate_bot failed after api-key change bot=%s", bot.id)
+    # API key state feeds RT1; the version-keyed validation cache won't
+    # auto-invalidate because config_version didn't bump.
+    try:
+        from routes.admin_bots import invalidate_validation_cache
+        invalidate_validation_cache(bot.id)
+    except Exception:
+        log.exception("validation cache invalidation failed after api-key change bot=%s", bot.id)
 
 
 @router.get("/bots/{slug}/api-key/status")
@@ -1134,11 +1486,123 @@ def bot_get_api_key_status(
     admin: AdminUserModel = Depends(get_admin),
 ):
     """Return whether the bot has an api_key set, without leaking its
-    value. The structured config editor uses this to render
-    'Key configured' vs 'No key set'."""
+    value. Includes ``has_deployment_fallback`` so the editor's
+    SummaryCard can detect the RT1 hazard (no per-bot key *and* no
+    deployment-wide fallback ⇒ chat will fail). ``missing`` lists what the
+    live config still lacks after deployment defaults (``model``,
+    ``endpoint``, ``api_key``); while it is non-empty the bot refuses to
+    answer."""
+    from services import llm_settings
+
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
-    return {"has_key": bool(bot.api_key_encrypted)}
+    _require_member(admin, bot.id)
+    return {
+        "has_key": bool(bot.api_key_encrypted),
+        "has_deployment_fallback": has_deployment_api_key(),
+        "has_deployment_model": has_deployment_model(),
+        "has_deployment_endpoint": has_deployment_endpoint(),
+        "missing": llm_settings.resolve(bot.id).missing,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Config history — snapshots are written on every save (see bot_put_config).
+# The list endpoint feeds the per-bot "History" tab; restore promotes an
+# old snapshot back to live (which itself writes a new history row).
+# ---------------------------------------------------------------------------
+class ConfigHistoryEntry(BaseModel):
+    id: str
+    config_version: int
+    admin_id: Optional[str] = None
+    admin_email: Optional[str] = None
+    created_at: datetime
+
+
+class ConfigHistoryDetail(ConfigHistoryEntry):
+    config: Dict[str, Any]
+
+
+@router.get("/bots/{slug}/config/history", response_model=List[ConfigHistoryEntry])
+def bot_list_config_history(
+    slug: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    from models.bot_config_history import BotConfigHistories
+    rows = BotConfigHistories.list_for_bot(bot.id)
+    return [
+        ConfigHistoryEntry(
+            id=r.id,
+            config_version=r.config_version,
+            admin_id=r.admin_id,
+            admin_email=r.admin_email,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/bots/{slug}/config/history/{entry_id}", response_model=ConfigHistoryDetail)
+def bot_get_config_history_entry(
+    slug: str,
+    entry_id: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    from models.bot_config_history import BotConfigHistories
+    row = BotConfigHistories.get_by_id(entry_id)
+    if row is None or row.bot_id != bot.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
+    return ConfigHistoryDetail(
+        id=row.id,
+        config_version=row.config_version,
+        admin_id=row.admin_id,
+        admin_email=row.admin_email,
+        created_at=row.created_at,
+        config=row.config_json,
+    )
+
+
+@router.post("/bots/{slug}/config/history/{entry_id}/restore", response_model=ConfigResponse)
+def bot_restore_config_history(
+    slug: str,
+    entry_id: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Promote an older snapshot to live. Writes a new history row at
+    the next ``config_version`` so the rollback itself is auditable."""
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    from models.bot_config_history import BotConfigHistories
+    row = BotConfigHistories.get_by_id(entry_id)
+    if row is None or row.bot_id != bot.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
+    before_config = dict(bot.config_json or {})
+    save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
+    refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.history.restored", admin, bot, before_config,
+        refreshed.config_json if refreshed else row.config_json,
+        history_entry_id=entry_id, config_version=refreshed.config_version if refreshed else None,
+    )
+    try:
+        BotConfigHistories.snapshot(
+            bot_id=bot.id,
+            config_version=refreshed.config_version if refreshed else bot.config_version,
+            config_json=refreshed.config_json if refreshed and refreshed.config_json else row.config_json,
+            admin_id=admin.id,
+            admin_email=admin.email,
+        )
+    except Exception:
+        log.exception("config history snapshot failed after restore for bot=%s", bot.id)
+    try:
+        from utils.dependencies import AGENT_SERVICE_INSTANCE
+        AGENT_SERVICE_INSTANCE.invalidate_bot(bot.id)
+    except Exception:
+        log.exception("invalidate_bot failed after history restore bot=%s", bot.id)
+    return _build_config_response(refreshed or bot)
 
 
 # ---------------------------------------------------------------------------
@@ -1176,7 +1640,7 @@ def bot_rag_search(
     raw hits — score, source filename, chunk text — so admins can
     debug why their bot is answering (or not answering) a query."""
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
 
     query = payload.query.strip()
     if not query:

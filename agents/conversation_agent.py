@@ -24,12 +24,12 @@ from langchain_classic.memory import ConversationBufferWindowMemory
 
 
 from models.emly_messages import EMLYMessages
-from config import MODEL, EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
-    EMBEDDING_MODEL_INSTANCE, OPENAI_API_KEY, OPENAI_BASE_URL, TOP_K, TEMPERATURE, \
+from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
+    EMBEDDING_MODEL_INSTANCE, TOP_K, TEMPERATURE, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
 from agents.rag_manager import get_rag_manager
-from routes.actions import get_config_json_file
+from services.bot_config import get_config_for_bot
 from cachetools import TTLCache
 from utils.utils import clean_template_string, get_filtered_citations, filter_citations
 
@@ -317,7 +317,7 @@ class RAGManager:
         if not self.should_use_rag(topic_name):
             self.logger.warning("RAG is not enabled for topic '%s'.", topic_name)
             return "", []
-        threshold = float(get_config_json_file(self.bot_id).get("embedding_threshold", 0.20))
+        threshold = float(get_config_for_bot(self.bot_id).model_dump(mode="json").get("embedding_threshold", 0.20))
         return self.rag.search(
             bot_id=self.bot_id,
             query=query,
@@ -980,6 +980,17 @@ class AgenticConversationHandler:
                     if "_llm_telemetry" in last_node_output and last_node_output["_llm_telemetry"]:
                         final_telemetry = last_node_output["_llm_telemetry"]
 
+                # If the LLM produced no tokens (empty stream — sometimes
+                # happens on streaming chunked usage-only chunks or upstream
+                # provider hiccups), emit a clear fallback so the widget
+                # doesn't render "No response received" and we don't pollute
+                # the history with an empty assistant turn that degrades
+                # subsequent prompts.
+                if not full_response.strip():
+                    fallback = "I'm sorry, I wasn't able to generate a response. Could you please rephrase or try again?"
+                    yield {"type": "token", "data": fallback}
+                    full_response = fallback
+
                 # After stream is complete, update memory and save messages
                 self.conversation_manager.global_memory.chat_memory.add_user_message(user_input)
                 self.conversation_manager.global_memory.chat_memory.add_ai_message(full_response)
@@ -1072,7 +1083,7 @@ def create_config(bot_id: str) -> Dict[str, Any]:
     """Build the runtime config dict for a single bot.
 
     Reads ``bots.config_json`` for the given bot (which is in the
-    ``BotConfigV1`` shape from ``services/bot_config.py``) and assembles
+    ``BotConfig`` shape from ``services/bot_config.py``) and assembles
     the legacy-shaped dict the rest of this module consumes (topics,
     global_prompts, model_name, …).
     """
@@ -1086,7 +1097,7 @@ def create_config(bot_id: str) -> Dict[str, Any]:
         except LookupError:
             bot_config = {}
 
-        # New shape (BotConfigV1) has topics / global_prompts at top
+        # New shape (BotConfig) has topics / global_prompts at top
         # level. Legacy shape nested them under "agent_config". Support
         # both for transitional compat: look at the top-level first,
         # fall back to "agent_config" for old config rows.
@@ -1114,10 +1125,12 @@ def create_config(bot_id: str) -> Dict[str, Any]:
 
         config = deep_merge(default_config, config_from_file)
 
-        # LLM model: prefer the bot's per-row override (BotConfigV1.llm.model),
-        # fall back to the deployment-wide MODEL env default.
+        # The bot's own model / endpoint. Deployment defaults (MODEL,
+        # OPENAI_BASE_URL) are applied by services.llm_settings, which also
+        # refuses when neither is set.
         llm_cfg = bot_config.get("llm") or {}
-        config["model_name"] = llm_cfg.get("model") or MODEL
+        config["model_name"] = llm_cfg.get("model")
+        config["api_endpoint"] = llm_cfg.get("api_endpoint")
         config["embedding_model_name"] = EMBEDDING_MODEL_NAME
 
         # All RAG-enabled topics share the bot's single Qdrant tenant.
@@ -1216,12 +1229,16 @@ class ConversationSessionManager:
         self.logger = logging.getLogger(__name__)
 
     def _build_runtime(self, bot_id: str) -> _BotRuntime:
-        from services.bot_config import get_decrypted_api_key
+        from services import llm_settings
 
         config = create_config(bot_id=bot_id)
-        api_key = get_decrypted_api_key(bot_id) or OPENAI_API_KEY
+        # Raises LLMNotConfigured when the bot has no model, endpoint or
+        # key and the deployment has no default for it.
+        settings = llm_settings.require(
+            bot_id, {"model": config.get("model_name"), "api_endpoint": config.get("api_endpoint")}
+        )
         llm_kwargs = {
-            "model": config.get("model_name", "gpt-4o-mini"),
+            **settings.chat_kwargs(),
             "temperature": TEMPERATURE,
             "timeout": 30,
             "max_retries": 2,
@@ -1231,10 +1248,6 @@ class ConversationSessionManager:
             # it. (Non-streaming pulls usage from the AIMessage directly.)
             "stream_options": {"include_usage": True},
         }
-        if api_key:
-            llm_kwargs["api_key"] = api_key
-        if OPENAI_BASE_URL:
-            llm_kwargs["base_url"] = OPENAI_BASE_URL
         llm = ChatOpenAI(**llm_kwargs)
         topics = {
             t_name: TopicConfig(**t_config)
@@ -1274,6 +1287,14 @@ class ConversationSessionManager:
         for key in list(self._session_locks.keys()):
             if key.startswith(prefix):
                 del self._session_locks[key]
+
+    def forget_user(self, bot_id: str, user_id: str) -> None:
+        """Drop one visitor's in-memory conversations (erasure)."""
+        prefix = f"{bot_id}_{user_id}_"
+        for store in (self.sessions, self._session_locks):
+            for key in list(store.keys()):
+                if key.startswith(prefix):
+                    del store[key]
 
     def session_lock(self, session_key: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_key)

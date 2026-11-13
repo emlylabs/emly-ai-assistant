@@ -10,7 +10,7 @@ export interface CandidateRecord {
     is_blacklisted?: boolean;
     status?: string | null;
     file_path?: string;
-    created_on?: string;
+    created_at?: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -52,3 +52,22 @@ def needs_rehash(hash_str: str) -> bool:
         return _HASHER.check_needs_rehash(hash_str)
     except InvalidHash:
         return True
+
+
+def min_password_length() -> int:
+    import os
+
+    return max(8, int(os.environ.get("AUTH_LOCAL_MIN_PASSWORD_LENGTH", "12")))
+
+
+def new_password_problem(new_password: str, confirm: str, *, current: str) -> str | None:
+    """Return a user-facing reason the new password is unacceptable, or None."""
+    if len(new_password) < min_password_length():
+        return f"Use at least {min_password_length()} characters."
+    if len(new_password) > 256:
+        return "Use at most 256 characters."
+    if new_password != confirm:
+        return "The new passwords don't match."
+    if new_password == current:
+        return "Choose a password different from the current one."
+    return None

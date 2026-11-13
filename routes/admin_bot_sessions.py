@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from models.admin_bot_memberships import AdminBotMemberships
@@ -27,6 +27,7 @@ from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_sessions import EMLYSessionModel, EMLYSessions
 from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.authz import require_member, require_owner, require_writer
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,17 +40,13 @@ def _resolve_bot(slug: str) -> BotModel:
     return bot
 
 
-def _require_member(admin_id: str, bot_id: str) -> str:
-    m = AdminBotMemberships.get(admin_id, bot_id)
-    if m is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized for this bot")
-    return m.role
+def _require_member(admin: AdminUserModel, bot_id: str) -> str:
+    """Honors ``is_superadmin`` via ``services.authz``."""
+    return require_member(admin, bot_id).role
 
 
-def _require_writer(admin_id: str, bot_id: str) -> None:
-    role = _require_member(admin_id, bot_id)
-    if role not in ("owner", "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read-only role on this bot")
+def _require_writer(admin: AdminUserModel, bot_id: str) -> None:
+    require_writer(admin, bot_id)
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +113,7 @@ def list_sessions_daily(
     the result set is comfortably under a millisecond per thousand rows.
     """
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     from datetime import timedelta
 
     from models.emly_sessions import EMLYSession
@@ -205,7 +202,7 @@ def list_sessions(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     if started_after is not None and started_before is not None and started_after > started_before:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -242,7 +239,7 @@ def get_session(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_member(admin.id, bot.id)
+    _require_member(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -265,7 +262,7 @@ def resolve_session(
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.mark_resolved(
@@ -300,7 +297,7 @@ def escalate_session(
     (a human picked it up). Reopen would call /resolve with is_resolved=false.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.mark_resolved(
@@ -337,16 +334,23 @@ def _channel_kind_or_none(channel_id: Optional[str]) -> Optional[str]:
 def takeover_session(
     slug: str,
     session_id: str,
+    request: Request,
+    force: bool = Query(False, description="Take the session from another admin (owners only)."),
     admin: AdminUserModel = Depends(get_admin),
 ):
     """Pause the bot on this session and claim it for the calling admin.
+
+    If another admin already holds the session this returns 409
+    ``session_held`` (with ``held_by``). An owner of the bot (or a
+    superadmin) can pass ``force=true`` to take it over anyway; that is
+    audited as ``session.takeover.forced`` with the previous holder.
 
     Phase 10 v1: only web_widget sessions are supported. Other channel
     kinds return 400 with a documented `reason` body so the UI can render
     a clear "Channel adapter pending" tooltip.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
@@ -364,13 +368,32 @@ def takeover_session(
                 ),
             },
         )
-    EMLYSessions.set_takeover(bot.id, session_id, admin_id=admin.id)
+    holder = session.taken_over_by or None
+    held_by_other = holder is not None and holder != admin.id
+    if held_by_other:
+        if not force:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "session_held", "held_by": holder},
+            )
+        # Taking a session from a colleague is an owner-level action.
+        require_owner(admin, bot.id)
+
+    if not EMLYSessions.claim_takeover(bot.id, session_id, admin_id=admin.id, force=held_by_other):
+        # Lost a race: someone else claimed it between our read and write.
+        current = EMLYSessions.get(bot.id, session_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "session_held", "held_by": current.taken_over_by if current else None},
+        )
     audit(
-        action="session.takeover.claimed",
+        action="session.takeover.forced" if held_by_other else "session.takeover.claimed",
         admin_id=admin.id,
         bot_id=bot.id,
         target_type="session",
         target_id=session_id,
+        payload={"previous_holder": holder} if held_by_other else None,
+        request=request,
     )
     try:
         from services.realtime import publish
@@ -396,7 +419,7 @@ def release_session(
 ):
     """Release a take-over so the bot resumes responding."""
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     if EMLYSessions.get(bot.id, session_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     EMLYSessions.set_takeover(bot.id, session_id, admin_id=None)
@@ -435,7 +458,7 @@ def admin_reply(
     replies.
     """
     bot = _resolve_bot(slug)
-    _require_writer(admin.id, bot.id)
+    _require_writer(admin, bot.id)
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")

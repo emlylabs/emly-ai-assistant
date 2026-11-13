@@ -40,34 +40,23 @@ export default function Crumbs({ items, className }: CrumbsProps) {
             </span>
           ) : null;
 
-        // A `node` override always wins — the consumer decides what goes
-        // here. Used to embed the bot-picker dropdown inline.
-        if (crumb.node) {
-          return (
-            <span key={`crumb-${index}`} style={{ display: "contents" }}>
-              {sep}
-              {crumb.node}
-            </span>
-          );
-        }
-
-        if (isLast) {
-          return (
-            <span key={`crumb-${index}`} style={{ display: "contents" }}>
-              {sep}
-              <strong>{crumb.label}</strong>
-            </span>
-          );
-        }
+        // Real flex wrapper (not display:contents) so responsive rules can
+        // hide individual crumbs — the mobile topbar collapses everything
+        // except the bot picker.
+        const body = crumb.node ? (
+          crumb.node
+        ) : isLast ? (
+          <strong title={crumb.label}>{crumb.label}</strong>
+        ) : crumb.href ? (
+          <Link href={crumb.href} title={crumb.label}>{crumb.label}</Link>
+        ) : (
+          <span className="crumb-text" title={crumb.label}>{crumb.label}</span>
+        );
 
         return (
-          <span key={`crumb-${index}`} style={{ display: "contents" }}>
+          <span key={`crumb-${index}`} className="crumb-item">
             {sep}
-            {crumb.href ? (
-              <Link href={crumb.href}>{crumb.label}</Link>
-            ) : (
-              <span>{crumb.label}</span>
-            )}
+            {body}
           </span>
         );
       })}

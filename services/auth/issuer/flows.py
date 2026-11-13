@@ -16,6 +16,13 @@ The flow:
 3. Browser → app callback → ``POST /api/auth/local/token`` with ``code``
    and ``code_verifier``. We pop the code, verify ``code_verifier`` matches
    the original ``code_challenge``, and mint access + id tokens.
+   If the granted scope includes ``offline_access`` we additionally mint
+   a refresh_token (opaque, stored in ``RefreshTokenStore``) and return
+   it on the response — the BFF path stores it in an encrypted cookie
+   for silent renewal.
+4. Browser → ``POST /api/auth/local/token`` with ``grant_type=refresh_token``
+   and the stored refresh_token. We pop the refresh token, mint a fresh
+   access + id token, and rotate the refresh token (return a new one).
 """
 
 from __future__ import annotations
@@ -274,3 +281,76 @@ def consume_code(
     if not verify_pkce(code_verifier, record.code_challenge):
         raise CodeExchangeError("PKCE verifier does not match challenge")
     return record
+
+
+# -------- refresh-token flow (embedded issuer only) --------
+
+
+def issue_refresh_token(
+    *,
+    refresh_store: "RefreshTokenStoreLike",
+    admin_id: str,
+    email: str,
+    email_verified: bool,
+    name: Optional[str] = None,
+    scope: str = "openid email profile",
+    ttl: Optional[timedelta] = None,
+) -> str:
+    """Mint an opaque refresh token and persist it.
+
+    The token is a 32-byte URL-safe random string; ``admin_id`` /
+    ``email`` / ``scope`` are the identity claim that the
+    ``refresh_token`` grant handler will mint the next id_token with.
+    Rotation is enforced at consume time — every successful refresh
+    mints a new token and the previous one is invalidated by ``pop``.
+    """
+    # Local import: ``refresh_store`` lives in a sibling module and is
+    # not part of the pure-logic surface this file exposes to other
+    # domain code.
+    from services.auth.issuer.refresh_store import (
+        DEFAULT_REFRESH_TTL,
+        RefreshTokenRecord,
+        generate_refresh_token,
+    )
+
+    token = generate_refresh_token()
+    record = RefreshTokenRecord(
+        token=token,
+        admin_id=admin_id,
+        email=email,
+        email_verified=email_verified,
+        name=name,
+        scope=scope,
+        issued_at=datetime.now(timezone.utc),
+    )
+    refresh_store.put(record, ttl=ttl or DEFAULT_REFRESH_TTL)
+    return token
+
+
+def consume_refresh_token(
+    *,
+    refresh_store: "RefreshTokenStoreLike",
+    refresh_token: str,
+) -> "RefreshTokenRecordLike":
+    """Pop the refresh token, return the record. Single-use."""
+    from services.auth.issuer.refresh_store import RefreshTokenRecord
+
+    if not refresh_token:
+        raise CodeExchangeError("missing refresh_token")
+    record = refresh_store.pop(refresh_token)
+    if record is None:
+        raise CodeExchangeError("refresh_token is invalid or expired")
+    if not isinstance(record, RefreshTokenRecord):
+        # Defensive: if a custom store returns something else we
+        # surface a clear error rather than silently mangling it.
+        raise CodeExchangeError("refresh_token store returned unexpected type")
+    return record
+
+
+# Type aliases to keep the function signatures readable without a
+# circular import on ``refresh_store``. These match the Protocol in
+# ``services/auth/issuer/refresh_store.py`` — Protocol's structural
+# typing means the runtime check in ``consume_refresh_token`` is the
+# only one that matters.
+RefreshTokenStoreLike = object
+RefreshTokenRecordLike = object

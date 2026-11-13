@@ -1,7 +1,8 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { UserPlus } from "lucide-react";
+import Link from "next/link";
+import { ChevronRight, UserPlus } from "lucide-react";
 import AdminShell from "@/components/AdminShell";
 import { AdminUser, PendingAdmin, api } from "@/lib/api";
 
@@ -106,7 +107,7 @@ export default function AdminsPage() {
           <h2 style={{ marginTop: 0 }}>Stage a new admin</h2>
           <form onSubmit={onInvite}>
             <div className="row" style={{ alignItems: "flex-end" }}>
-              <div className="field" style={{ flex: 1, marginBottom: 0 }}>
+              <div className="field field-grow" style={{ marginBottom: 0 }}>
                 <label htmlFor="invite-email">Email</label>
                 <input
                   id="invite-email"
@@ -143,11 +144,12 @@ export default function AdminsPage() {
           {loading ? (
             <p className="muted">Loading…</p>
           ) : (
-            <table>
+            <div className="table-stack"><table>
               <thead>
                 <tr>
                   <th>Email</th>
                   <th>Role</th>
+                  <th>Bots</th>
                   <th>Status</th>
                   <th>Last sign-in</th>
                   <th></th>
@@ -156,8 +158,15 @@ export default function AdminsPage() {
               <tbody>
                 {admins.map((u) => (
                   <tr key={u.id}>
-                    <td>{u.email}</td>
-                    <td>
+                    <td data-label="Email">
+                      <Link
+                        href={`/admins/${encodeURIComponent(u.id)}`}
+                        style={{ color: "inherit", textDecoration: "none" }}
+                      >
+                        {u.email}
+                      </Link>
+                    </td>
+                    <td data-label="Role">
                       <label style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
                         <input
                           type="checkbox"
@@ -167,12 +176,26 @@ export default function AdminsPage() {
                         superadmin
                       </label>
                     </td>
-                    <td>
+                    <td data-label="Bots">
+                      <Link
+                        href={`/admins/${encodeURIComponent(u.id)}`}
+                        className="ghost compact"
+                        style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                      >
+                        {(() => {
+                          const count = u.memberships?.length ?? 0;
+                          if (count === 0) return "Manage…";
+                          return `${count} bot${count === 1 ? "" : "s"}`;
+                        })()}
+                        <ChevronRight size={12} strokeWidth={1.75} />
+                      </Link>
+                    </td>
+                    <td data-label="Status">
                       <span className={u.is_active ? "tag" : "tag muted"}>
                         {u.is_active ? "active" : "disabled"}
                       </span>
                     </td>
-                    <td className="muted">
+                    <td data-label="Last sign-in" className="muted">
                       {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : "never"}
                     </td>
                     <td style={{ textAlign: "right" }}>
@@ -183,7 +206,7 @@ export default function AdminsPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
 
@@ -194,7 +217,7 @@ export default function AdminsPage() {
           ) : pending.length === 0 ? (
             <p className="muted">No pending invites.</p>
           ) : (
-            <table>
+            <div className="table-stack"><table>
               <thead>
                 <tr>
                   <th>Email</th>
@@ -206,12 +229,12 @@ export default function AdminsPage() {
               <tbody>
                 {pending.map((p) => (
                   <tr key={p.id}>
-                    <td>
+                    <td data-label="Email">
                       {p.email}
                       {p.is_superadmin && <span className="tag" style={{ marginLeft: 6 }}>superadmin</span>}
                     </td>
-                    <td className="muted">{new Date(p.created_at).toLocaleString()}</td>
-                    <td className="muted">
+                    <td data-label="Created" className="muted">{new Date(p.created_at).toLocaleString()}</td>
+                    <td data-label="Bot assignments" className="muted">
                       {p.bot_assignments.length === 0
                         ? "—"
                         : p.bot_assignments.map((a) => `${a.role}@${a.bot_id}`).join(", ")}
@@ -224,7 +247,7 @@ export default function AdminsPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
       </div>

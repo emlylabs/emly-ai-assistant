@@ -13,7 +13,7 @@ predictable.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,7 +50,14 @@ class LimitsConfig(BaseModel):
             "text/csv",
         ]
     )
-    widget_allowed_origins: List[str] = Field(default_factory=lambda: ["*"])
+    # Sites allowed to embed the widget. Empty (the default for new bots)
+    # means only this app's own origin — the admin preview and the hosted
+    # test page. Existing bots were given an explicit ["*"] by migration 010.
+    widget_allowed_origins: List[str] = Field(default_factory=list)
+    # Conversations, form submissions and chat attachments older than this
+    # many days are deleted by the nightly purge (services/data_retention).
+    # None keeps them until deleted by hand.
+    retention_days: Optional[int] = Field(default=None, ge=1, le=3650)
 
 
 class LLMConfig(BaseModel):
@@ -89,8 +96,8 @@ class CFormEntry(BaseModel):
     trigger: Dict[str, Any] = Field(default_factory=dict)
 
 
-class BotConfigV1(BaseModel):
-    """V1 of the per-bot config blob.
+class BotConfig(BaseModel):
+    """Per-bot config blob.
 
     All keys are snake_case. ``extra='forbid'`` rejects camelCase drift at
     PUT time — if a new field is needed, declare it here (and bump the
@@ -134,10 +141,11 @@ class BotConfigV1(BaseModel):
     # Optional grouped widget block (theme + layout)
     widget: Optional[Dict[str, Any]] = None
 
-
-# Active version that the runtime understands. Newer versions become a
-# new ``BotConfigV2``, etc., and pick up a new entry in ``UPGRADERS``.
-ActiveBotConfig = BotConfigV1
+    # What form-alert emails contain. "full": AI summary, transcript,
+    # visitor details and attachments. "link_only": just a link to the
+    # conversation in the admin console, so visitor data stays out of
+    # mailboxes (services/widget_email.py).
+    alert_email_content: Literal["full", "link_only"] = "full"
 
 
 # ---------------------------------------------------------------------------
@@ -167,24 +175,64 @@ def _upgrade(raw: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def get_config_for_bot(bot_id: str) -> ActiveBotConfig:
+def get_config_for_bot(bot_id: str) -> BotConfig:
     bot = Bots.get_by_id(bot_id)
     if bot is None:
         raise LookupError(f"bot not found: {bot_id}")
     raw = bot.config_json or {}
     raw.setdefault("schema_version", bot.config_schema_version or 1)
     raw = _upgrade(raw)
-    return ActiveBotConfig.model_validate(raw)
+    return BotConfig.model_validate(raw)
 
 
-def save_config_for_bot(bot_id: str, config: ActiveBotConfig | Dict[str, Any]) -> ActiveBotConfig:
+def save_config_for_bot(
+    bot_id: str,
+    config: BotConfig | Dict[str, Any],
+    *,
+    admin_id: Optional[str] = None,
+    admin_email: Optional[str] = None,
+) -> BotConfig:
     if isinstance(config, dict):
-        config = ActiveBotConfig.model_validate(config)
+        config = BotConfig.model_validate(config)
     config.schema_version = CURRENT_CONFIG_SCHEMA_VERSION
     payload = config.model_dump(mode="json")
-    if not Bots.update_config(bot_id, payload):
+    if not Bots.update_config(bot_id, payload, admin_id=admin_id, admin_email=admin_email):
         raise LookupError(f"bot not found: {bot_id}")
     return config
+
+
+def save_draft_for_bot(
+    bot_id: str,
+    config: BotConfig | Dict[str, Any],
+    *,
+    admin_id: Optional[str] = None,
+) -> BotConfig:
+    """Write the draft slot. Pydantic validation happens here so a bad
+    draft is rejected at write time — same contract as the live save —
+    but ``config_version`` does not bump and the runtime continues to
+    serve the published config."""
+    if isinstance(config, dict):
+        config = BotConfig.model_validate(config)
+    config.schema_version = CURRENT_CONFIG_SCHEMA_VERSION
+    payload = config.model_dump(mode="json")
+    if not Bots.save_draft(bot_id, payload, admin_id=admin_id):
+        raise LookupError(f"bot not found: {bot_id}")
+    return config
+
+
+def get_draft_for_bot(bot_id: str) -> Optional[BotConfig]:
+    """Return the parsed draft, or ``None`` if no draft is pending."""
+    bot = Bots.get_by_id(bot_id)
+    if bot is None or not bot.config_draft_json:
+        return None
+    raw = dict(bot.config_draft_json)
+    raw.setdefault("schema_version", bot.config_schema_version or 1)
+    raw = _upgrade(raw)
+    return BotConfig.model_validate(raw)
+
+
+def discard_draft_for_bot(bot_id: str) -> bool:
+    return Bots.discard_draft(bot_id)
 
 
 def get_decrypted_api_key(bot_id: str) -> Optional[str]:
@@ -215,16 +263,18 @@ def boot_validate_all_configs() -> None:
 
 
 __all__ = [
-    "ActiveBotConfig",
-    "BotConfigV1",
+    "BotConfig",
     "CFormEntry",
     "LLMConfig",
     "LimitsConfig",
     "RAGConfig",
     "CURRENT_CONFIG_SCHEMA_VERSION",
     "boot_validate_all_configs",
+    "discard_draft_for_bot",
     "get_config_for_bot",
     "get_decrypted_api_key",
+    "get_draft_for_bot",
     "save_config_for_bot",
+    "save_draft_for_bot",
     "set_api_key",
 ]
