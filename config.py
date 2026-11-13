@@ -53,7 +53,8 @@ if EMBEDDING_PROVIDER == "openai":
     )
 elif EMBEDDING_PROVIDER == "huggingface":
     try:
-        EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
+        EMBEDDING_MODEL_INSTANCE = model_pins.load_pinned(
+            SentenceTransformer,
             EMBEDDING_MODEL_NAME,
             cache_folder=SENTENCE_TRANSFORMERS_HOME,
             device="cpu",
@@ -161,8 +162,9 @@ ENABLE_RAG_HYBRID_SEARCH = os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "false").l
 RE_RANKING_MODEL = model_pins.rerank_model_name()
 if ENABLE_RAG_HYBRID_SEARCH:
     try:
-        RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
-                                        **model_pins.rerank_load_kwargs())
+        RE_RANKING_MODEL = model_pins.load_pinned(CrossEncoder, RE_RANKING_MODEL, max_length=512,
+                                                  cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
+                                                  **model_pins.rerank_load_kwargs())
     except OSError as exc:
         if not model_pins.hf_offline():
             raise
