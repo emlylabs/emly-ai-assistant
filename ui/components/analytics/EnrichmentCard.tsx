@@ -61,9 +61,9 @@ export default function EnrichmentCard({ data, rangeDays }: EnrichmentCardProps)
         </div>
       ) : optedOut ? (
         <div style={{ padding: 16, color: "var(--muted)", fontSize: 12.5 }}>
-          The Phase 8 enrichment worker hasn&apos;t classified any sessions in this
-          window. Enable <code>enrichment_enabled</code> in the bot config to
-          start populating sentiment and intent labels.
+          No conversations in this period have been analysed for sentiment and
+          intent. Analysis is off by default; turn it on for this bot to start
+          seeing results here.
         </div>
       ) : (
         <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 14 }}>

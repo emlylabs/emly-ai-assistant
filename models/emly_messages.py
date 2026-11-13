@@ -22,6 +22,7 @@ from db.db import DB
 from datetime import datetime
 
 from models.bot_impressions import Bot_Impressions
+from models.bot_channels import channel_filter
 from models.bots import Bot
 from config import IMPRESSION_USER
 
@@ -495,7 +496,7 @@ class EMLYMessagesTable:
             & (EMLYMessage.created_at <= to_date)
         )
         if channel_id:
-            base = base.where(EMLYMessage.channel_id == channel_id)
+            base = base.where(channel_filter(EMLYMessage.channel_id, channel_id))
 
         impressions = base.where(EMLYMessage.message == "VIEW_BOT").count()
         bot_impressions = Bot_Impressions.get_impressions(
@@ -586,7 +587,7 @@ class EMLYMessagesTable:
                 & (EMLYSession.started_at <= to_date)
             )
             if channel_id:
-                sess = sess.where(EMLYSession.channel_id == channel_id)
+                sess = sess.where(channel_filter(EMLYSession.channel_id, channel_id))
             sess_total = sess.count()
             if sess_total > 0:
                 sess_resolved = sess.where(EMLYSession.is_resolved == True).count()  # noqa: E712

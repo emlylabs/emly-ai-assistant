@@ -320,6 +320,14 @@ async def upload_file(
             size += len(chunk)
             out.write(chunk)
 
+    if size == 0:
+        target_path.unlink(missing_ok=True)
+        target_dir.rmdir()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The file is empty, so there is nothing to index.",
+        )
+
     # Re-validate after writing (Content-Length may have lied).
     cfg = get_config_for_bot(bot.id)
     if size > cfg.limits.max_file_size_mb * 1024 * 1024:

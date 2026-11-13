@@ -1,5 +1,6 @@
 "use client";
 
+import { channelLabel } from "@/components/ChannelChip";
 import type { ConversationSession } from "./types";
 
 type ConversationMetaProps = {
@@ -60,7 +61,7 @@ export default function ConversationMeta({ session }: ConversationMetaProps) {
         </div>
         <div className="meta-row">
           <span className="key">Channel</span>
-          <span className="val">{session.channel}</span>
+          <span className="val">{channelLabel(session.channel)}</span>
         </div>
         <div className="meta-row">
           <span className="key">Started</span>

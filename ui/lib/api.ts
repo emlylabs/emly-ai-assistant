@@ -144,6 +144,7 @@ export type EmlySession = {
 export type SessionRow = {
   session: EmlySession;
   last_message: Message | null;
+  channel_type: ChannelType;
 };
 
 export type SessionListResponse = {
@@ -156,6 +157,7 @@ export type SessionListResponse = {
 export type SessionDetailResponse = {
   session: EmlySession;
   messages: Message[];
+  channel_type: ChannelType;
 };
 
 export type SessionRatingFilter = "rated" | "unrated" | "positive" | "negative";
@@ -172,6 +174,8 @@ export type SessionListParams = {
   /** ISO-8601 datetime. */
   started_before?: string;
   rating?: SessionRatingFilter;
+  /** Free-text search across every turn of the session. */
+  q?: string;
 };
 
 export type DailyMessageBucket = {
@@ -860,11 +864,36 @@ async function request<T>(
     } catch {
       // ignore parse errors
     }
+    if (res.status === 429) {
+      message = "Too many requests. Please wait a minute and try again.";
+    } else if (res.status === 502 || res.status === 504) {
+      message = "The server is temporarily unavailable. Please try again shortly.";
+    }
     throw new ApiError(res.status, message, detail);
   }
 
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return markNaiveTimestampsUtc(await res.json()) as T;
+}
+
+// The backend stores and serialises naive UTC datetimes ("2026-11-13T10:00:00"),
+// which `new Date()` would read as browser-local time.
+const NAIVE_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+export function markNaiveTimestampsUtc(value: unknown): unknown {
+  if (typeof value === "string") {
+    return NAIVE_ISO_DATETIME.test(value) ? `${value}Z` : value;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = markNaiveTimestampsUtc(value[i]);
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    for (const k of Object.keys(obj)) obj[k] = markNaiveTimestampsUtc(obj[k]);
+    return obj;
+  }
+  return value;
 }
 
 function qs(params: Record<string, string | number | boolean | undefined | null>): string {

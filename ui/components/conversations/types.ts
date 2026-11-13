@@ -32,14 +32,6 @@ export type ConversationSession = {
   first: Message;
 };
 
-function channelKindFor(session: EmlySession): ChannelType {
-  // The session row carries a `channel_id`, but we'd need a second lookup
-  // against `bot_channel` to translate it into a `ChannelType`. For now
-  // default to web_widget — the list's `ChannelChip` styling is identical
-  // and we surface the raw `channel_id` in the meta panel.
-  return "web_widget";
-}
-
 function stubMessage(session: EmlySession): Message {
   // Used as `last`/`first` when the sessions list returns no last_message
   // (extremely rare — every session has at least one turn). Synthesises
@@ -63,7 +55,7 @@ export function fromSessionRow(row: SessionRow): ConversationSession {
   return {
     sessionId: row.session.id,
     userId: row.session.user_id || null,
-    channel: channelKindFor(row.session),
+    channel: row.channel_type ?? "web_widget",
     turnCount: row.session.turn_count,
     startedAt: row.session.started_at,
     lastActivityAt: row.session.last_activity_at,

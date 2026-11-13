@@ -141,15 +141,20 @@ class GoogleChatAdapter(ChannelAdapter):
             return None
         space = msg.get("space") or _extract_chat_space(body) or {}
         thread = msg.get("thread") or {}
-        chat_type: ChatType
-        if thread.get("name"):
-            chat_type = "thread"
-        else:
-            chat_type = "dm"
         user_external = sender.get("email") or sender.get("name") or ""
         if not user_external:
             return None
-        session_external = thread.get("name") or f"gchat-{space.get('name','')}-{user_external}"
+        # Chat assigns a fresh thread to every top-level message, so keying
+        # the session on the thread split one conversation into a session
+        # per message. The session is the space + user; the reply still
+        # lands on the thread via ``reply_handle``.
+        is_dm = (
+            space.get("type") == "DM"
+            or space.get("spaceType") == "DIRECT_MESSAGE"
+            or bool(space.get("singleUserBotDm"))
+        )
+        chat_type: ChatType = "dm" if is_dm or not thread.get("name") else "thread"
+        session_external = f"gchat-{space.get('name','')}-{user_external}"
         return IncomingMessage(
             channel_id="",
             user_external_id=user_external,

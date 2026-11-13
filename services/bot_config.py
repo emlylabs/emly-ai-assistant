@@ -147,6 +147,12 @@ class BotConfig(BaseModel):
     # mailboxes (services/widget_email.py).
     alert_email_content: Literal["full", "link_only"] = "full"
 
+    # Admin-authored instructions for summarising transcripts in reports.
+    report_analysis_prompt: Optional[str] = None
+
+    # Opt-in for the sentiment / intent classifier (services/enrichment.py).
+    enrichment_enabled: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Lazy upgrade chain

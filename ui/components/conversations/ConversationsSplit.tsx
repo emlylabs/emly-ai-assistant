@@ -58,8 +58,25 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeDetail, setActiveDetail] = useState<ConversationSession | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
 
-  const filterQuery = useMemo(() => filtersToQuery(filters), [filters]);
+  useEffect(() => {
+    const next = searchInput.trim();
+    if (next === search) return;
+    const t = setTimeout(() => {
+      setSearch(next);
+      setPage(0);
+      setActiveSessionId(null);
+      setActiveDetail(null);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput, search]);
+
+  const filterQuery = useMemo(
+    () => ({ ...filtersToQuery(filters), ...(search ? { q: search } : {}) }),
+    [filters, search],
+  );
 
   const writeUrl = useCallback(
     (nextFilters: ConversationFilters, nextPage: number) => {
@@ -162,7 +179,9 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
       try {
         const res = await api.getBotSession(bot.slug, activeSessionId);
         if (seq !== detailSeq.current) return;
-        setActiveDetail(withDetail(base, res.messages));
+        setActiveDetail(
+          withDetail({ ...base, channel: res.channel_type ?? base.channel }, res.messages),
+        );
       } catch (err: unknown) {
         if (seq !== detailSeq.current) return;
         // Keep the stub on failure — it still renders header info — and
@@ -211,6 +230,8 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
           activeSessionId={activeSessionId}
           onSelect={setActiveSessionId}
           loading={loading && sessions.length === 0}
+          query={searchInput}
+          onQueryChange={setSearchInput}
         />
         <ConversationThread bot={bot} session={activeDetail} />
         <ConversationMeta session={activeDetail} />

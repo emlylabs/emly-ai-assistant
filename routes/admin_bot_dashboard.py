@@ -18,9 +18,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from playhouse.shortcuts import model_to_dict
 from pydantic import BaseModel, Field
+from pydantic import ValidationError as PydanticValidationError
 
 from models.admin_bot_memberships import AdminBotMemberships, ROLES
 from models.admin_users import AdminUserModel, AdminUsers
+from models.bot_channels import DEFAULT_WIDGET_CHANNEL_ID, channel_filter
 from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
@@ -35,6 +37,7 @@ from services.bot_config import (
     set_api_key,
 )
 from services.config_validation import (
+    FIELD_FORMAT_RULE_PREFIXES,
     Issue,
     ValidationContext,
     count_by_severity,
@@ -285,7 +288,7 @@ def bot_messages_by_model(
         & (EMLYMessage.model_used.is_null(False))
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
     rows = (
         EMLYMessage.select(
             EMLYMessage.model_used,
@@ -348,7 +351,7 @@ def bot_funnel(
         & (EMLYSession.started_at <= end)
     )
     if channel_id:
-        in_window = in_window & (EMLYSession.channel_id == channel_id)
+        in_window = in_window & channel_filter(EMLYSession.channel_id, channel_id)
 
     started = EMLYSession.select().where(in_window).count()
 
@@ -426,7 +429,7 @@ def bot_messages_by_topic(
         & (EMLYMessage.created_at <= end)
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
     rows = (
         EMLYMessage.select(
             EMLYMessage.topic,
@@ -486,7 +489,7 @@ def bot_messages_daily(
         & (EMLYMessage.created_at <= end)
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
 
     user_counts: dict[str, int] = {}
     asst_counts: dict[str, int] = {}
@@ -540,10 +543,9 @@ def bot_get_report(
 # Channel-mix breakdown
 # ---------------------------------------------------------------------------
 class MessageCountByChannel(BaseModel):
-    """Per-channel message tally over a window. ``channel_id`` is null
-    for legacy rows that pre-date Phase 3 channel threading; the UI
-    surfaces those as `[unattributed]` so the share doesn't get folded
-    into whichever channel happens to come first alphabetically."""
+    """Per-channel message tally over a window. Messages stored without a
+    channel id are widget traffic and are reported under
+    ``DEFAULT_WIDGET_CHANNEL_ID``, which the channel filters accept."""
 
     channel_id: Optional[str] = None
     channel_type: Optional[str] = None
@@ -605,7 +607,16 @@ def bot_messages_by_channel(
 
     out: List[MessageCountByChannel] = []
     for channel_id, count in counts:
-        ch = meta.get(channel_id) if channel_id else None
+        if not channel_id:
+            out.append(
+                MessageCountByChannel(
+                    channel_id=DEFAULT_WIDGET_CHANNEL_ID,
+                    channel_type="web_widget",
+                    count=count,
+                )
+            )
+            continue
+        ch = meta.get(channel_id)
         out.append(
             MessageCountByChannel(
                 channel_id=channel_id,
@@ -670,7 +681,7 @@ def bot_enrichment_summary(
         & (EMLYSession.started_at <= end)
     )
     if channel_id:
-        in_window = in_window & (EMLYSession.channel_id == channel_id)
+        in_window = in_window & channel_filter(EMLYSession.channel_id, channel_id)
 
     cohort_size = EMLYSession.select().where(in_window).count()
     enriched_count = (
@@ -766,7 +777,7 @@ def bot_citation_stats(
         & (EMLYMessage.created_at <= end)
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
 
     assistant_turns = EMLYMessage.select().where(where).count()
     with_citations = 0
@@ -860,7 +871,7 @@ def bot_latency_quantiles(
         & (EMLYMessage.response_time_ms.is_null(False))
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
 
     rows = (
         EMLYMessage.select(EMLYMessage.response_time_ms)
@@ -924,7 +935,7 @@ def bot_messages_heatmap(
         & (EMLYMessage.created_at <= end)
     )
     if channel_id:
-        where = where & (EMLYMessage.channel_id == channel_id)
+        where = where & channel_filter(EMLYMessage.channel_id, channel_id)
 
     grid = [[0] * 24 for _ in range(7)]
     rows = EMLYMessage.select(EMLYMessage.created_at).where(where)
@@ -1310,8 +1321,41 @@ def bot_put_config(
         except Exception:
             log.exception("audit emit failed for config.save.forced bot=%s", bot.id)
 
+    # Malformed field values (bad email / URL / colour, out-of-range
+    # numbers) are blocked regardless of the workspace gate and of
+    # ``force``: they are never a deliberate choice.
+    format_issues = [
+        i for i in validate_config(payload.config)
+        if i.severity == "error" and i.key.startswith(FIELD_FORMAT_RULE_PREFIXES)
+    ]
+    if format_issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "validation_failed",
+                "message": (
+                    f"Save blocked — {len(format_issues)} invalid value"
+                    f"{'s' if len(format_issues) != 1 else ''}: "
+                    + " ".join(i.message for i in format_issues)
+                ),
+                "issues": [i.to_dict() for i in format_issues],
+                "can_force": False,
+            },
+        )
+
     before_config = dict(bot.config_json or {})
-    save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
+    try:
+        save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
+    except PydanticValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "invalid_config",
+                "message": "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
+                ),
+            },
+        )
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
@@ -1361,8 +1405,13 @@ def bot_put_config_draft(
     # Draft writes don't bump ``config_version`` and don't need
     # optimistic-concurrency: the only thing they overwrite is the
     # per-bot single-slot draft, and the editor is the only writer.
+    before_draft = dict(bot.config_draft_json or bot.config_json or {})
     save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
     refreshed = Bots.get_by_id(bot.id)
+    _audit_config_change(
+        "config.draft.saved", admin, bot, before_draft,
+        refreshed.config_draft_json if refreshed else payload.config,
+    )
     return _build_config_response(refreshed or bot)
 
 

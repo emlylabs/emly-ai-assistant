@@ -154,7 +154,7 @@ export default function ConversationThread({ bot, session }: ConversationThreadP
       </div>
 
       <div className="thread-input">
-        <input type="text" placeholder="Live reply coming soon" disabled />
+        <input type="text" aria-label="Reply" placeholder="Live reply coming soon" disabled />
         <button className="compact" disabled title="Live reply coming soon">
           Send
         </button>

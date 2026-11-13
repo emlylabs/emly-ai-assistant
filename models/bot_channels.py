@@ -35,6 +35,20 @@ log = logging.getLogger(__name__)
 
 CHANNEL_TYPES = ("web_widget", "google_chat", "slack", "teams", "telegram", "whatsapp_cloud")
 
+# Widget chats for a bot without a web_widget install row are stored with
+# ``channel_id`` NULL (adapter channels always carry their row id). Analytics
+# reports that bucket under this pseudo channel id so it can be labelled and
+# filtered like any other channel.
+DEFAULT_WIDGET_CHANNEL_ID = "web_widget"
+
+
+def channel_filter(field, channel_id: str):
+    """Peewee clause matching ``field`` against a channel id, mapping
+    ``DEFAULT_WIDGET_CHANNEL_ID`` to the NULL bucket."""
+    if channel_id == DEFAULT_WIDGET_CHANNEL_ID:
+        return field.is_null(True)
+    return field == channel_id
+
 
 class BotChannel(Model):
     id = CharField(max_length=255, primary_key=True)

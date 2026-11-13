@@ -862,6 +862,29 @@ function SaveAsWorkspaceTemplateModal({
 // ---------------------------------------------------------------------------
 // Identity tab
 // ---------------------------------------------------------------------------
+type AccountRow = { platform: string; value: string; icon: string };
+
+function accountRowsFrom(accounts: Record<string, any>): AccountRow[] {
+  return Object.entries(accounts).map(([k, v]) => ({
+    platform: k,
+    value: v && typeof v === "object" ? String((v as any).value ?? "") : String(v ?? ""),
+    icon: v && typeof v === "object" ? String((v as any).icon ?? "") : "",
+  }));
+}
+
+function accountDictFrom(rows: AccountRow[]): Record<string, { value: string; icon?: string }> {
+  const dict: Record<string, { value: string; icon?: string }> = {};
+  for (const { platform, value, icon } of rows) {
+    const key = platform.trim();
+    if (!key) continue;
+    const entry: { value: string; icon?: string } = { value };
+    const trimmedIcon = icon.trim();
+    if (trimmedIcon) entry.icon = trimmedIcon;
+    dict[key] = entry;
+  }
+  return dict;
+}
+
 function IdentitySection({
   config,
   patchPath,
@@ -881,26 +904,26 @@ function IdentitySection({
     config.social_handles && typeof config.social_handles === "object" && !Array.isArray(config.social_handles)
       ? (config.social_handles.accounts && typeof config.social_handles.accounts === "object" ? config.social_handles.accounts : {})
       : {};
-  const accountEntries = Object.entries(accounts).map(([k, v]) => ({
-    platform: k,
-    value: v && typeof v === "object" ? String((v as any).value ?? "") : String(v ?? ""),
-    icon: v && typeof v === "object" ? String((v as any).icon ?? "") : "",
-  }));
   const termsBody: string =
     config.terms_of_service && typeof config.terms_of_service === "object" && !Array.isArray(config.terms_of_service)
       ? String((config.terms_of_service as any).terms ?? "")
       : "";
 
-  function setAccounts(next: { platform: string; value: string; icon: string }[]) {
-    const dict: Record<string, { value: string; icon?: string }> = {};
-    for (const { platform, value, icon } of next) {
-      const key = platform.trim();
-      if (!key) continue;
-      const entry: { value: string; icon?: string } = { value };
-      const trimmedIcon = icon.trim();
-      if (trimmedIcon) entry.icon = trimmedIcon;
-      dict[key] = entry;
-    }
+  // Rows live in local state so a freshly added row (no platform key yet)
+  // stays visible; only rows with a platform key are written to config.
+  const accountsKey = JSON.stringify(accounts);
+  const [accountEntries, setAccountEntries] = useState<AccountRow[]>(() => accountRowsFrom(accounts));
+  useEffect(() => {
+    // Re-seed when the stored accounts change from outside (load, discard, undo).
+    setAccountEntries((rows) =>
+      JSON.stringify(accountDictFrom(rows)) === accountsKey ? rows : accountRowsFrom(JSON.parse(accountsKey)),
+    );
+  }, [accountsKey]);
+
+  function setAccounts(next: AccountRow[]) {
+    setAccountEntries(next);
+    const dict = accountDictFrom(next);
+    if (JSON.stringify(dict) === accountsKey) return;
     patchPath(["social_handles", "accounts"], Object.keys(dict).length ? dict : undefined);
   }
 

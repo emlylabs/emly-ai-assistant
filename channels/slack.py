@@ -159,7 +159,12 @@ class SlackAdapter(ChannelAdapter):
             return None
 
         channel_external = event.get("channel")
-        session_external_id = f"{channel_external}:{thread_ts or ts}"
+        # A top-level message's ``ts`` (and, in channels, a missing
+        # ``thread_ts``) used to mint a new session per message, so a
+        # multi-step lead was split across sessions. One session per user
+        # per Slack channel; ``reply_handle`` still targets the thread.
+        who = event.get("user") or "unknown"
+        session_external_id = f"{channel_external}:{who}"
 
         return IncomingMessage(
             channel_id="",

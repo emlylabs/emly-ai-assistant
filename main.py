@@ -297,6 +297,16 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_exceeded_handler(request, exc: RateLimitExceeded):
+    from services.auth.error_page import error_page, wants_html
+
+    if wants_html(request):
+        return error_page(
+            "Too many sign-in attempts",
+            "You've tried to sign in too many times in a short period. "
+            "Please wait a minute and try again.",
+            status_code=429,
+            retry_after=60,
+        )
     return JSONResponse({"detail": {"code": "rate_limited", "limit": str(exc.detail)}}, status_code=429)
 app.include_router(chat.router, prefix="", tags=["widget"], include_in_schema=False)
 app.include_router(admin_admins.router, prefix="/api/admin", tags=["admin-mgmt"])
@@ -718,9 +728,18 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # `<tab>.txt`, ...). Without this, RSC fetches during client-side
     # navigation fall through to index.html, Next gives up on the soft
     # nav, and the whole shell remounts on every menu click.
+    # `/admins/<admin_id>` follows the same pattern; its static siblings
+    # (`/admins/me`, `/admins/audit`) were already served by the literal
+    # `.html` lookup above.
     parts = rel_path.split("/") if rel_path else []
+    rewritten = None
     if len(parts) >= 3 and parts[0] == "bots":
         rewritten = "/".join(["bots", "_", *parts[2:]])
+    elif len(parts) >= 2 and parts[0] == "admins" and parts[1]:
+        # Keep any extension so `/admins/<id>.txt` maps to `/admins/_.txt`.
+        _, dot, ext = parts[1].partition(".")
+        rewritten = "/".join(["admins", f"_{dot}{ext}", *parts[2:]])
+    if rewritten is not None:
         literal = (_UI_DIR / rewritten).resolve()
         if _UI_DIR.resolve() in literal.parents and literal.is_file():
             return FileResponse(literal)

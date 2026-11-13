@@ -19,6 +19,11 @@ const PALETTE: Record<ChannelType, { letter: string; cls: string; label: string 
   google_chat: { letter: "G", cls: "ch-api", label: "Google Chat" },
 };
 
+/** Human-readable name for a channel type; unknown types pass through. */
+export function channelLabel(kind: string): string {
+  return PALETTE[kind as ChannelType]?.label ?? kind;
+}
+
 /**
  * Single-letter coloured tile keyed by channel kind. Used inside table rows
  * and conversation list items where space is tight. The letter is short on

@@ -263,6 +263,145 @@ export function validateConfig(config: Cfg, ctx: ValidationContext = {}): Issue[
     });
   }
 
+  issues.push(...fieldFormatIssues(config));
+  return issues;
+}
+
+// Field-format rules (R16–R23). The server always blocks save on these.
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const FUNC_COLOR_RE = /^(?:rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/+-]+\)$/i;
+const THEME_COLOR_FIELDS: [string, string][] = [
+  ["launcher_background", "Launcher background"],
+  ["container_background", "Container background"],
+  ["header_background", "Header background"],
+  ["header_foreground", "Header foreground"],
+  ["user_message_background", "User message background"],
+  ["user_message_foreground", "User message foreground"],
+  ["bot_message_background", "Bot message background"],
+  ["bot_message_foreground", "Bot message foreground"],
+];
+
+export function isHttpUrl(value: string): boolean {
+  if (!value || /\s/.test(value)) return false;
+  try {
+    const u = new URL(value);
+    return (u.protocol === "http:" || u.protocol === "https:") && !!u.hostname;
+  } catch {
+    return false;
+  }
+}
+
+export function isValidColor(value: string): boolean {
+  const v = value.trim();
+  return v.toLowerCase() === "transparent" || HEX_COLOR_RE.test(v) || FUNC_COLOR_RE.test(v);
+}
+
+function present(v: unknown): boolean {
+  return v !== undefined && v !== null && !(typeof v === "string" && !v.trim());
+}
+
+function inRange(v: unknown, lo: number, hi: number): boolean {
+  const n = num(v);
+  return n !== undefined && n >= lo && n <= hi;
+}
+
+function fieldFormatIssues(config: Cfg): Issue[] {
+  const issues: Issue[] = [];
+  const widget = asObj(config.widget);
+  const theme = asObj(widget.theme);
+  const llm = asObj(config.llm);
+  const rag = asObj(config.rag);
+  const limits = asObj(config.limits);
+
+  if (present(config.support_email)) {
+    const bad = String(config.support_email)
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => !EMAIL_RE.test(p));
+    if (bad.length > 0) {
+      issues.push({
+        severity: "error",
+        key: "R16_invalid_support_email",
+        section: "identity",
+        message: `Support email "${bad[0]}" is not a valid email address.`,
+      });
+    }
+  }
+
+  if (present(widget.logo)) {
+    const logo = String(widget.logo);
+    if (!isHttpUrl(logo) && !logo.startsWith("data:image/")) {
+      issues.push({
+        severity: "error",
+        key: "R17_invalid_logo_url",
+        section: "identity",
+        message: "Logo URL must be a full http:// or https:// address.",
+      });
+    }
+  }
+
+  for (const [field, label] of THEME_COLOR_FIELDS) {
+    const color = theme[field];
+    if (present(color) && !isValidColor(String(color))) {
+      issues.push({
+        severity: "error",
+        key: `R18_invalid_color_${field}`,
+        section: "widget",
+        message: `${label} "${String(color)}" is not a colour. Use a hex value like #1a73e8, rgb(…), or transparent.`,
+      });
+    }
+  }
+
+  if (present(llm.api_endpoint) && !isHttpUrl(String(llm.api_endpoint))) {
+    issues.push({
+      severity: "error",
+      key: "R19_invalid_api_endpoint",
+      section: "llm",
+      message: "API endpoint must be a full http:// or https:// address.",
+    });
+  }
+
+  if (llm.temperature !== undefined && llm.temperature !== null && !inRange(llm.temperature, 0, 2)) {
+    issues.push({
+      severity: "error",
+      key: "R20_temperature_range",
+      section: "llm",
+      message: "Temperature must be between 0 and 2.",
+    });
+  }
+  if (rag.top_k !== undefined && rag.top_k !== null && !inRange(rag.top_k, 1, 50)) {
+    issues.push({
+      severity: "error",
+      key: "R21_top_k_range",
+      section: "rag",
+      message: "Top K must be between 1 and 50.",
+    });
+  }
+  if (
+    rag.embedding_threshold !== undefined &&
+    rag.embedding_threshold !== null &&
+    !inRange(rag.embedding_threshold, 0, 1)
+  ) {
+    issues.push({
+      severity: "error",
+      key: "R22_threshold_range",
+      section: "rag",
+      message: "Score threshold must be between 0 and 1.",
+    });
+  }
+  if (
+    limits.max_file_size_mb !== undefined &&
+    limits.max_file_size_mb !== null &&
+    !inRange(limits.max_file_size_mb, 1, Number.POSITIVE_INFINITY)
+  ) {
+    issues.push({
+      severity: "error",
+      key: "R23_max_file_size_range",
+      section: "limits",
+      message: "Max file size must be at least 1 MB.",
+    });
+  }
   return issues;
 }
 

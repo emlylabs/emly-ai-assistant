@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import ChannelChip from "@/components/ChannelChip";
 import StatusPill from "@/components/StatusPill";
@@ -14,32 +13,24 @@ type ConversationsListProps = {
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
   loading?: boolean;
+  query: string;
+  onQueryChange: (next: string) => void;
 };
 
 /**
- * Left pane of the 3-pane conversation view. Filters client-side by message
- * preview / user id; selecting a row notifies the parent which loads the
- * thread + meta panes from the same session bucket.
+ * Left pane of the 3-pane conversation view. The search box is controlled
+ * by the parent, which sends it to the sessions endpoint so every turn of
+ * every session is searched (not just the loaded previews); selecting a row
+ * notifies the parent which loads the thread + meta panes.
  */
 export default function ConversationsList({
   sessions,
   activeSessionId,
   onSelect,
   loading = false,
+  query,
+  onQueryChange,
 }: ConversationsListProps) {
-  const [query, setQuery] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return sessions;
-    return sessions.filter(
-      (s) =>
-        (s.last.message ?? "").toLowerCase().includes(q) ||
-        (s.userId ?? "").toLowerCase().includes(q) ||
-        s.sessionId.toLowerCase().includes(q),
-    );
-  }, [sessions, query]);
-
   return (
     <div className="conv-list">
       <div className="conv-list-header">
@@ -47,8 +38,9 @@ export default function ConversationsList({
         <input
           type="search"
           placeholder="Search transcripts…"
+          aria-label="Search transcripts"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
         />
       </div>
 
@@ -56,12 +48,12 @@ export default function ConversationsList({
         <div style={{ padding: 18, color: "var(--muted)", fontSize: 12.5 }}>
           Loading conversations…
         </div>
-      ) : filtered.length === 0 ? (
+      ) : sessions.length === 0 ? (
         <div style={{ padding: 18, color: "var(--muted)", fontSize: 12.5 }}>
           {query ? "No matches." : "No conversations yet."}
         </div>
       ) : (
-        filtered.map((s) => {
+        sessions.map((s) => {
           const isActive = s.sessionId === activeSessionId;
           const lastTime = s.lastActivityAt ? new Date(s.lastActivityAt).getTime() : 0;
           const recent = lastTime > Date.now() - ACTIVE_WINDOW_MS;

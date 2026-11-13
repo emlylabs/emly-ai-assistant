@@ -310,9 +310,23 @@ class WorkspaceBotSummary(BaseModel):
 # Cached compute window. The summary endpoint is hit on every page load
 # of /bots; without a cache the per-bot aggregations dominate Postgres
 # CPU on multi-bot workspaces. 60s is acceptable freshness for a dense
-# overview table; users can pull-to-refresh in the UI to bypass.
-_SUMMARY_CACHE: dict[str, tuple[float, list[WorkspaceBotSummary]]] = {}
+# overview table. Each entry also records which bots it covers, and is
+# only reused while that set is unchanged, so a create / delete / restore
+# / membership change shows up immediately on every worker.
+_SUMMARY_CACHE: dict[str, tuple[float, tuple[str, ...], list[WorkspaceBotSummary]]] = {}
 _SUMMARY_TTL = 60.0
+
+
+def _live_bot_ids_for(admin_id: str) -> tuple[str, ...]:
+    from models.bots import Bot
+
+    ids = [m.bot_id for m in AdminBotMemberships.list_for_admin(admin_id)]
+    if not ids:
+        return ()
+    rows = Bot.select(Bot.id).where(
+        Bot.id.in_(ids) & (Bot.is_deleted == False)  # noqa: E712
+    )
+    return tuple(sorted(r.id for r in rows))
 
 
 @router.get("/bots/summary", response_model=List[WorkspaceBotSummary])
@@ -326,9 +340,10 @@ def list_bots_summary(admin: AdminUserModel = Depends(get_admin)):
     import time as _time
 
     cache_key = admin.id
+    live_ids = _live_bot_ids_for(admin.id)
     cached = _SUMMARY_CACHE.get(cache_key)
-    if cached and (_time.time() - cached[0]) < _SUMMARY_TTL:
-        return cached[1]
+    if cached and (_time.time() - cached[0]) < _SUMMARY_TTL and cached[1] == live_ids:
+        return cached[2]
 
     from datetime import timedelta
 
@@ -404,7 +419,7 @@ def list_bots_summary(admin: AdminUserModel = Depends(get_admin)):
                 updated_at=bot.updated_at,
             )
         )
-    _SUMMARY_CACHE[cache_key] = (_time.time(), summaries)
+    _SUMMARY_CACHE[cache_key] = (_time.time(), live_ids, summaries)
     return summaries
 
 

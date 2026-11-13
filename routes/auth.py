@@ -264,6 +264,44 @@ def _is_safe_return_to(target: str) -> bool:
     return target.startswith("/") and not target.startswith("//")
 
 
+_AUTH_ERROR_COPY = {
+    "idp_unavailable": (
+        "Sign-in is temporarily unavailable",
+        "We couldn't reach the sign-in service. Please try again in a minute.",
+    ),
+    "callback_state_invalid_or_expired": (
+        "Your sign-in link expired",
+        "The sign-in took too long or was opened in another tab. Please start again.",
+    ),
+    "email_linked_to_other_provider": (
+        "This email uses a different sign-in method",
+        "Your email is already linked to another sign-in provider. Sign in with that provider instead.",
+    ),
+    "email_not_verified": (
+        "Email not verified",
+        "Please verify your email address with the sign-in provider, then try again.",
+    ),
+    "account_disabled": (
+        "Account disabled",
+        "Your admin account has been disabled. Ask a workspace admin to re-enable it.",
+    ),
+}
+
+
+def _auth_error(request: Request, status_code: int, detail: dict):
+    """JSON for API callers; a readable page for a browser navigating the
+    sign-in flow."""
+    from services.auth.error_page import error_page, wants_html
+
+    if not wants_html(request):
+        return JSONResponse({"detail": detail}, status_code=status_code)
+    title, message = _AUTH_ERROR_COPY.get(
+        detail.get("code", ""),
+        ("Sign-in failed", "Something went wrong while signing you in. Please try again."),
+    )
+    return error_page(title, message, status_code=status_code)
+
+
 # -------- routes --------
 
 
@@ -306,9 +344,13 @@ async def login(
                 oauth_state.state, host, _TENANT_CALLBACK_PATH, secret
             )
 
-    url = provider.authorize_url(
-        oauth_state, _redirect_uri(request), state_override=state_override
-    )
+    try:
+        url = provider.authorize_url(
+            oauth_state, _redirect_uri(request), state_override=state_override
+        )
+    except Exception:
+        log.exception("Could not build the IdP authorize URL (sign-in server unreachable?)")
+        return _auth_error(request, 502, {"code": "idp_unavailable"})
     return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
@@ -325,24 +367,15 @@ async def callback(
     if error:
         log.warning("OIDC callback returned error=%s description=%s", error, request.query_params.get("error_description"))
         audit("auth.idp_error", request=request, success=False, payload={"error": error})
-        return JSONResponse(
-            {"detail": {"code": "idp_error", "error": error}},
-            status_code=400,
-        )
+        return _auth_error(request, 400, {"code": "idp_error", "error": error})
     if not state_token or not code:
         audit("auth.callback_invalid", request=request, success=False, payload={"reason": "missing_state_or_code"})
-        return JSONResponse(
-            {"detail": {"code": "missing_state_or_code"}},
-            status_code=400,
-        )
+        return _auth_error(request, 400, {"code": "missing_state_or_code"})
 
     oauth_state = get_state_store().pop(state_token)
     if oauth_state is None:
         audit("auth.callback_state_invalid", request=request, success=False)
-        return JSONResponse(
-            {"detail": {"code": "callback_state_invalid_or_expired"}},
-            status_code=400,
-        )
+        return _auth_error(request, 400, {"code": "callback_state_invalid_or_expired"})
 
     try:
         # exchange_code uses a sync httpx client. When AUTH_OIDC_ISSUER points
@@ -356,13 +389,10 @@ async def callback(
     except InvalidTokenError as e:
         log.warning("OIDC code exchange failed: %s", e)
         audit("auth.code_exchange_failed", request=request, success=False, payload={"err": str(e)})
-        return JSONResponse(
-            {"detail": {"code": "code_exchange_failed", "message": str(e)}},
-            status_code=400,
-        )
+        return _auth_error(request, 400, {"code": "code_exchange_failed", "message": str(e)})
     except AuthError as e:
         audit("auth.idp_error", request=request, success=False, payload={"err": str(e)})
-        return JSONResponse({"detail": {"code": "idp_error", "message": str(e)}}, status_code=400)
+        return _auth_error(request, 400, {"code": "idp_error", "message": str(e)})
 
     # Resolve / create the admin row. AdminNotProvisioned etc. are mapped here
     # to a redirect at the UI; we render a plain JSON body and let the UI
@@ -386,24 +416,15 @@ async def callback(
     except EmailLinkedToOtherProvider:
         audit("auth.relink_refused", request=request, success=False,
               payload={"email": principal.email, "issuer": principal.issuer})
-        return JSONResponse(
-            {"detail": {"code": "email_linked_to_other_provider"}},
-            status_code=401,
-        )
+        return _auth_error(request, 401, {"code": "email_linked_to_other_provider"})
     except EmailNotVerified:
         audit("auth.email_not_verified", request=request, success=False,
               payload={"email": principal.email, "issuer": principal.issuer})
-        return JSONResponse(
-            {"detail": {"code": "email_not_verified", "email": principal.email}},
-            status_code=401,
-        )
+        return _auth_error(request, 401, {"code": "email_not_verified", "email": principal.email})
 
     if not admin.is_active:
         audit("auth.account_disabled", admin_id=admin.id, request=request, success=False)
-        return JSONResponse(
-            {"detail": {"code": "account_disabled"}},
-            status_code=403,
-        )
+        return _auth_error(request, 403, {"code": "account_disabled"})
 
     target = oauth_state.return_to or _post_login_default(request)
     # If this admin has any new-style space invites still pending, send

@@ -28,6 +28,7 @@ from playhouse.shortcuts import model_to_dict
 from pydantic import BaseModel
 
 from db.db import DB
+from models.bot_channels import channel_filter
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ):
         """Shared filter application for list_for_bot / count_for_bot.
 
@@ -194,12 +196,33 @@ class EMLYSessionsTable:
         an ``IN (SELECT session_id ...)`` subquery so the session list can
         be narrowed to sessions that have (or lack) ratings of a given
         polarity without denormalising rating state onto the session row.
+        ``search`` matches any turn (user or assistant) plus the session
+        and user ids, case-insensitively.
         """
         q = q.where(EMLYSession.bot_id == bot_id)
         if channel_id is not None:
-            q = q.where(EMLYSession.channel_id == channel_id)
-        if is_resolved is not None:
-            q = q.where(EMLYSession.is_resolved == is_resolved)
+            q = q.where(channel_filter(EMLYSession.channel_id, channel_id))
+        if is_resolved is True:
+            q = q.where(EMLYSession.is_resolved == True)  # noqa: E712
+        elif is_resolved is False:
+            # Sessions nobody has marked yet carry NULL and count as unresolved.
+            q = q.where(
+                (EMLYSession.is_resolved == False)  # noqa: E712
+                | EMLYSession.is_resolved.is_null(True)
+            )
+        if search:
+            from models.emly_messages import EMLYMessage
+
+            term = search.strip()
+            if term:
+                matching = EMLYMessage.select(EMLYMessage.session_id).where(
+                    (EMLYMessage.bot == bot_id) & EMLYMessage.message.contains(term)
+                )
+                q = q.where(
+                    EMLYSession.id.in_(matching)
+                    | EMLYSession.id.contains(term)
+                    | EMLYSession.user_id.contains(term)
+                )
         if session_id is not None:
             q = q.where(EMLYSession.id == session_id)
         if user_id is not None:
@@ -241,6 +264,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> List[EMLYSessionModel]:
         """Return sessions newest-first (last_activity_at desc)."""
         q = self._apply_filters(
@@ -253,6 +277,7 @@ class EMLYSessionsTable:
             started_after=started_after,
             started_before=started_before,
             rating=rating,
+            search=search,
         )
         q = q.order_by(EMLYSession.last_activity_at.desc()).offset(skip).limit(limit)
         return [_row_to_model(r) for r in q]
@@ -268,6 +293,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> int:
         q = self._apply_filters(
             EMLYSession.select(),
@@ -279,6 +305,7 @@ class EMLYSessionsTable:
             started_after=started_after,
             started_before=started_before,
             rating=rating,
+            search=search,
         )
         return q.count()
 

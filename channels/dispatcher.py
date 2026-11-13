@@ -440,6 +440,7 @@ async def handle_inbound(
     install_key = channel.external_id
     user_id = emly_id_for(bot_id, install_key, incoming.user_external_id)
     session_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
+    await run_in_threadpool(_ensure_end_user, bot_id, user_id, channel)
 
     reply_mode = _resolve_reply_mode(channel, adapter)
 
@@ -538,6 +539,28 @@ async def handle_inbound(
         dedupe_key,
     )
     return JSONResponse(content=adapter.async_ack_body)
+
+
+def _ensure_end_user(bot_id: str, user_id: str, channel: BotChannelModel) -> None:
+    """Create the bot-user row for a chat-app sender on first contact, the
+    way the widget chat route does for website visitors. Best-effort: a
+    failure here must not stop the reply."""
+    from models.emly_users import EMLYUsers
+
+    try:
+        if EMLYUsers.get_user_by_id(bot_id, user_id) is not None:
+            return
+        EMLYUsers.insert_new_user(
+            bot_id=bot_id,
+            id=user_id,
+            first_name=None, last_name=None, email=None, phone=None,
+            ip="",
+            browser=channel.type,
+            meta={"channel": channel.type, "channel_id": channel.id},
+        )
+    except Exception:
+        # Includes losing a concurrent-insert race, which is harmless.
+        log.warning("Could not create end-user for bot=%s channel=%s", bot_id, channel.id, exc_info=True)
 
 
 async def _run_agent(bot_id: str, user_id: str, session_id: str, text: str, channel_id: Optional[str] = None) -> OutgoingMessage:

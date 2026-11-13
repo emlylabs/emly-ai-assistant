@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -468,6 +470,127 @@ def _run_config_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[Is
             message="Visitors will land on a blank chat with no welcome message and no skills.",
         ))
 
+    issues.extend(_field_format_issues(config))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Field-format rules (R16–R23). Malformed single values; the save route
+# always blocks on these, independent of the workspace save gate.
+# ---------------------------------------------------------------------------
+FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_")
+
+_EMAIL_RE = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_FUNC_COLOR_RE = re.compile(r"^(?:rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/+-]+\)$", re.IGNORECASE)
+_THEME_COLOR_FIELDS = (
+    ("launcher_background", "Launcher background"),
+    ("container_background", "Container background"),
+    ("header_background", "Header background"),
+    ("header_foreground", "Header foreground"),
+    ("user_message_background", "User message background"),
+    ("user_message_foreground", "User message foreground"),
+    ("bot_message_background", "Bot message background"),
+    ("bot_message_foreground", "Bot message foreground"),
+)
+
+
+def is_http_url(value: str) -> bool:
+    """``http(s)://`` with a host and no whitespace."""
+    if not value or any(c.isspace() for c in value):
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def is_valid_color(value: str) -> bool:
+    v = value.strip()
+    return v.lower() == "transparent" or bool(_HEX_COLOR_RE.match(v)) or bool(_FUNC_COLOR_RE.match(v))
+
+
+def _present(v: Any) -> bool:
+    return v is not None and not (isinstance(v, str) and not v.strip())
+
+
+def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
+    issues: List[Issue] = []
+    widget = _as_obj(config.get("widget"))
+    theme = _as_obj(widget.get("theme"))
+    llm = _as_obj(config.get("llm"))
+    rag = _as_obj(config.get("rag"))
+    limits = _as_obj(config.get("limits"))
+
+    support_email = config.get("support_email")
+    if _present(support_email):
+        bad = [p.strip() for p in str(support_email).split(",") if not _EMAIL_RE.match(p.strip())]
+        if bad:
+            issues.append(Issue(
+                severity="error",
+                key="R16_invalid_support_email",
+                section="identity",
+                message=f'Support email "{bad[0]}" is not a valid email address.',
+            ))
+
+    logo = widget.get("logo")
+    if _present(logo) and not (is_http_url(str(logo)) or str(logo).startswith("data:image/")):
+        issues.append(Issue(
+            severity="error",
+            key="R17_invalid_logo_url",
+            section="identity",
+            message="Logo URL must be a full http:// or https:// address.",
+        ))
+
+    for field, label in _THEME_COLOR_FIELDS:
+        color = theme.get(field)
+        if _present(color) and not is_valid_color(str(color)):
+            issues.append(Issue(
+                severity="error",
+                key=f"R18_invalid_color_{field}",
+                section="widget",
+                message=f'{label} "{color}" is not a colour. Use a hex value like #1a73e8, rgb(…), or transparent.',
+            ))
+
+    endpoint = llm.get("api_endpoint")
+    if _present(endpoint) and not is_http_url(str(endpoint)):
+        issues.append(Issue(
+            severity="error",
+            key="R19_invalid_api_endpoint",
+            section="llm",
+            message="API endpoint must be a full http:// or https:// address.",
+        ))
+
+    def _range(value: Any, lo: float, hi: float) -> bool:
+        n = _as_num(value)
+        return n is not None and lo <= n <= hi
+
+    if llm.get("temperature") is not None and not _range(llm.get("temperature"), 0, 2):
+        issues.append(Issue(
+            severity="error",
+            key="R20_temperature_range",
+            section="llm",
+            message="Temperature must be between 0 and 2.",
+        ))
+    if rag.get("top_k") is not None and not _range(rag.get("top_k"), 1, 50):
+        issues.append(Issue(
+            severity="error",
+            key="R21_top_k_range",
+            section="rag",
+            message="Top K must be between 1 and 50.",
+        ))
+    if rag.get("embedding_threshold") is not None and not _range(rag.get("embedding_threshold"), 0, 1):
+        issues.append(Issue(
+            severity="error",
+            key="R22_threshold_range",
+            section="rag",
+            message="Score threshold must be between 0 and 1.",
+        ))
+    if limits.get("max_file_size_mb") is not None and not _range(limits.get("max_file_size_mb"), 1, float("inf")):
+        issues.append(Issue(
+            severity="error",
+            key="R23_max_file_size_range",
+            section="limits",
+            message="Max file size must be at least 1 MB.",
+        ))
     return issues
 
 
@@ -570,6 +693,7 @@ def probe_bot_api_key(bot_id: str) -> bool:
 
 
 __all__ = [
+    "FIELD_FORMAT_RULE_PREFIXES",
     "Issue",
     "IssueSection",
     "IssueSeverity",
@@ -579,6 +703,8 @@ __all__ = [
     "has_deployment_api_key",
     "has_deployment_endpoint",
     "has_deployment_model",
+    "is_http_url",
+    "is_valid_color",
     "probe_bot_api_key",
     "validate_config",
 ]
