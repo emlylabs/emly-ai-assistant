@@ -86,6 +86,11 @@ FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf107
 # unhashed pip-installed uv 0.5.11, a version with a critical advisory).
 COPY --from=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /uvx /usr/local/bin/
 
+# The base image's system pip is unused (uv installs everything into
+# /app/.venv) and its vendored copies of urllib3, msgpack and setuptools
+# trail their fixes, so scanners flag them. Remove it.
+RUN python -m pip uninstall --yes --no-input pip
+
 WORKDIR /app
 
 # ---- System packages ---------------------------------------------------------

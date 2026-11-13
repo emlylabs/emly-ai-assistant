@@ -141,6 +141,14 @@ def test_base_images_pinned_by_digest():
     assert "imagetools inspect" in text  # update instructions present
 
 
+def test_runtime_image_drops_system_pip():
+    """F6: the base image's pip is unused (uv owns /app/.venv) and its
+    vendored urllib3/msgpack/setuptools trail their fixes."""
+    runtime = _dockerfile().split(" AS runtime", 1)[1]
+    code = [l for l in runtime.splitlines() if l.startswith("RUN")]
+    assert "RUN python -m pip uninstall --yes --no-input pip" in code
+
+
 # ---------------------------------------------------------------------- E3
 
 
