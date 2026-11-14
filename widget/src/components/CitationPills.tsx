@@ -42,10 +42,11 @@ const deriveCitation = (citation: Citation): DerivedCitation => {
         ?? parseMaybeJson(meta.og)
         ?? {};
 
+    // The server sends only http(s) links (services/public_citations.py);
+    // it never sends the stored file path.
     const url =
         (typeof meta.source_url === 'string' && meta.source_url) ||
         (typeof og.url === 'string' && og.url) ||
-        (typeof meta.source === 'string' && meta.source) ||
         null;
 
     const title =
@@ -69,9 +70,7 @@ const deriveCitation = (citation: Citation): DerivedCitation => {
         try {
             host = new URL(url).hostname.replace(/^www\./, '');
         } catch {
-            // Sources can be local file paths (data uploads). The host
-            // stays null for those — the pill just shows the title and
-            // there's no external link.
+            // Not a parseable URL: no host, the pill shows just the title.
         }
     }
 
