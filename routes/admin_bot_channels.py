@@ -58,14 +58,12 @@ def _resolve_bot_for_admin(
     including viewers, can fetch the row. Mutations pass
     ``WRITE_ROLES`` and hard-delete passes ``OWNER_ONLY``.
 
-    Superadmins bypass the per-bot membership check (matches
-    ``services.authz`` predicates).
+    Superadmins bypass the per-bot membership check inside
+    ``has_role_at_least``, which also audits the bypass.
     """
     bot = Bots.get_by_slug(slug)
     if bot is None or bot.is_deleted:
         raise HTTPException(status_code=404, detail="bot not found")
-    if admin.is_superadmin:
-        return bot
     # Map ``allowed_roles`` to the minimum role tier and reuse the
     # canonical predicate so the bypass / role-tier rules stay in one
     # place. ``OWNER_ONLY`` → "owner"; ``WRITE_ROLES`` → "admin";
@@ -132,12 +130,13 @@ class ChannelTypeInfo(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _redact_secrets(secrets: Dict[str, Any]) -> Dict[str, Any]:
-    """Reveal nothing sensitive — just last-4 of token-shaped values."""
+def _redact_secrets(secrets: Dict[str, Any], *, show_hints: bool = True) -> Dict[str, Any]:
+    """Reveal nothing sensitive: just the last 4 characters of token-shaped
+    values, and not even that unless ``show_hints`` (writers only, G4b)."""
     out: Dict[str, Any] = {}
     for k, v in secrets.items():
         if isinstance(v, str) and any(s in k.lower() for s in ("token", "secret", "password", "key")):
-            out[k] = f"…{v[-4:]}" if len(v) > 4 else "…"
+            out[k] = f"…{v[-4:]}" if show_hints and len(v) > 4 else "…"
         elif isinstance(v, dict):
             out[k] = "<object>"
         elif isinstance(v, list):
@@ -180,14 +179,14 @@ def _stamp_managed_secrets(
     return refreshed or channel
 
 
-async def _channel_to_response(channel: BotChannelModel) -> ChannelResponse:
+async def _channel_to_response(channel: BotChannelModel, *, show_hints: bool = True) -> ChannelResponse:
     secrets_redacted: Dict[str, Any] = {}
     if channel.credentials_encrypted:
         try:
             from channels.dispatcher import decrypt_secrets
 
             sec = decrypt_secrets(channel)
-            secrets_redacted = _redact_secrets(sec.model_dump())
+            secrets_redacted = _redact_secrets(sec.model_dump(), show_hints=show_hints)
         except Exception:
             secrets_redacted = {"_": "decrypt-failed"}
     return ChannelResponse(
@@ -245,7 +244,8 @@ def list_channel_types(_admin: AdminUserModel = Depends(get_admin)):
 async def list_channels_for_bot(slug: str, admin: AdminUserModel = Depends(get_admin)):
     bot = _resolve_bot_for_admin(slug, admin)
     rows = BotChannels.list_for_bot(bot.id)
-    return [await _channel_to_response(r) for r in rows]
+    show_hints = has_role_at_least(admin, bot.id, "admin")  # viewers don't see secret hints
+    return [await _channel_to_response(r, show_hints=show_hints) for r in rows]
 
 
 @router.post("/bots/{slug}/channels", response_model=ChannelResponse, status_code=status.HTTP_201_CREATED)

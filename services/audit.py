@@ -42,6 +42,26 @@ _request_meta: ContextVar[Optional[tuple[Optional[str], Optional[str]]]] = Conte
 )
 
 
+# The ASGI scope of that request, so audit rows can name the route. Read
+# lazily: routing fills in ``scope["route"]`` after this middleware runs.
+_request_scope: ContextVar[Optional[dict]] = ContextVar("audit_request_scope", default=None)
+
+
+def current_request_route() -> tuple[Optional[str], Optional[str]]:
+    """``(method, route)`` of the request being handled, e.g.
+    ``("GET", "/api/admin/bots/{slug}/sessions")``. The route is the
+    matched path template when routing has run, else the raw path.
+    ``(None, None)`` outside a request."""
+    scope = _request_scope.get()
+    if not scope:
+        return None, None
+    route = scope.get("route")
+    template = getattr(route, "path", None)
+    if template:
+        template = (scope.get("root_path") or "") + template
+    return scope.get("method"), template or scope.get("path")
+
+
 class AuditRequestContextMiddleware:
     """Pure-ASGI middleware that records the caller's IP and user agent for
     the duration of each HTTP request. Runs inside uvicorn's proxy-headers
@@ -62,9 +82,11 @@ class AuditRequestContextMiddleware:
                 ua = value.decode("latin-1")[:512]
                 break
         token = _request_meta.set((ip, ua))
+        scope_token = _request_scope.set(scope)
         try:
             await self.app(scope, receive, send)
         finally:
+            _request_scope.reset(scope_token)
             _request_meta.reset(token)
 
 

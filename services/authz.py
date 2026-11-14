@@ -5,7 +5,8 @@ these to gate access; an ``HTTPException`` is the only way these functions fail.
 
 Role hierarchy:
     owner  ⊇ admin ⊇ viewer
-    is_superadmin → bypasses every bot-scoped check.
+    is_superadmin → bypasses every bot-scoped check. When the bypass is
+    what let them in, it is audited as ``authz.superadmin_bypass`` (G4a).
 
 Membership rows live in ``admin_bot_membership``. The ``ROLES`` constant lists
 the canonical names — anything outside the list is rejected at write time
@@ -15,6 +16,8 @@ the canonical names — anything outside the list is rejected at write time
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from fastapi import HTTPException, status
 
@@ -54,6 +57,43 @@ def _deny(admin: AdminUserModel, code: str, bot_id: str | None = None, **extra) 
     return _forbidden(code, **extra)
 
 
+# -------- superadmin bypass audit (G4a) --------
+
+# One ``authz.superadmin_bypass`` row per admin, bot and route per window,
+# so browsing a bot's pages doesn't flood the log. Per process.
+SUPERADMIN_AUDIT_WINDOW_SECONDS = 600
+_RANK = {"viewer": 1, "admin": 2, "owner": 3}
+_bypass_seen: dict[tuple, float] = {}
+_bypass_lock = threading.Lock()
+
+
+def _audit_superadmin_bypass(admin: AdminUserModel, bot_id: str, needed: str) -> None:
+    """Record that a superadmin reached bot data through the bypass, i.e.
+    their own membership (if any) wouldn't have let them in. Never raises."""
+    try:
+        membership = AdminBotMemberships.get(admin.id, bot_id)
+        if membership is not None and _RANK.get(membership.role, 0) >= _RANK[needed]:
+            return
+        from services.audit import audit, current_request_route
+
+        method, route = current_request_route()
+        key = (admin.id, bot_id, method, route)
+        now = time.monotonic()
+        with _bypass_lock:
+            last = _bypass_seen.get(key)
+            if last is not None and now - last < SUPERADMIN_AUDIT_WINDOW_SECONDS:
+                return
+            _bypass_seen[key] = now
+            if len(_bypass_seen) > 10_000:
+                cutoff = now - SUPERADMIN_AUDIT_WINDOW_SECONDS
+                for k in [k for k, t in _bypass_seen.items() if t < cutoff]:
+                    del _bypass_seen[k]
+        audit("authz.superadmin_bypass", admin_id=admin.id, bot_id=bot_id,
+              payload={"needed": needed, "method": method, "route": route})
+    except Exception:  # auditing must never change the response
+        log.debug("authz.superadmin_bypass audit failed", exc_info=True)
+
+
 def require_superadmin(admin: AdminUserModel) -> None:
     """Raises 403 unless the admin has the global ``is_superadmin`` flag."""
     if not admin.is_superadmin:
@@ -68,7 +108,7 @@ def require_member(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     superadmins so callers that need ``.role`` always get a value.
     """
     if admin.is_superadmin:
-        log.debug("authz.superadmin_bypass admin=%s bot=%s action=member", admin.id, bot_id)
+        _audit_superadmin_bypass(admin, bot_id, "viewer")
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _READER_ROLES:
@@ -82,7 +122,7 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
     Owners and admins pass; viewers do not. Superadmins bypass.
     """
     if admin.is_superadmin:
-        log.debug("authz.superadmin_bypass admin=%s bot=%s action=writer", admin.id, bot_id)
+        _audit_superadmin_bypass(admin, bot_id, "admin")
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role not in _WRITER_ROLES:
@@ -93,7 +133,7 @@ def require_writer(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipMode
 def require_owner(admin: AdminUserModel, bot_id: str) -> AdminBotMembershipModel:
     """Returns the membership row if the admin is an owner of the bot, else 403."""
     if admin.is_superadmin:
-        log.debug("authz.superadmin_bypass admin=%s bot=%s action=owner", admin.id, bot_id)
+        _audit_superadmin_bypass(admin, bot_id, "owner")
         return _synthetic_superadmin_membership(admin.id, bot_id)
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None or membership.role != "owner":
@@ -110,12 +150,12 @@ def has_role_at_least(admin: AdminUserModel, bot_id: str, role: str) -> bool:
     if role not in ROLES:
         raise ValueError(f"unknown role: {role!r}")
     if admin.is_superadmin:
+        _audit_superadmin_bypass(admin, bot_id, role)
         return True
     membership = AdminBotMemberships.get(admin.id, bot_id)
     if membership is None:
         return False
-    rank = {"viewer": 1, "admin": 2, "owner": 3}
-    return rank[membership.role] >= rank[role]
+    return _RANK[membership.role] >= _RANK[role]
 
 
 def _synthetic_superadmin_membership(admin_id: str, bot_id: str) -> AdminBotMembershipModel:
