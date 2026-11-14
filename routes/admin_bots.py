@@ -352,12 +352,12 @@ def list_bots_summary(admin: AdminUserModel = Depends(get_admin)):
     from models.emly_messages import EMLYMessages
     from models.emly_sessions import EMLYSessions
 
-    memberships = AdminBotMemberships.list_for_admin(admin.id)
-    bot_ids = [m.bot_id for m in memberships]
     summaries: List[WorkspaceBotSummary] = []
     now = datetime.now()
     since = now - timedelta(hours=24)
-    for bot_id in bot_ids:
+    # ``live_ids`` is already this admin's non-deleted bots; reuse it rather
+    # than re-reading the memberships.
+    for bot_id in live_ids:
         bot = Bots.get_by_id(bot_id)
         if bot is None or bot.is_deleted:
             continue
@@ -370,7 +370,7 @@ def list_bots_summary(admin: AdminUserModel = Depends(get_admin)):
             log.exception("get_report failed for bot=%s", bot.id)
             msgs_24h = 0
         try:
-            sessions_24h = EMLYSessions.count_for_bot(bot.id)
+            sessions_24h = EMLYSessions.count_for_bot(bot.id, started_after=since)
         except Exception:
             sessions_24h = None
         try:

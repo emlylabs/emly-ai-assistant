@@ -1007,7 +1007,11 @@ export default function BotAnalyticsPage() {
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <EnrichmentCard data={enrichment} rangeDays={viewWindow.days} />
+            <EnrichmentCard
+              data={enrichment}
+              rangeDays={viewWindow.days}
+              configHref={`/bots/${encodeURIComponent(bot.slug)}/config?tab=llm`}
+            />
           </div>
 
           <ModelUsageCard

@@ -12,7 +12,7 @@ fetch.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from peewee import (
@@ -166,6 +166,63 @@ class EMLYSessionsTable:
             )
         except Exception:
             logger.debug("realtime publish failed (non-fatal)", exc_info=True)
+
+    def current_channel_session(
+        self,
+        bot_id: str,
+        base_id: str,
+        *,
+        idle_after: timedelta,
+        now: Optional[datetime] = None,
+    ) -> str:
+        """Session id the next message on a messaging channel should use.
+
+        Channel conversations are keyed on a stable platform id (a DM, a
+        Telegram chat, a WhatsApp number), which on its own never ends:
+        a resolved conversation would swallow every later question and
+        each user would count as one session forever. Rotate instead:
+        ``base_id``, ``base_id-1``, ``base_id-2`` ... A new generation
+        starts once the latest one is resolved or idle for longer than
+        ``idle_after``.
+
+        Fails open to ``base_id`` so a DB hiccup never blocks a reply.
+        """
+        now = now or datetime.utcnow()
+        prefix = f"{base_id}-"
+        try:
+            rows = list(
+                EMLYSession.select(
+                    EMLYSession.id,
+                    EMLYSession.is_resolved,
+                    EMLYSession.last_activity_at,
+                ).where(
+                    (EMLYSession.bot_id == bot_id)
+                    & ((EMLYSession.id == base_id) | EMLYSession.id.startswith(prefix))
+                )
+            )
+        except Exception:
+            logger.exception(
+                "EMLYSessions.current_channel_session failed for base=%s bot=%s",
+                base_id,
+                bot_id,
+            )
+            return base_id
+
+        def generation(session_id: str) -> int:
+            suffix = session_id[len(prefix):] if session_id.startswith(prefix) else ""
+            return int(suffix) if suffix.isdigit() else 0
+
+        rows = [r for r in rows if r.id == base_id or r.id[len(prefix):].isdigit()]
+        if not rows:
+            return base_id
+        latest = max(rows, key=lambda r: generation(r.id))
+        idle = (
+            latest.last_activity_at is not None
+            and now - latest.last_activity_at > idle_after
+        )
+        if latest.is_resolved or idle:
+            return f"{base_id}-{generation(latest.id) + 1}"
+        return latest.id
 
     def get(self, bot_id: str, session_id: str) -> Optional[EMLYSessionModel]:
         try:

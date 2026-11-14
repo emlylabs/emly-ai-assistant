@@ -1995,20 +1995,37 @@ function LLMSection({
         </button>
       </div>
 
-      <h2 style={{ marginTop: 24 }}>Report analysis prompt</h2>
+      <h2 style={{ marginTop: 24 }}>Conversation analysis</h2>
       <div className="field">
-        <label htmlFor="cfg-report-prompt">Prompt used for conversation reports</label>
+        <label>
+          <input
+            type="checkbox"
+            checked={Boolean(config.enrichment_enabled)}
+            onChange={(e) => patchPath(["enrichment_enabled"], e.target.checked)}
+            disabled={!writable}
+            style={{ marginRight: 8 }}
+          />
+          Analyse conversations for sentiment and intent
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+          Classifies each finished conversation with this bot&apos;s LLM (one extra call per
+          conversation). Results appear on the Analytics page.
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor="cfg-report-prompt">Conversation summary prompt</label>
         <textarea
           id="cfg-report-prompt"
           rows={6}
-          placeholder="Analyze user-assistant interactions to identify trends, issues, and improvement areas…"
+          placeholder="Summarise what the visitor needed, whether it was answered, and the follow-up for our team…"
           value={typeof config.report_analysis_prompt === "string" ? config.report_analysis_prompt : ""}
           onChange={(e) => patchPath(["report_analysis_prompt"], e.target.value || undefined)}
           disabled={!writable}
           style={textareaStyle}
         />
         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Used by the admin metric/report generator to summarize transcripts.
+          Instructions for the AI summary in form-alert emails. A form&apos;s own summary prompt
+          overrides this; leave both empty to use the built-in default.
         </div>
       </div>
     </div>

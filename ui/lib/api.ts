@@ -144,7 +144,7 @@ export type EmlySession = {
 export type SessionRow = {
   session: EmlySession;
   last_message: Message | null;
-  channel_type: ChannelType;
+  channel_type: SessionChannelType;
 };
 
 export type SessionListResponse = {
@@ -157,7 +157,7 @@ export type SessionListResponse = {
 export type SessionDetailResponse = {
   session: EmlySession;
   messages: Message[];
-  channel_type: ChannelType;
+  channel_type: SessionChannelType;
 };
 
 export type SessionRatingFilter = "rated" | "unrated" | "positive" | "negative";
@@ -447,6 +447,8 @@ export type Membership = {
 };
 
 export type ChannelType = "slack" | "telegram" | "whatsapp_cloud" | "google_chat" | "teams" | "web_widget";
+/** Channel of a stored conversation: an install type, or "unknown" once that install is deleted. */
+export type SessionChannelType = ChannelType | "unknown";
 
 export type ChannelTypeInfo = {
   type: ChannelType;
@@ -877,20 +879,24 @@ async function request<T>(
 }
 
 // The backend stores and serialises naive UTC datetimes ("2026-11-13T10:00:00"),
-// which `new Date()` would read as browser-local time.
+// which `new Date()` would read as browser-local time. Only fields that hold
+// timestamps are touched: user content and config values that merely look
+// like a date (a message "2026-11-20T09:30", a starter message) pass through,
+// so a config read here and PUT back is unchanged.
 const NAIVE_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+const TIMESTAMP_KEY = /(_at|_until|_timestamps?)$|^(ts|timestamp)$/;
 
-export function markNaiveTimestampsUtc(value: unknown): unknown {
+export function markNaiveTimestampsUtc(value: unknown, isTimestamp = false): unknown {
   if (typeof value === "string") {
-    return NAIVE_ISO_DATETIME.test(value) ? `${value}Z` : value;
+    return isTimestamp && NAIVE_ISO_DATETIME.test(value) ? `${value}Z` : value;
   }
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) value[i] = markNaiveTimestampsUtc(value[i]);
+    for (let i = 0; i < value.length; i++) value[i] = markNaiveTimestampsUtc(value[i], isTimestamp);
     return value;
   }
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
-    for (const k of Object.keys(obj)) obj[k] = markNaiveTimestampsUtc(obj[k]);
+    for (const k of Object.keys(obj)) obj[k] = markNaiveTimestampsUtc(obj[k], TIMESTAMP_KEY.test(k));
     return obj;
   }
   return value;

@@ -159,12 +159,17 @@ class SlackAdapter(ChannelAdapter):
             return None
 
         channel_external = event.get("channel")
-        # A top-level message's ``ts`` (and, in channels, a missing
-        # ``thread_ts``) used to mint a new session per message, so a
-        # multi-step lead was split across sessions. One session per user
-        # per Slack channel; ``reply_handle`` still targets the thread.
-        who = event.get("user") or "unknown"
-        session_external_id = f"{channel_external}:{who}"
+        # DMs are one running conversation per user (every DM message is
+        # top-level, so keying on ``ts`` split it into a session per
+        # message). In channels each thread is its own conversation; a
+        # top-level mention's ``ts`` is the root its replies carry as
+        # ``thread_ts``. The dispatcher rotates the id once a session is
+        # resolved or idle.
+        if chat_type == "dm":
+            who = event.get("user") or "unknown"
+            session_external_id = f"{channel_external}:{who}"
+        else:
+            session_external_id = f"{channel_external}:{thread_ts or ts}"
 
         return IncomingMessage(
             channel_id="",

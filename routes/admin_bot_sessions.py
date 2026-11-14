@@ -74,14 +74,20 @@ class SessionDetailResponse(BaseModel):
     channel_type: str = "web_widget"
 
 
-def _channel_type_for(channel_id: Optional[str], cache: dict) -> str:
-    """Translate ``bot_channel.id`` into its adapter type. Sessions without
-    a channel id predate channel threading and came from the web widget."""
+def _channel_type_for(channel_id: Optional[str], cache: Optional[dict] = None) -> str:
+    """Translate ``bot_channel.id`` into its adapter type.
+
+    No channel id means widget traffic (chats from before a web_widget
+    install row existed). An id whose channel row is gone is reported as
+    ``unknown`` rather than guessed: it was some other install, and
+    labelling it "Website" would be wrong.
+    """
     if not channel_id:
         return "web_widget"
+    cache = {} if cache is None else cache
     if channel_id not in cache:
         ch = BotChannels.get_by_id(channel_id)
-        cache[channel_id] = ch.type if ch is not None else "web_widget"
+        cache[channel_id] = ch.type if ch is not None else "unknown"
     return cache[channel_id]
 
 
@@ -214,6 +220,7 @@ def list_sessions(
     ),
     q: Optional[str] = Query(
         None,
+        min_length=2,
         max_length=200,
         description="Case-insensitive text search over every turn, plus session and user ids.",
     ),
@@ -277,7 +284,7 @@ def get_session(
     return SessionDetailResponse(
         session=session,
         messages=messages,
-        channel_type=_channel_type_for(session.channel_id, {}),
+        channel_type=_channel_type_for(session.channel_id),
     )
 
 
@@ -353,13 +360,6 @@ class TakeoverReplyPayload(BaseModel):
     message: str
 
 
-def _channel_kind_or_none(channel_id: Optional[str]) -> Optional[str]:
-    if not channel_id:
-        return None
-    ch = BotChannels.get_by_id(channel_id)
-    return ch.type if ch is not None else None
-
-
 @router.post("/bots/{slug}/sessions/{session_id}/takeover", response_model=EMLYSessionModel)
 def takeover_session(
     slug: str,
@@ -384,8 +384,8 @@ def takeover_session(
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    kind = _channel_kind_or_none(session.channel_id)
-    if kind is not None and kind != "web_widget":
+    kind = _channel_type_for(session.channel_id)
+    if kind != "web_widget":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={

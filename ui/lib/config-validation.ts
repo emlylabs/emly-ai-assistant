@@ -46,7 +46,10 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+// Numeric strings ("0.7") count: the server schema coerces them, so the
+// rules judge the value that's saved (mirrors ``_as_num`` in Python).
 function num(v: unknown): number | undefined {
+  if (typeof v === "string" && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(v.trim())) v = Number(v);
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
@@ -270,7 +273,41 @@ export function validateConfig(config: Cfg, ctx: ValidationContext = {}): Issue[
 // Field-format rules (R16–R23). The server always blocks save on these.
 const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-const FUNC_COLOR_RE = /^(?:rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/+-]+\)$/i;
+// Mirrors services/config_validation.py: 3–4 numeric components; only the
+// shape is checked (browsers clamp out-of-range values).
+const NUM = String.raw`(?:[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|deg|rad|grad|turn)?|none)`;
+const FUNC_COLOR_RE = new RegExp(
+  String.raw`^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*${NUM}(?:\s*[,/]\s*${NUM}|\s+${NUM}){2,3}\s*\)$`,
+  "i",
+);
+const VAR_COLOR_RE = /^var\(\s*--[A-Za-z0-9_-]+\s*(?:,[^;{}<>]*)?\)$/;
+const OTHER_FUNC_COLOR_RE = /^(?:color|color-mix)\([^;{}<>]+\)$/i;
+const NAMED_COLORS = new Set(
+  `
+  aliceblue antiquewhite aqua aquamarine azure beige bisque black
+  blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+  chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+  darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+  darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+  darkslateblue darkslategray darkslategrey darkturquoise darkviolet
+  deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+  forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green
+  greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender
+  lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+  lightgoldenrodyellow lightgray lightgreen lightgrey lightpink
+  lightsalmon lightseagreen lightskyblue lightslategray lightslategrey
+  lightsteelblue lightyellow lime limegreen linen magenta maroon
+  mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+  mediumslateblue mediumspringgreen mediumturquoise mediumvioletred
+  midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive
+  olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise
+  palevioletred papayawhip peachpuff peru pink plum powderblue purple
+  rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+  seagreen seashell sienna silver skyblue slateblue slategray slategrey
+  snow springgreen steelblue tan teal thistle tomato turquoise violet
+  wheat white whitesmoke yellow yellowgreen transparent currentcolor
+`.split(/\s+/).filter(Boolean),
+);
 const THEME_COLOR_FIELDS: [string, string][] = [
   ["launcher_background", "Launcher background"],
   ["container_background", "Container background"],
@@ -294,7 +331,9 @@ export function isHttpUrl(value: string): boolean {
 
 export function isValidColor(value: string): boolean {
   const v = value.trim();
-  return v.toLowerCase() === "transparent" || HEX_COLOR_RE.test(v) || FUNC_COLOR_RE.test(v);
+  if (NAMED_COLORS.has(v.toLowerCase())) return true;
+  if ((v.match(/\(/g) || []).length !== (v.match(/\)/g) || []).length) return false;
+  return [HEX_COLOR_RE, FUNC_COLOR_RE, VAR_COLOR_RE, OTHER_FUNC_COLOR_RE].some((r) => r.test(v));
 }
 
 function present(v: unknown): boolean {
@@ -348,7 +387,7 @@ function fieldFormatIssues(config: Cfg): Issue[] {
         severity: "error",
         key: `R18_invalid_color_${field}`,
         section: "widget",
-        message: `${label} "${String(color)}" is not a colour. Use a hex value like #1a73e8, rgb(…), or transparent.`,
+        message: `${label} "${String(color)}" is not a colour. Use a hex value like #1a73e8, a CSS colour name, or rgb(…).`,
       });
     }
   }

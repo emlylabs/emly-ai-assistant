@@ -103,7 +103,16 @@ def _as_str(v: Any) -> str:
     return v if isinstance(v, str) else ""
 
 
+_DECIMAL_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+
+
 def _as_num(v: Any) -> Optional[float]:
+    """Numeric value of ``v``, or None. Numeric strings ("0.7") count, as
+    the config schema coerces them, so rules judge the value that's saved."""
+    if isinstance(v, str):
+        if not _DECIMAL_RE.match(v.strip()):
+            return None
+        v = float(v.strip())
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         if v != v or v == float("inf") or v == float("-inf"):  # NaN / inf guard
             return None
@@ -482,7 +491,44 @@ FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R
 
 _EMAIL_RE = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
-_FUNC_COLOR_RE = re.compile(r"^(?:rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s/+-]+\)$", re.IGNORECASE)
+# CSS colour functions whose arguments are 3–4 numeric components
+# (number / percentage / angle / ``none``) separated by commas, spaces
+# or a ``/`` before alpha. Out-of-range components are valid CSS (the
+# browser clamps them), so only the shape is checked.
+_NUM = r"(?:[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|deg|rad|grad|turn)?|none)"
+_FUNC_COLOR_RE = re.compile(
+    rf"^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*{_NUM}(?:\s*[,/]\s*{_NUM}|\s+{_NUM}){{2,3}}\s*\)$",
+    re.IGNORECASE,
+)
+# ``var(--x)`` / ``var(--x, fallback)``, ``color(...)`` and
+# ``color-mix(...)``: allowed as long as nothing in them could escape the
+# declaration they're inlined into.
+_VAR_COLOR_RE = re.compile(r"^var\(\s*--[A-Za-z0-9_-]+\s*(?:,[^;{}<>]*)?\)$")
+_OTHER_FUNC_COLOR_RE = re.compile(r"^(?:color|color-mix)\([^;{}<>]+\)$", re.IGNORECASE)
+_NAMED_COLORS = frozenset("""
+    aliceblue antiquewhite aqua aquamarine azure beige bisque black
+    blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+    chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+    darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+    darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+    darkslateblue darkslategray darkslategrey darkturquoise darkviolet
+    deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+    forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green
+    greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender
+    lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+    lightgoldenrodyellow lightgray lightgreen lightgrey lightpink
+    lightsalmon lightseagreen lightskyblue lightslategray lightslategrey
+    lightsteelblue lightyellow lime limegreen linen magenta maroon
+    mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+    mediumslateblue mediumspringgreen mediumturquoise mediumvioletred
+    midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive
+    olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise
+    palevioletred papayawhip peachpuff peru pink plum powderblue purple
+    rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+    seagreen seashell sienna silver skyblue slateblue slategray slategrey
+    snow springgreen steelblue tan teal thistle tomato turquoise violet
+    wheat white whitesmoke yellow yellowgreen transparent currentcolor
+""".split())
 _THEME_COLOR_FIELDS = (
     ("launcher_background", "Launcher background"),
     ("container_background", "Container background"),
@@ -504,8 +550,13 @@ def is_http_url(value: str) -> bool:
 
 
 def is_valid_color(value: str) -> bool:
+    """Hex, CSS named colour, a colour function, or a ``var()`` reference."""
     v = value.strip()
-    return v.lower() == "transparent" or bool(_HEX_COLOR_RE.match(v)) or bool(_FUNC_COLOR_RE.match(v))
+    if v.lower() in _NAMED_COLORS:
+        return True
+    if v.count("(") != v.count(")"):
+        return False
+    return any(r.match(v) for r in (_HEX_COLOR_RE, _FUNC_COLOR_RE, _VAR_COLOR_RE, _OTHER_FUNC_COLOR_RE))
 
 
 def _present(v: Any) -> bool:
@@ -547,7 +598,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
                 severity="error",
                 key=f"R18_invalid_color_{field}",
                 section="widget",
-                message=f'{label} "{color}" is not a colour. Use a hex value like #1a73e8, rgb(…), or transparent.',
+                message=f'{label} "{color}" is not a colour. Use a hex value like #1a73e8, a CSS colour name, or rgb(…).',
             ))
 
     endpoint = llm.get("api_endpoint")

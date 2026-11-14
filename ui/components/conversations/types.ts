@@ -1,4 +1,4 @@
-import type { ChannelType, EmlySession, Message, SessionRow } from "@/lib/api";
+import type { EmlySession, Message, SessionChannelType, SessionRow } from "@/lib/api";
 
 export type ConversationSession = {
   /** Stable id from the messages table. */
@@ -7,7 +7,7 @@ export type ConversationSession = {
    * when the messages table doesn't have one. */
   userId: string | null;
   /** Channel hint for the row's chip. */
-  channel: ChannelType;
+  channel: SessionChannelType;
   /** Authoritative turn count from `emly_session.turn_count`. Display this
    * instead of `messages.length` — the list view only carries the last
    * message preview, so `messages.length` would lie until the detail

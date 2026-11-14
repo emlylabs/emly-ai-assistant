@@ -23,6 +23,9 @@ import json
 import logging
 import os
 import re
+import time
+from collections import OrderedDict
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -34,7 +37,9 @@ from starlette.concurrency import run_in_threadpool
 from channels.base import ChannelAdapter, ReplyMode
 from channels.contracts import IncomingMessage, OutgoingMessage
 from channels.registry import get as registry_get
+from config import CHANNEL_SESSION_IDLE_HOURS
 from models.bot_channels import BotChannelModel, BotChannels
+from models.emly_sessions import EMLYSessions
 from models.webhook_event_dedupe import WebhookEventDedupes
 from services.secrets import decrypt as fernet_decrypt
 
@@ -49,6 +54,8 @@ DEFAULT_ERROR_REPLY = "Sorry, something went wrong on my end. Please try again."
 _MAX_INFLIGHT = 100
 _inflight = 0
 _inflight_lock = asyncio.Lock()
+
+_SESSION_IDLE_AFTER = timedelta(hours=CHANNEL_SESSION_IDLE_HOURS)
 
 
 def decrypt_secrets(channel: BotChannelModel) -> BaseModel:
@@ -439,7 +446,12 @@ async def handle_inbound(
         raise HTTPException(status_code=503, detail="channel install incomplete")
     install_key = channel.external_id
     user_id = emly_id_for(bot_id, install_key, incoming.user_external_id)
-    session_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
+    session_id = await run_in_threadpool(
+        EMLYSessions.current_channel_session,
+        bot_id,
+        emly_id_for(bot_id, install_key, incoming.session_external_id),
+        idle_after=_SESSION_IDLE_AFTER,
+    )
     await run_in_threadpool(_ensure_end_user, bot_id, user_id, channel)
 
     reply_mode = _resolve_reply_mode(channel, adapter)
@@ -541,26 +553,57 @@ async def handle_inbound(
     return JSONResponse(content=adapter.async_ack_body)
 
 
+# (bot_id, user_id) pairs this process recently confirmed have an end-user
+# row, so the existence check costs one query per sender per hour, not one
+# per message. Entries expire because data retention can delete the row;
+# a returning sender then gets it back within the TTL. Bounded; evicting
+# an entry only costs a repeat SELECT.
+_KNOWN_END_USERS: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+_KNOWN_END_USERS_MAX = 10_000
+_KNOWN_END_USER_TTL_S = 3600.0
+
+
+def _end_user_known(key: Tuple[str, str]) -> bool:
+    seen = _KNOWN_END_USERS.get(key)
+    return seen is not None and time.monotonic() - seen < _KNOWN_END_USER_TTL_S
+
+
+def _remember_end_user(key: Tuple[str, str]) -> None:
+    _KNOWN_END_USERS[key] = time.monotonic()
+    _KNOWN_END_USERS.move_to_end(key)
+    while len(_KNOWN_END_USERS) > _KNOWN_END_USERS_MAX:
+        _KNOWN_END_USERS.popitem(last=False)
+
+
 def _ensure_end_user(bot_id: str, user_id: str, channel: BotChannelModel) -> None:
     """Create the bot-user row for a chat-app sender on first contact, the
     way the widget chat route does for website visitors. Best-effort: a
     failure here must not stop the reply."""
+    from peewee import IntegrityError
+
     from models.emly_users import EMLYUsers
 
+    key = (bot_id, user_id)
+    if _end_user_known(key):
+        return
     try:
-        if EMLYUsers.get_user_by_id(bot_id, user_id) is not None:
-            return
-        EMLYUsers.insert_new_user(
-            bot_id=bot_id,
-            id=user_id,
-            first_name=None, last_name=None, email=None, phone=None,
-            ip="",
-            browser=channel.type,
-            meta={"channel": channel.type, "channel_id": channel.id},
-        )
+        if EMLYUsers.get_user_by_id(bot_id, user_id) is None:
+            EMLYUsers.insert_new_user(
+                bot_id=bot_id,
+                id=user_id,
+                first_name=None, last_name=None, email=None, phone=None,
+                ip="",
+                # Not a browser; the channel is recorded in ``meta``.
+                browser="",
+                meta={"channel": channel.type, "channel_id": channel.id},
+            )
+    except IntegrityError:
+        # Lost a concurrent-insert race: the row exists, which is the goal.
+        pass
     except Exception:
-        # Includes losing a concurrent-insert race, which is harmless.
         log.warning("Could not create end-user for bot=%s channel=%s", bot_id, channel.id, exc_info=True)
+        return
+    _remember_end_user(key)
 
 
 async def _run_agent(bot_id: str, user_id: str, session_id: str, text: str, channel_id: Optional[str] = None) -> OutgoingMessage:

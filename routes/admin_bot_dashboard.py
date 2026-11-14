@@ -139,6 +139,43 @@ def _issues_to_response(issues: List[Issue]) -> ValidationResponse:
     )
 
 
+def _raise_on_format_errors(config: Dict[str, Any]) -> None:
+    """422 on malformed field values (bad email / URL / colour,
+    out-of-range numbers). These are never a deliberate choice, so they
+    block regardless of the workspace save gate and of ``force``."""
+    format_issues = [
+        i for i in validate_config(config)
+        if i.severity == "error" and i.key.startswith(FIELD_FORMAT_RULE_PREFIXES)
+    ]
+    if format_issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "validation_failed",
+                "message": (
+                    f"Save blocked — {len(format_issues)} invalid value"
+                    f"{'s' if len(format_issues) != 1 else ''}: "
+                    + " ".join(i.message for i in format_issues)
+                ),
+                "issues": [i.to_dict() for i in format_issues],
+                "can_force": False,
+            },
+        )
+
+
+def _invalid_config_error(exc: PydanticValidationError) -> HTTPException:
+    """422 for a config the schema rejects (instead of a 500)."""
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "error": "invalid_config",
+            "message": "; ".join(
+                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
+            ),
+        },
+    )
+
+
 def _build_validation_context(bot: BotModel) -> ValidationContext:
     """Probe per-bot state the validator needs for RT* rules. File count
     is the only DB hit; the rest are env / row reads we already have."""
@@ -543,9 +580,10 @@ def bot_get_report(
 # Channel-mix breakdown
 # ---------------------------------------------------------------------------
 class MessageCountByChannel(BaseModel):
-    """Per-channel message tally over a window. Messages stored without a
-    channel id are widget traffic and are reported under
-    ``DEFAULT_WIDGET_CHANNEL_ID``, which the channel filters accept."""
+    """Per-channel message tally over a window. Widget traffic (no channel
+    id, or a web_widget install row) is one row under
+    ``DEFAULT_WIDGET_CHANNEL_ID``, which the channel filters accept.
+    Messages from a since-deleted channel report ``channel_type="unknown"``."""
 
     channel_id: Optional[str] = None
     channel_type: Optional[str] = None
@@ -605,24 +643,30 @@ def bot_messages_by_channel(
         ):
             meta[ch.id] = ch
 
+    # One Website row: the NULL bucket and any web_widget install rows
+    # (widget chats move from NULL to the row once it's installed). The
+    # channel filters treat DEFAULT_WIDGET_CHANNEL_ID the same way.
     out: List[MessageCountByChannel] = []
+    website_count = 0
     for channel_id, count in counts:
-        if not channel_id:
-            out.append(
-                MessageCountByChannel(
-                    channel_id=DEFAULT_WIDGET_CHANNEL_ID,
-                    channel_type="web_widget",
-                    count=count,
-                )
-            )
+        ch = meta.get(channel_id) if channel_id else None
+        if not channel_id or (ch is not None and ch.type == "web_widget"):
+            website_count += count
             continue
-        ch = meta.get(channel_id)
         out.append(
             MessageCountByChannel(
                 channel_id=channel_id,
-                channel_type=ch.type if ch else None,
+                channel_type=ch.type if ch else "unknown",
                 display_name=ch.display_name if ch else None,
                 count=count,
+            )
+        )
+    if website_count:
+        out.append(
+            MessageCountByChannel(
+                channel_id=DEFAULT_WIDGET_CHANNEL_ID,
+                channel_type="web_widget",
+                count=website_count,
             )
         )
     out.sort(key=lambda r: r.count, reverse=True)
@@ -1274,6 +1318,10 @@ def bot_put_config(
             },
         )
 
+    # Malformed values can't be forced, so check them before the save gate
+    # (which offers ``force``) and before a forced save is audited.
+    _raise_on_format_errors(payload.config)
+
     # Optional save gate (§10 of improve-ux.md). Off by default — flipping
     # it on must not retroactively lock admins out of bots that are
     # already broken, hence the ``?force=1`` override + audit trail.
@@ -1321,41 +1369,11 @@ def bot_put_config(
         except Exception:
             log.exception("audit emit failed for config.save.forced bot=%s", bot.id)
 
-    # Malformed field values (bad email / URL / colour, out-of-range
-    # numbers) are blocked regardless of the workspace gate and of
-    # ``force``: they are never a deliberate choice.
-    format_issues = [
-        i for i in validate_config(payload.config)
-        if i.severity == "error" and i.key.startswith(FIELD_FORMAT_RULE_PREFIXES)
-    ]
-    if format_issues:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_failed",
-                "message": (
-                    f"Save blocked — {len(format_issues)} invalid value"
-                    f"{'s' if len(format_issues) != 1 else ''}: "
-                    + " ".join(i.message for i in format_issues)
-                ),
-                "issues": [i.to_dict() for i in format_issues],
-                "can_force": False,
-            },
-        )
-
     before_config = dict(bot.config_json or {})
     try:
         save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
     except PydanticValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "invalid_config",
-                "message": "; ".join(
-                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
-                ),
-            },
-        )
+        raise _invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
@@ -1406,7 +1424,10 @@ def bot_put_config_draft(
     # optimistic-concurrency: the only thing they overwrite is the
     # per-bot single-slot draft, and the editor is the only writer.
     before_draft = dict(bot.config_draft_json or bot.config_json or {})
-    save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
+    try:
+        save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
+    except PydanticValidationError as exc:
+        raise _invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.draft.saved", admin, bot, before_draft,
@@ -1628,8 +1649,12 @@ def bot_restore_config_history(
     row = BotConfigHistories.get_by_id(entry_id)
     if row is None or row.bot_id != bot.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
+    _raise_on_format_errors(row.config_json or {})
     before_config = dict(bot.config_json or {})
-    save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
+    try:
+        save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
+    except PydanticValidationError as exc:
+        raise _invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.history.restored", admin, bot, before_config,

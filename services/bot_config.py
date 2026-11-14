@@ -147,7 +147,9 @@ class BotConfig(BaseModel):
     # mailboxes (services/widget_email.py).
     alert_email_content: Literal["full", "link_only"] = "full"
 
-    # Admin-authored instructions for summarising transcripts in reports.
+    # Default instructions for the AI conversation summary in form-alert
+    # emails; a form's own trigger ``analysis_prompt`` overrides it, and the
+    # deployment SUMMARY_RECOMMENDATION_PROMPT applies when both are empty.
     report_analysis_prompt: Optional[str] = None
 
     # Opt-in for the sentiment / intent classifier (services/enrichment.py).

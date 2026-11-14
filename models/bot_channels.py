@@ -43,10 +43,17 @@ DEFAULT_WIDGET_CHANNEL_ID = "web_widget"
 
 
 def channel_filter(field, channel_id: str):
-    """Peewee clause matching ``field`` against a channel id, mapping
-    ``DEFAULT_WIDGET_CHANNEL_ID`` to the NULL bucket."""
+    """Peewee clause matching ``field`` against a channel id.
+
+    ``DEFAULT_WIDGET_CHANNEL_ID`` means "the website": widget chats stored
+    before the bot had a web_widget install row (NULL) plus those stored
+    under such a row afterwards, so analytics show one Website bucket.
+    Callers already scope the query to one bot, and channel ids are
+    unique, so the unscoped subquery can't pull in another bot's rows.
+    """
     if channel_id == DEFAULT_WIDGET_CHANNEL_ID:
-        return field.is_null(True)
+        widget_rows = BotChannel.select(BotChannel.id).where(BotChannel.type == "web_widget")
+        return field.is_null(True) | field.in_(widget_rows)
     return field == channel_id
 
 

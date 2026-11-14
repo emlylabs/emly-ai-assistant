@@ -1,10 +1,14 @@
 "use client";
 
+import Link from "next/link";
+
 import type { EnrichmentSummary } from "@/lib/api";
 
 type EnrichmentCardProps = {
   data: EnrichmentSummary | null;
   rangeDays: number;
+  /** Link to the bot's config page, where analysis is switched on. */
+  configHref?: string;
 };
 
 /**
@@ -14,7 +18,7 @@ type EnrichmentCardProps = {
  * hasn't opted in, and surface that as a clear "needs `enrichment_enabled`"
  * note rather than rendering 100% unrated bars.
  */
-export default function EnrichmentCard({ data, rangeDays }: EnrichmentCardProps) {
+export default function EnrichmentCard({ data, rangeDays, configHref }: EnrichmentCardProps) {
   if (data === null) {
     return (
       <div className="card" style={{ padding: 16, color: "var(--muted)", fontSize: 12.5 }}>
@@ -62,8 +66,13 @@ export default function EnrichmentCard({ data, rangeDays }: EnrichmentCardProps)
       ) : optedOut ? (
         <div style={{ padding: 16, color: "var(--muted)", fontSize: 12.5 }}>
           No conversations in this period have been analysed for sentiment and
-          intent. Analysis is off by default; turn it on for this bot to start
-          seeing results here.
+          intent. Analysis is off by default; turn on{" "}
+          {configHref ? (
+            <Link href={configHref}>Analyse conversations for sentiment and intent</Link>
+          ) : (
+            <strong>Analyse conversations for sentiment and intent</strong>
+          )}{" "}
+          under Config → LLM to start seeing results here.
         </div>
       ) : (
         <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 14 }}>

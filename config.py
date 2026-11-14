@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from pathlib import Path
 from langchain_openai import OpenAIEmbeddings
 from sentence_transformers import CrossEncoder
@@ -9,6 +10,12 @@ from zoneinfo import ZoneInfo
 
 from utils import model_pins
 
+# The DB stores naive datetimes and the admin UI reads them as UTC, but many
+# writers use ``datetime.now()``. Pin the process clock to UTC so those agree
+# on any host (containers already default to UTC; a dev laptop doesn't).
+os.environ["TZ"] = "UTC"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 SRC_LOG_LEVELS = {"DB": logging.INFO, "MODELS": logging.INFO, "ACTIONS": logging.INFO}
 BACKEND_DIR = Path(__file__).parent
@@ -120,6 +127,9 @@ The summary and analysis should contain
 ############ Load previous message configuration #############
 LATEST_N_MESSAGES = int(os.getenv("LATEST_N_MESSAGES", 3))
 NUMBER_OF_LAST_MESSAGES = os.getenv("MAX_MESSAGE_CONTEXT", 5)
+# A messaging-channel conversation (Slack DM, Telegram chat, ...) starts a
+# new session after this much silence, or as soon as it is resolved.
+CHANNEL_SESSION_IDLE_HOURS = float(os.getenv("CHANNEL_SESSION_IDLE_HOURS", 24))
 ############################################################
 
 ####################################
