@@ -7,9 +7,13 @@ output, conversation text included, to LangSmith's cloud. An operator's
 variable would do this silently.
 
 ``disable_unapproved_tracing()`` runs at the top of ``main`` and ``config``,
-before LangChain is imported. Unless ``ALLOW_LANGSMITH_TRACING=true``, it
-removes the tracing switches from the environment and logs a warning
-naming the variables (never their values).
+before LangChain is imported. Unless ``ALLOW_LANGSMITH_TRACING=true``:
+
+- with ``MODE=prod`` (or another production-like mode) and a tracing
+  switch set to ``true``, it refuses to start, so the misconfiguration is
+  fixed rather than silently overridden (Q-G2);
+- otherwise it removes the tracing switches from the environment and logs
+  a warning naming the variables (never their values).
 
 Kept dependency-free so it can run before anything else is imported.
 """
@@ -19,7 +23,7 @@ import logging
 import os
 import sys
 
-from utils.runtime import env_flag
+from utils.runtime import env_flag, is_prod_mode
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +40,11 @@ def disable_unapproved_tracing() -> list[str]:
     if env_flag(OPT_IN_ENV, default=False):
         return []
     requested = [n for n in TRACING_SWITCHES if (os.environ.get(n) or "").strip().lower() == "true"]
+    if requested and is_prod_mode():
+        raise RuntimeError(
+            f"{', '.join(requested)} is set, which would send every prompt and reply to LangSmith's "
+            f"cloud. Remove it, or set {OPT_IN_ENV}=true if that is intended."
+        )
     for name in TRACING_SWITCHES:
         os.environ.pop(name, None)
     # langsmith caches env lookups; drop anything read before this ran.

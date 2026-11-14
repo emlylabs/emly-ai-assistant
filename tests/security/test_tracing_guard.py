@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def env(monkeypatch):
+    monkeypatch.setenv("MODE", "dev")
     for name in (*tracing_guard.TRACING_SWITCHES, tracing_guard.OPT_IN_ENV):
         monkeypatch.delenv(name, raising=False)
     from langsmith import utils
@@ -54,6 +55,27 @@ def test_opt_in_keeps_tracing(env):
     assert utils.tracing_is_enabled() is True
 
 
+def test_prod_refuses_to_start(env):
+    env.setenv("MODE", "prod")
+    env.setenv("LANGCHAIN_TRACING_V2", "true")
+    with pytest.raises(RuntimeError, match="LANGCHAIN_TRACING_V2 is set"):
+        tracing_guard.disable_unapproved_tracing()
+
+
+def test_prod_with_opt_in_starts(env):
+    env.setenv("MODE", "prod")
+    env.setenv("LANGCHAIN_TRACING_V2", "true")
+    env.setenv(tracing_guard.OPT_IN_ENV, "true")
+    assert tracing_guard.disable_unapproved_tracing() == []
+
+
+def test_prod_with_switch_set_false_starts(env):
+    env.setenv("MODE", "prod")
+    env.setenv("LANGSMITH_TRACING", "false")  # what the image sets
+    assert tracing_guard.disable_unapproved_tracing() == []
+    assert "LANGSMITH_TRACING" not in os.environ
+
+
 def test_nothing_set_is_quiet(env, caplog):
     assert tracing_guard.disable_unapproved_tracing() == []
     assert "LangSmith" not in caplog.text
@@ -64,7 +86,7 @@ def test_app_boot_turns_an_env_switch_off(tmp_path):
     child_env.pop(tracing_guard.OPT_IN_ENV, None)
     # Own data dir and DB: the parent test process holds the shared
     # embedded Qdrant lock.
-    child_env.update(LANGCHAIN_TRACING_V2="true", LANGSMITH_TRACING="true",
+    child_env.update(LANGCHAIN_TRACING_V2="true", LANGSMITH_TRACING="true", MODE="dev",
                      DATA_DIR=str(tmp_path), DATABASE_URL=f"sqlite:///{tmp_path}/t.db",
                      AUTH_LOCAL_KEYS_DIR=str(tmp_path / "keys"))
     code = "import main; from langsmith import utils; print('TRACING', utils.tracing_is_enabled())"
