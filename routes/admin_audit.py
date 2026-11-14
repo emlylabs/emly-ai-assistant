@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from models.admin_audit_log import AdminAuditLogModel, AdminAuditLogs
-from services.authz import require_owner, require_superadmin, require_writer
+from services.authz import deny, require_owner, require_superadmin, require_writer
 from models.admin_users import AdminUserModel
 from models.bots import Bots
 from services.auth.dependencies import get_admin
@@ -48,10 +48,7 @@ def list_audit_logs(
     with bot_id, owners and admins of that bot (G4b)."""
     if not admin.is_superadmin:
         if not bot_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="bot_id required for non-superadmin reads",
-            )
+            raise deny(admin, "not_superadmin", detail="bot_id required for non-superadmin reads")
         require_writer(admin, bot_id)
     items = AdminAuditLogs.list_filtered(
         admin_id=admin_id,

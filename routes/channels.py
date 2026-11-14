@@ -34,7 +34,7 @@ from models.admin_users import AdminUserModel, AdminUsers
 from models.bot_channels import BotChannelModel, BotChannels
 from services.audit import audit
 from services.auth.dependencies import get_admin
-from services.authz import has_role_at_least
+from services.authz import deny, has_role_at_least
 from services.secrets import encrypt as fernet_encrypt
 
 log = logging.getLogger(__name__)
@@ -88,7 +88,8 @@ async def channel_oauth_install(
     # Installing a channel is a write to the bot — require admin/owner
     # (writers), not just any-member. Superadmins bypass via has_role_at_least.
     if not has_role_at_least(admin, bot_id, "admin"):
-        raise HTTPException(status_code=403, detail="writer access required to install a channel")
+        raise deny(admin, "not_writer", bot_id, detail="writer access required to install a channel",
+                   channel_type=channel_type)
     try:
         safe_redirect = _validate_redirect_to(redirect_to)
     except InvalidRedirect as e:

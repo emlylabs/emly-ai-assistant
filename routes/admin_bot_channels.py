@@ -29,7 +29,7 @@ from models.bot_channels import BotChannelModel, BotChannels
 from models.bots import BotModel, Bots
 from services.audit import audit
 from services.auth.dependencies import get_admin
-from services.authz import has_role_at_least
+from services.authz import deny, has_role_at_least
 from services.secrets import encrypt as fernet_encrypt
 
 # Role groupings used by every mutation route. Reads (list, types,
@@ -77,7 +77,7 @@ def _resolve_bot_for_admin(
     if not has_role_at_least(admin, bot.id, min_role):
         # Same opaque 403 for "not a member" and "wrong role" — neither
         # case justifies leaking which one to the caller.
-        raise HTTPException(status_code=403, detail="not a member of this bot")
+        raise deny(admin, "insufficient_role", bot.id, detail="not a member of this bot", needed=min_role)
     return bot
 
 

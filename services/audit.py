@@ -26,6 +26,7 @@ Conventions for ``action``:
 from __future__ import annotations
 
 import logging
+import threading
 from contextvars import ContextVar
 from typing import Any, Optional
 
@@ -134,9 +135,25 @@ def audit(
             ua=ua,
             success=success,
         )
-    except Exception:
-        # Never block the live request on an audit write failure.
-        log.exception("audit() failed for action=%s admin=%s bot=%s", action, admin_id, bot_id)
+    except Exception as exc:
+        # Never block the live request on an audit write failure, but make
+        # it loud: ERROR log (event name and error type only; the exception
+        # text can echo the payload through SQL parameters), a counter, and
+        # a warning on /api/readyz (G5c).
+        global _WRITE_FAILURES
+        with _FAILURE_LOCK:
+            _WRITE_FAILURES += 1
+        log.error("AUDIT WRITE FAILED: action=%s admin=%s bot=%s error=%s",
+                  action, admin_id, bot_id, type(exc).__name__)
+
+
+_WRITE_FAILURES = 0
+_FAILURE_LOCK = threading.Lock()
+
+
+def audit_write_failures() -> int:
+    """Audit writes that failed since this process started."""
+    return _WRITE_FAILURES
 
 
 # -------- retention (C7) --------

@@ -34,7 +34,7 @@ from models.pending_admins import (
 )
 from services.audit import audit
 from services.auth.dependencies import get_admin
-from services.authz import require_owner, require_superadmin
+from services.authz import deny, require_owner, require_superadmin
 
 log = logging.getLogger(__name__)
 
@@ -570,10 +570,7 @@ async def transfer_bot_ownership(
     if not admin.is_superadmin:
         my_membership = AdminBotMemberships.get(admin.id, bot.id)
         if my_membership is None or my_membership.role != "owner":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only owners can transfer ownership",
-            )
+            raise deny(admin, "not_owner", bot.id, detail="Only owners can transfer ownership")
 
     new_owner = AdminUsers.get_by_id(payload.new_owner_admin_id)
     if new_owner is None:
@@ -926,10 +923,8 @@ async def accept_invite(
             "invite.accept email mismatch admin=%s invite_email=%s invite_id=%s",
             admin.id, row.email, row.id,
         )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "invite_email_mismatch"},
-        )
+        raise deny(admin, "invite_email_mismatch", detail={"code": "invite_email_mismatch"},
+                   invite_id=row.id)
     if row.status != STATUS_PENDING:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
@@ -977,10 +972,8 @@ async def reject_invite(
             detail={"code": "invite_not_found"},
         )
     if row.email.lower() != admin.email.lower():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "invite_email_mismatch"},
-        )
+        raise deny(admin, "invite_email_mismatch", detail={"code": "invite_email_mismatch"},
+                   invite_id=row.id)
     if row.status != STATUS_PENDING:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
@@ -1027,10 +1020,8 @@ async def revoke_invite(
         membership = AdminBotMemberships.get(admin.id, bot_id)
         is_bot_owner = membership is not None and membership.role == "owner"
     if not (admin.is_superadmin or is_inviter or is_bot_owner):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "invite_revoke_not_authorized"},
-        )
+        raise deny(admin, "invite_revoke_not_authorized", bot_id,
+                   detail={"code": "invite_revoke_not_authorized"}, invite_id=row.id)
     PendingAdmins.mark_revoked(row.id, admin.id)
     log.info("invite.revoke by=%s invite_id=%s bot=%s", admin.id, row.id, bot_id)
     audit(

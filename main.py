@@ -639,6 +639,16 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
     from services.llm_settings import endpoint_policy_warnings
 
     out.extend(endpoint_policy_warnings())
+
+    from services.audit import audit_write_failures
+
+    failures = audit_write_failures()
+    if failures:
+        out.append({
+            "code": "audit_write_failures",
+            "message": f"{failures} audit log write(s) failed since start-up. Check the database and "
+                       "the AUDIT WRITE FAILED lines in the logs.",
+        })
     return out
 
 
