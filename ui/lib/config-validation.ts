@@ -46,7 +46,10 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+// Numeric strings ("0.7") count: the server schema coerces them, so the
+// rules judge the value that's saved (mirrors ``_as_num`` in Python).
 function num(v: unknown): number | undefined {
+  if (typeof v === "string" && /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(v.trim())) v = Number(v);
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
@@ -263,6 +266,192 @@ export function validateConfig(config: Cfg, ctx: ValidationContext = {}): Issue[
     });
   }
 
+  issues.push(...fieldFormatIssues(config));
+  return issues;
+}
+
+// Field-format rules (R16–R23). The server always blocks save on these.
+const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+// Mirrors services/config_validation.py: 3–4 numeric components; only the
+// shape is checked (browsers clamp out-of-range values).
+const NUM = String.raw`(?:[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|deg|rad|grad|turn)?|none)`;
+const FUNC_COLOR_RE = new RegExp(
+  String.raw`^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*${NUM}(?:\s*[,/]\s*${NUM}|\s+${NUM}){2,3}\s*\)$`,
+  "i",
+);
+const VAR_COLOR_RE = /^var\(\s*--[A-Za-z0-9_-]+\s*(?:,[^;{}<>]*)?\)$/;
+const OTHER_FUNC_COLOR_RE = /^(?:color|color-mix)\([^;{}<>]+\)$/i;
+const NAMED_COLORS = new Set(
+  `
+  aliceblue antiquewhite aqua aquamarine azure beige bisque black
+  blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+  chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+  darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+  darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+  darkslateblue darkslategray darkslategrey darkturquoise darkviolet
+  deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+  forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green
+  greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender
+  lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+  lightgoldenrodyellow lightgray lightgreen lightgrey lightpink
+  lightsalmon lightseagreen lightskyblue lightslategray lightslategrey
+  lightsteelblue lightyellow lime limegreen linen magenta maroon
+  mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+  mediumslateblue mediumspringgreen mediumturquoise mediumvioletred
+  midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive
+  olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise
+  palevioletred papayawhip peachpuff peru pink plum powderblue purple
+  rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+  seagreen seashell sienna silver skyblue slateblue slategray slategrey
+  snow springgreen steelblue tan teal thistle tomato turquoise violet
+  wheat white whitesmoke yellow yellowgreen transparent currentcolor
+`.split(/\s+/).filter(Boolean),
+);
+const THEME_COLOR_FIELDS: [string, string][] = [
+  ["launcher_background", "Launcher background"],
+  ["container_background", "Container background"],
+  ["header_background", "Header background"],
+  ["header_foreground", "Header foreground"],
+  ["user_message_background", "User message background"],
+  ["user_message_foreground", "User message foreground"],
+  ["bot_message_background", "Bot message background"],
+  ["bot_message_foreground", "Bot message foreground"],
+];
+
+export function isHttpUrl(value: string): boolean {
+  if (!value || /\s/.test(value)) return false;
+  try {
+    const u = new URL(value);
+    return (u.protocol === "http:" || u.protocol === "https:") && !!u.hostname;
+  } catch {
+    return false;
+  }
+}
+
+/** An http(s) URL, a protocol-relative `//host/...` URL, a path on the
+ *  embedding site (`/logo.png`, `./logo.png`), or a `data:image/` URI.
+ *  Mirrors `is_logo_url` in services/config_validation.py. */
+export function isLogoUrl(value: string): boolean {
+  if (!value || /\s/.test(value)) return false;
+  if (value.startsWith("data:image/")) return true;
+  if (value.startsWith("//")) return isHttpUrl("https:" + value);
+  if (value.startsWith("/") || value.startsWith("./") || value.startsWith("../")) return true;
+  return isHttpUrl(value);
+}
+
+export function isValidColor(value: string): boolean {
+  const v = value.trim();
+  if (NAMED_COLORS.has(v.toLowerCase())) return true;
+  if ((v.match(/\(/g) || []).length !== (v.match(/\)/g) || []).length) return false;
+  return [HEX_COLOR_RE, FUNC_COLOR_RE, VAR_COLOR_RE, OTHER_FUNC_COLOR_RE].some((r) => r.test(v));
+}
+
+function present(v: unknown): boolean {
+  return v !== undefined && v !== null && !(typeof v === "string" && !v.trim());
+}
+
+function inRange(v: unknown, lo: number, hi: number): boolean {
+  const n = num(v);
+  return n !== undefined && n >= lo && n <= hi;
+}
+
+function fieldFormatIssues(config: Cfg): Issue[] {
+  const issues: Issue[] = [];
+  const widget = asObj(config.widget);
+  const theme = asObj(widget.theme);
+  const llm = asObj(config.llm);
+  const rag = asObj(config.rag);
+  const limits = asObj(config.limits);
+
+  if (present(config.support_email)) {
+    const bad = String(config.support_email)
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => !EMAIL_RE.test(p));
+    if (bad.length > 0) {
+      issues.push({
+        severity: "error",
+        key: "R16_invalid_support_email",
+        section: "identity",
+        message: `Support email "${bad[0]}" is not a valid email address.`,
+      });
+    }
+  }
+
+  if (present(widget.logo)) {
+    const logo = String(widget.logo);
+    if (!isLogoUrl(logo)) {
+      issues.push({
+        severity: "error",
+        key: "R17_invalid_logo_url",
+        section: "identity",
+        message: "Logo URL must be an http:// or https:// address, or a path starting with /.",
+      });
+    }
+  }
+
+  for (const [field, label] of THEME_COLOR_FIELDS) {
+    const color = theme[field];
+    if (present(color) && !isValidColor(String(color))) {
+      issues.push({
+        severity: "error",
+        key: `R18_invalid_color_${field}`,
+        section: "widget",
+        message: `${label} "${String(color)}" is not a colour. Use a hex value like #1a73e8, a CSS colour name, or rgb(…).`,
+      });
+    }
+  }
+
+  if (present(llm.api_endpoint) && !isHttpUrl(String(llm.api_endpoint))) {
+    issues.push({
+      severity: "error",
+      key: "R19_invalid_api_endpoint",
+      section: "llm",
+      message: "API endpoint must be a full http:// or https:// address.",
+    });
+  }
+
+  if (llm.temperature !== undefined && llm.temperature !== null && !inRange(llm.temperature, 0, 2)) {
+    issues.push({
+      severity: "error",
+      key: "R20_temperature_range",
+      section: "llm",
+      message: "Temperature must be between 0 and 2.",
+    });
+  }
+  if (rag.top_k !== undefined && rag.top_k !== null && !inRange(rag.top_k, 1, 50)) {
+    issues.push({
+      severity: "error",
+      key: "R21_top_k_range",
+      section: "rag",
+      message: "Top K must be between 1 and 50.",
+    });
+  }
+  if (
+    rag.embedding_threshold !== undefined &&
+    rag.embedding_threshold !== null &&
+    !inRange(rag.embedding_threshold, 0, 1)
+  ) {
+    issues.push({
+      severity: "error",
+      key: "R22_threshold_range",
+      section: "rag",
+      message: "Score threshold must be between 0 and 1.",
+    });
+  }
+  if (
+    limits.max_file_size_mb !== undefined &&
+    limits.max_file_size_mb !== null &&
+    !inRange(limits.max_file_size_mb, 1, Number.POSITIVE_INFINITY)
+  ) {
+    issues.push({
+      severity: "error",
+      key: "R23_max_file_size_range",
+      section: "limits",
+      message: "Max file size must be at least 1 MB.",
+    });
+  }
   return issues;
 }
 

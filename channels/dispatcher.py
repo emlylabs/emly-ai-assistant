@@ -23,6 +23,10 @@ import json
 import logging
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -32,9 +36,11 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from channels.base import ChannelAdapter, ReplyMode
-from channels.contracts import IncomingMessage, OutgoingMessage
+from channels.contracts import RUNNING_CHAT_TYPES, IncomingMessage, OutgoingMessage, UserProfile
 from channels.registry import get as registry_get
+from config import CHANNEL_SESSION_IDLE_HOURS
 from models.bot_channels import BotChannelModel, BotChannels
+from models.emly_sessions import EMLYSessions
 from models.webhook_event_dedupe import WebhookEventDedupes
 from services.secrets import decrypt as fernet_decrypt
 
@@ -49,6 +55,8 @@ DEFAULT_ERROR_REPLY = "Sorry, something went wrong on my end. Please try again."
 _MAX_INFLIGHT = 100
 _inflight = 0
 _inflight_lock = asyncio.Lock()
+
+_SESSION_IDLE_AFTER = timedelta(hours=CHANNEL_SESSION_IDLE_HOURS)
 
 
 def decrypt_secrets(channel: BotChannelModel) -> BaseModel:
@@ -439,11 +447,15 @@ async def handle_inbound(
         raise HTTPException(status_code=503, detail="channel install incomplete")
     install_key = channel.external_id
     user_id = emly_id_for(bot_id, install_key, incoming.user_external_id)
-    session_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
+    session_id = await run_in_threadpool(_resolve_session_id, bot_id, install_key, incoming)
 
     reply_mode = _resolve_reply_mode(channel, adapter)
 
     if reply_mode == "sync":
+        # The row is written in the request (no network call); a platform
+        # profile lookup, if one is needed, runs after the response.
+        await _ensure_end_user(adapter, bot_id, user_id, channel, incoming, lookup=False)
+        background_tasks.add_task(_ensure_end_user, adapter, bot_id, user_id, channel, incoming)
         sync_timeout = adapter.sync_response_timeout
         agent_task: Optional[asyncio.Task] = None
         try:
@@ -527,6 +539,9 @@ async def handle_inbound(
             raise HTTPException(status_code=429, detail="overloaded")
         _inflight += 1
 
+    # The end-user step (which may call the platform, e.g. Slack
+    # ``users.info``) runs after the ack: Slack retries an event not
+    # acked within 3s, and the retry is dropped as a duplicate.
     background_tasks.add_task(
         _run_agent_and_send,
         channel.id,
@@ -536,8 +551,165 @@ async def handle_inbound(
         incoming.text,
         incoming.reply_handle,
         dedupe_key,
+        incoming,
     )
     return JSONResponse(content=adapter.async_ack_body)
+
+
+def _resolve_session_id(bot_id: str, install_key: str, incoming: IncomingMessage) -> str:
+    """Map an inbound message onto an emly session id.
+
+    - A reply inside a DM thread whose session an earlier release stored
+      under that thread (``legacy_session_external_id``) continues it
+      while it is still open. That is exactly the continuity the old
+      keying offered; a new top-level DM message started fresh then too.
+    - A thread keeps one session for life: a reply days later still sees
+      the earlier turns.
+    - A running conversation (DM, group chat) rotates to a new session
+      once the current one is resolved or idle.
+    """
+    base_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
+    if incoming.legacy_session_external_id:
+        legacy_id = emly_id_for(bot_id, install_key, incoming.legacy_session_external_id)
+        if legacy_id != base_id and EMLYSessions.open_session(
+            bot_id, legacy_id, idle_after=_SESSION_IDLE_AFTER
+        ):
+            return legacy_id
+    if incoming.chat_type not in RUNNING_CHAT_TYPES:
+        return base_id
+    return EMLYSessions.current_channel_session(bot_id, base_id, idle_after=_SESSION_IDLE_AFTER)
+
+
+class _RecentKeys:
+    """Thread-safe, bounded set of keys that expire after ``ttl_s``."""
+
+    def __init__(self, max_size: int, ttl_s: float):
+        self._items: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+        self._max = max_size
+        self._ttl = ttl_s
+        self._lock = threading.Lock()
+
+    def __contains__(self, key: Tuple[str, str]) -> bool:
+        with self._lock:
+            seen = self._items.get(key)
+            return seen is not None and time.monotonic() - seen < self._ttl
+
+    def add(self, key: Tuple[str, str]) -> None:
+        with self._lock:
+            self._items[key] = time.monotonic()
+            self._items.move_to_end(key)
+            while len(self._items) > self._max:
+                self._items.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
+# (bot_id, user_id) pairs this process recently confirmed have an end-user
+# row with a name or email (or that the platform can't name), so the check
+# costs one query per sender per hour, not one per message. Entries expire
+# because data retention can delete the row; a returning sender then gets
+# it back within the TTL. Bounded; evicting an entry only costs a repeat
+# SELECT.
+_KNOWN_END_USERS = _RecentKeys(max_size=10_000, ttl_s=3600.0)
+_PROFILE_LOOKUP_TIMEOUT_S = 3.0
+
+
+async def _ensure_end_user(
+    adapter: ChannelAdapter,
+    bot_id: str,
+    user_id: str,
+    channel: BotChannelModel,
+    incoming: IncomingMessage,
+    lookup: bool = True,
+) -> None:
+    """Create the bot-user row for a chat-app sender on first contact, the
+    way the widget chat route does for website visitors, with whatever
+    name / email / phone the platform gives. A row from an earlier
+    message that has no name or email yet is filled in.
+
+    ``lookup=False`` skips the adapter's platform profile lookup (for use
+    inside a request); the sender then isn't cached as done unless the
+    payload named them, so a later call with ``lookup=True`` still asks.
+
+    Best-effort end to end: any failure, including in the cache, is
+    logged and the reply goes ahead."""
+    key = (bot_id, user_id)
+    try:
+        if key in _KNOWN_END_USERS:
+            return
+        from models.emly_users import EMLYUsers
+
+        existing = await run_in_threadpool(EMLYUsers.get_user_by_id, bot_id, user_id)
+        if existing is not None and (existing.first_name or existing.email):
+            _KNOWN_END_USERS.add(key)
+            return
+
+        profile = incoming.user_profile or UserProfile()
+        named = bool(profile.first_name or profile.email)
+        if not named and lookup:
+            try:
+                fetched = await asyncio.wait_for(
+                    adapter.fetch_user_profile(channel, incoming.user_external_id),
+                    timeout=_PROFILE_LOOKUP_TIMEOUT_S,
+                )
+                profile = profile.merged(fetched)
+            except Exception:
+                log.info("Profile lookup failed type=%s channel=%s", channel.type, channel.id, exc_info=True)
+
+        await run_in_threadpool(_write_end_user, bot_id, user_id, channel, existing is None, profile)
+        if named or lookup:
+            _KNOWN_END_USERS.add(key)
+    except Exception:
+        log.warning("Could not record end-user for bot=%s channel=%s", bot_id, channel.id, exc_info=True)
+
+
+def _write_end_user(
+    bot_id: str, user_id: str, channel: BotChannelModel, create: bool, profile: UserProfile
+) -> None:
+    from peewee import IntegrityError
+
+    from models.emly_users import EMLYUser, EMLYUsers
+
+    if create:
+        try:
+            EMLYUsers.insert_new_user(
+                bot_id=bot_id,
+                id=user_id,
+                first_name=profile.first_name,
+                last_name=profile.last_name,
+                email=profile.email,
+                phone=profile.phone,
+                ip="",
+                # Not a browser; the channel is recorded in ``meta``.
+                browser="",
+                meta={"channel": channel.type, "channel_id": channel.id},
+            )
+            return
+        except IntegrityError:
+            # Lost a concurrent-insert race: the row exists; fill it below.
+            pass
+    # Fill only the gaps, so a name or email captured some other way
+    # (a form, an admin edit) is never overwritten.
+    for field, value in (
+        ("first_name", profile.first_name),
+        ("last_name", profile.last_name),
+        ("email", profile.email),
+        ("phone", profile.phone),
+    ):
+        if not value:
+            continue
+        column = getattr(EMLYUser, field)
+        (
+            EMLYUser.update(**{field: value})
+            .where(
+                (EMLYUser.id == user_id)
+                & (EMLYUser.bot == bot_id)
+                & (column.is_null(True) | (column == ""))
+            )
+            .execute()
+        )
 
 
 async def _run_agent(bot_id: str, user_id: str, session_id: str, text: str, channel_id: Optional[str] = None) -> OutgoingMessage:
@@ -596,6 +768,7 @@ async def _run_agent_and_send(
     text: str,
     reply_handle: Any,
     dedupe_key: Optional[str],
+    incoming: Optional[IncomingMessage] = None,
 ) -> None:
     global _inflight
     try:
@@ -605,6 +778,9 @@ async def _run_agent_and_send(
         adapter = registry_get(channel.type)
         if adapter is None:
             return
+        if incoming is not None:
+            # Never raises; a failure here doesn't stop the reply.
+            await _ensure_end_user(adapter, bot_id, user_id, channel, incoming)
         try:
             out = await _run_agent(bot_id, user_id, session_id, text, channel_id=channel_id)
         except Exception:

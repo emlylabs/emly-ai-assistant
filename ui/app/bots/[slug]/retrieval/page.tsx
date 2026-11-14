@@ -31,8 +31,8 @@ export default function BotRetrievalPage() {
         runtime would feed the LLM as <code>{"{context}"}</code> for this
         query, with the same <code>top_k</code> and threshold the production
         config applies. Tune those values in{" "}
-        <Link href={`/bots/${bot.slug}/config`}>Config → RAG</Link>; upload
-        more knowledge under <Link href={`/bots/${bot.slug}/files`}>Knowledge</Link>.
+        <Link href={`/bots/${bot.slug}/config`}>Config → Knowledge</Link>; upload
+        more under <Link href={`/bots/${bot.slug}/files`}>Knowledge</Link>.
       </div>
 
       <RAGSearchPanel slug={bot.slug} />

@@ -28,7 +28,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Awaitable, Literal, Optional, Set
 
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 
 if TYPE_CHECKING:
     from channels.auth.base import AuthStrategy, InstallMetadata
@@ -100,6 +100,15 @@ class ChannelAdapter(ABC):
     def is_self(self, secrets: "BaseModel", raw_payload: dict) -> bool:
         """True if the inbound is the bot's own post (drop)."""
         return False
+
+    async def fetch_user_profile(
+        self, channel: "BotChannelModel", user_external_id: str
+    ) -> Optional[UserProfile]:
+        """Look the sender up on the platform when the inbound payload
+        doesn't name them (Slack). Called at most once per new or
+        nameless end-user; failures are swallowed by the dispatcher.
+        Default: nothing to add."""
+        return None
 
     # ------------------------------------------------------------------
     # Outbound

@@ -1571,6 +1571,7 @@ function BotsToolbar({
       <div className="toolbar">
         <input
           type="search"
+          aria-label="Search bots"
           placeholder="Search bots…"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
@@ -1583,8 +1584,9 @@ function BotsToolbar({
         {!forceCards && (
           <div className="seg" role="tablist" aria-label="View">
             <button
+              role="tab"
               className={view === "cards" ? "active" : ""}
-              aria-pressed={view === "cards"}
+              aria-selected={view === "cards"}
               onClick={() => onViewChange("cards")}
               title="Card view"
             >
@@ -1592,8 +1594,9 @@ function BotsToolbar({
               Cards
             </button>
             <button
+              role="tab"
               className={view === "table" ? "active" : ""}
-              aria-pressed={view === "table"}
+              aria-selected={view === "table"}
               onClick={() => onViewChange("table")}
               title="Table view"
             >

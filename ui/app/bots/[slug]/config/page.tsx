@@ -862,6 +862,29 @@ function SaveAsWorkspaceTemplateModal({
 // ---------------------------------------------------------------------------
 // Identity tab
 // ---------------------------------------------------------------------------
+type AccountRow = { platform: string; value: string; icon: string };
+
+function accountRowsFrom(accounts: Record<string, any>): AccountRow[] {
+  return Object.entries(accounts).map(([k, v]) => ({
+    platform: k,
+    value: v && typeof v === "object" ? String((v as any).value ?? "") : String(v ?? ""),
+    icon: v && typeof v === "object" ? String((v as any).icon ?? "") : "",
+  }));
+}
+
+function accountDictFrom(rows: AccountRow[]): Record<string, { value: string; icon?: string }> {
+  const dict: Record<string, { value: string; icon?: string }> = {};
+  for (const { platform, value, icon } of rows) {
+    const key = platform.trim();
+    if (!key) continue;
+    const entry: { value: string; icon?: string } = { value };
+    const trimmedIcon = icon.trim();
+    if (trimmedIcon) entry.icon = trimmedIcon;
+    dict[key] = entry;
+  }
+  return dict;
+}
+
 function IdentitySection({
   config,
   patchPath,
@@ -881,26 +904,26 @@ function IdentitySection({
     config.social_handles && typeof config.social_handles === "object" && !Array.isArray(config.social_handles)
       ? (config.social_handles.accounts && typeof config.social_handles.accounts === "object" ? config.social_handles.accounts : {})
       : {};
-  const accountEntries = Object.entries(accounts).map(([k, v]) => ({
-    platform: k,
-    value: v && typeof v === "object" ? String((v as any).value ?? "") : String(v ?? ""),
-    icon: v && typeof v === "object" ? String((v as any).icon ?? "") : "",
-  }));
   const termsBody: string =
     config.terms_of_service && typeof config.terms_of_service === "object" && !Array.isArray(config.terms_of_service)
       ? String((config.terms_of_service as any).terms ?? "")
       : "";
 
-  function setAccounts(next: { platform: string; value: string; icon: string }[]) {
-    const dict: Record<string, { value: string; icon?: string }> = {};
-    for (const { platform, value, icon } of next) {
-      const key = platform.trim();
-      if (!key) continue;
-      const entry: { value: string; icon?: string } = { value };
-      const trimmedIcon = icon.trim();
-      if (trimmedIcon) entry.icon = trimmedIcon;
-      dict[key] = entry;
-    }
+  // Rows live in local state so a freshly added row (no platform key yet)
+  // stays visible; only rows with a platform key are written to config.
+  const accountsKey = JSON.stringify(accounts);
+  const [accountEntries, setAccountEntries] = useState<AccountRow[]>(() => accountRowsFrom(accounts));
+  useEffect(() => {
+    // Re-seed when the stored accounts change from outside (load, discard, undo).
+    setAccountEntries((rows) =>
+      JSON.stringify(accountDictFrom(rows)) === accountsKey ? rows : accountRowsFrom(JSON.parse(accountsKey)),
+    );
+  }, [accountsKey]);
+
+  function setAccounts(next: AccountRow[]) {
+    setAccountEntries(next);
+    const dict = accountDictFrom(next);
+    if (JSON.stringify(dict) === accountsKey) return;
     patchPath(["social_handles", "accounts"], Object.keys(dict).length ? dict : undefined);
   }
 
@@ -1972,20 +1995,37 @@ function LLMSection({
         </button>
       </div>
 
-      <h2 style={{ marginTop: 24 }}>Report analysis prompt</h2>
+      <h2 style={{ marginTop: 24 }}>Conversation analysis</h2>
       <div className="field">
-        <label htmlFor="cfg-report-prompt">Prompt used for conversation reports</label>
+        <label>
+          <input
+            type="checkbox"
+            checked={Boolean(config.enrichment_enabled)}
+            onChange={(e) => patchPath(["enrichment_enabled"], e.target.checked)}
+            disabled={!writable}
+            style={{ marginRight: 8 }}
+          />
+          Analyse conversations for sentiment and intent
+        </label>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+          Classifies each finished conversation with this bot&apos;s LLM (one extra call per
+          conversation). Results appear on the Analytics page.
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor="cfg-report-prompt">Conversation summary prompt</label>
         <textarea
           id="cfg-report-prompt"
           rows={6}
-          placeholder="Analyze user-assistant interactions to identify trends, issues, and improvement areas…"
+          placeholder="Summarise what the visitor needed, whether it was answered, and the follow-up for our team…"
           value={typeof config.report_analysis_prompt === "string" ? config.report_analysis_prompt : ""}
           onChange={(e) => patchPath(["report_analysis_prompt"], e.target.value || undefined)}
           disabled={!writable}
           style={textareaStyle}
         />
         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Used by the admin metric/report generator to summarize transcripts.
+          Instructions for the AI summary in form-alert emails. A form&apos;s own summary prompt
+          overrides this; leave both empty to use the built-in default.
         </div>
       </div>
     </div>

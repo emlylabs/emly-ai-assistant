@@ -58,13 +58,24 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [activeDetail, setActiveDetail] = useState<ConversationSession | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // The search term lives in the URL (``q``) like the other filters, so a
+  // refresh or a shared link keeps it.
+  const [searchInput, setSearchInput] = useState(() => (initialSearchParams.get("q") ?? "").trim());
+  const [search, setSearch] = useState(() => {
+    const q = (initialSearchParams.get("q") ?? "").trim();
+    return q.length >= 2 ? q : "";
+  });
 
-  const filterQuery = useMemo(() => filtersToQuery(filters), [filters]);
+  const filterQuery = useMemo(
+    () => ({ ...filtersToQuery(filters), ...(search ? { q: search } : {}) }),
+    [filters, search],
+  );
 
   const writeUrl = useCallback(
-    (nextFilters: ConversationFilters, nextPage: number) => {
+    (nextFilters: ConversationFilters, nextPage: number, nextSearch: string) => {
       if (typeof window === "undefined") return;
       const params = new URLSearchParams(filtersToUrlParams(nextFilters));
+      if (nextSearch) params.set("q", nextSearch);
       if (nextPage > 0) params.set("page", String(nextPage + 1));
       const qs = params.toString();
       window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
@@ -72,23 +83,39 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
     [pathname],
   );
 
+  useEffect(() => {
+    // One-character terms match nearly every transcript and can't use the
+    // trigram index; the API rejects them, so treat them as no search.
+    const trimmed = searchInput.trim();
+    const next = trimmed.length >= 2 ? trimmed : "";
+    if (next === search) return;
+    const t = setTimeout(() => {
+      setSearch(next);
+      setPage(0);
+      setActiveSessionId(null);
+      setActiveDetail(null);
+      writeUrl(filters, 0, next);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput, search, filters, writeUrl]);
+
   const updateFilters = useCallback(
     (next: ConversationFilters) => {
       setFilters(next);
       setPage(0);
       setActiveSessionId(null);
       setActiveDetail(null);
-      writeUrl(next, 0);
+      writeUrl(next, 0, search);
     },
-    [writeUrl],
+    [writeUrl, search],
   );
 
   const goToPage = useCallback(
     (next: number) => {
       setPage(next);
-      writeUrl(filters, next);
+      writeUrl(filters, next, search);
     },
-    [filters, writeUrl],
+    [filters, writeUrl, search],
   );
 
   // Reset to page 0 when the bot itself changes so we don't show another
@@ -162,7 +189,9 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
       try {
         const res = await api.getBotSession(bot.slug, activeSessionId);
         if (seq !== detailSeq.current) return;
-        setActiveDetail(withDetail(base, res.messages));
+        setActiveDetail(
+          withDetail({ ...base, channel: res.channel_type ?? base.channel }, res.messages),
+        );
       } catch (err: unknown) {
         if (seq !== detailSeq.current) return;
         // Keep the stub on failure — it still renders header info — and
@@ -211,6 +240,8 @@ export default function ConversationsSplit({ bot }: ConversationsSplitProps) {
           activeSessionId={activeSessionId}
           onSelect={setActiveSessionId}
           loading={loading && sessions.length === 0}
+          query={searchInput}
+          onQueryChange={setSearchInput}
         />
         <ConversationThread bot={bot} session={activeDetail} />
         <ConversationMeta session={activeDetail} />

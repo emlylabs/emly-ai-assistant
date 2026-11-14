@@ -276,7 +276,7 @@ export default function BotFilesPage() {
   return (
     <>
       <div className="header">
-        <h1>Files — {bot.name}</h1>
+        <h1>Knowledge — {bot.name}</h1>
         <div className="row">
           <button className="ghost" onClick={refresh}>
             <RefreshCw strokeWidth={1.75} />
@@ -301,7 +301,7 @@ export default function BotFilesPage() {
 
       <div
         role="tablist"
-        aria-label="Files sections"
+        aria-label="Knowledge sections"
         style={{
           display: "flex",
           gap: 4,
@@ -530,6 +530,7 @@ export default function BotFilesPage() {
           <div className="toolbar">
             <input
               type="search"
+              aria-label="Filter files"
               placeholder="Filter files…"
               value={fileQuery}
               onChange={(e) => setFileQuery(e.target.value)}
@@ -719,7 +720,7 @@ function RAGSearchPanel({ slug }: { slug: string }) {
         top_k: topK === "" ? undefined : Number(topK),
         threshold: threshold === "" ? undefined : Number(threshold),
       });
-      setHits(res.hits);
+      setHits(Array.isArray(res.hits) ? res.hits : []);
       setMeta({ top_k: res.top_k, threshold: res.threshold });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Search failed");
@@ -740,6 +741,7 @@ function RAGSearchPanel({ slug }: { slug: string }) {
         <div className="field">
           <input
             type="text"
+            aria-label="Search knowledge"
             placeholder="Ask what the bot would retrieve…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -783,12 +785,21 @@ function RAGSearchPanel({ slug }: { slug: string }) {
 
       {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
 
-      {hits !== null && (
+      {hits !== null && hits.length === 0 && (
+        <div role="status" className="card" style={{ marginTop: 16, padding: 16, background: "var(--paper)" }}>
+          <strong>No matches</strong>
+          <p className="muted" style={{ fontSize: 13, margin: "6px 0 0" }}>
+            Nothing in this bot&apos;s knowledge is close enough to that query
+            {meta ? ` (threshold ${meta.threshold})` : ""}. The bot would answer
+            without a retrieved passage.
+          </p>
+        </div>
+      )}
+
+      {hits !== null && hits.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            {hits.length === 0
-              ? `No hits above threshold ${meta?.threshold ?? "?"}. The bot would answer with no RAG context — it falls back to the model's general knowledge or refuses.`
-              : `${hits.length} hit${hits.length === 1 ? "" : "s"} returned (top_k=${meta?.top_k}, threshold=${meta?.threshold}).`}
+            {`${hits.length} hit${hits.length === 1 ? "" : "s"} returned (top_k=${meta?.top_k}, threshold=${meta?.threshold}).`}
           </div>
           {hits.map((h, i) => {
             const filename =

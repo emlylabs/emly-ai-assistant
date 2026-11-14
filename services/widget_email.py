@@ -285,6 +285,29 @@ def _alert_email_content(bot_id: str) -> str:
         return "full"
 
 
+def _bot_summary_prompt(bot_id: str) -> str:
+    """The bot's ``report_analysis_prompt``: its default instructions for
+    AI conversation summaries, used when a form sets no prompt of its own."""
+    if not bot_id:
+        return ""
+    try:
+        from services.bot_config import get_config_for_bot
+
+        return (get_config_for_bot(bot_id).report_analysis_prompt or "").strip()
+    except Exception:
+        log.exception("Failed to read report_analysis_prompt for bot_id=%s", bot_id)
+        return ""
+
+
+def _summary_instructions(bot_id: str, prompt_template: str) -> str:
+    """Form prompt, else the bot's default, else the deployment default."""
+    return (
+        (prompt_template or "").strip()
+        or _bot_summary_prompt(bot_id)
+        or SUMMARY_RECOMMENDATION_PROMPT
+    )
+
+
 def _summarize_conversation(bot_id: str, messages, prompt_template: str) -> str:
     """Generate the human-agent-facing summary using the bot's own LLM creds.
 
@@ -297,7 +320,7 @@ def _summarize_conversation(bot_id: str, messages, prompt_template: str) -> str:
     conversation_text = "\n".join(
         f"{m.role}: {m.message}" for m in reversed(messages)
     )
-    instructions = prompt_template.strip() if prompt_template else SUMMARY_RECOMMENDATION_PROMPT
+    instructions = _summary_instructions(bot_id, prompt_template)
     prompt = f"Here are the most recent conversations:\n\n{conversation_text}\n\n{instructions}"
 
     from services import llm_settings

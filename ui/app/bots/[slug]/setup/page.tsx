@@ -788,7 +788,7 @@ function EmbedStep({
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600 }}>Tune the full config</div>
               <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                Skills, actions, voice, RAG, LLM, limits, raw JSON.
+                Skills, actions, voice, knowledge, LLM, limits, raw JSON.
               </div>
             </div>
             <ArrowRight size={16} strokeWidth={1.75} />

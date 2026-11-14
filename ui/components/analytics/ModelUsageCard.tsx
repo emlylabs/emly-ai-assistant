@@ -190,9 +190,8 @@ export default function ModelUsageCard({ rows, rangeDays, priorRows }: ModelUsag
           className="muted"
           style={{ padding: "10px 16px", fontSize: 11.5, borderTop: "1px solid var(--border)" }}
         >
-          Some models have no entry in the local price table — their tokens are
-          counted but excluded from the total cost. Add them to{" "}
-          <code>PRICE_TABLE_PER_1K</code> in <code>ModelUsageCard.tsx</code>.
+          Price not available for some models. Their tokens are counted but
+          not included in the total cost.
         </div>
       )}
     </div>
