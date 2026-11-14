@@ -145,6 +145,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
 | `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION`, `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Only when using non-default models | Pin a commit; allow remote code only for a model you have reviewed |
 | `AUDIT_RETENTION_DAYS`, `WEBHOOK_DEDUPE_RETENTION_HOURS` | `365` and `24` (defaults), or your policy | Nightly cleanup |
+| Backups | Database, search index, `DATA_DIR` and the secrets key | See [Backup and restore](#backup-and-restore) |
 
 **Network and channels**
 
@@ -719,6 +720,50 @@ curl -X POST https://emly.yourdomain.com/api/admin/admins/pending \
 ```
 
 ---
+
+## Backup and restore
+
+Back these up together, from the same moment where possible:
+
+| What | Where (compose defaults) | How |
+|------|--------------------------|-----|
+| Database: bots, configs, conversations, admins, audit log | Postgres (`./data/postgres`) | `docker compose exec -T postgres pg_dump -U emly -Fc emly > emly-$(date +%F).dump`, or your managed database's snapshots |
+| Search index (document vectors) | Qdrant (`./data/qdrant`) | Stop Qdrant and copy the directory, or use Qdrant's snapshot API. It can also be rebuilt by re-indexing each bot's files, which costs time (and embedding calls with `EMBEDDING_PROVIDER=openai`) |
+| Uploaded documents | `DATA_DIR/bots/*/uploads/` (`./data/bots`) | File copy. Needed to re-index |
+| Visitor attachments | `DATA_DIR/attachments/` | File copy |
+| Scheduled jobs (pending alert emails, crawls) | `DATA_DIR/actions.db` | File copy (SQLite) |
+| Built-in sign-in keys | `AUTH_LOCAL_KEYS_DIR` (default `DATA_DIR/auth_keys/`) | File copy. Without them, every admin signs in again |
+| `BOT_SECRETS_KEY` (and any `BOT_SECRETS_KEY_PREVIOUS`) | Your secret store or `.env` | Keep it **separately** from the database backup. Without it, stored bot API keys and channel credentials can't be decrypted |
+
+**Restore order:**
+
+1. Put `.env` (with the same `BOT_SECRETS_KEY`) in place. Don't start the app yet.
+2. Start Postgres and restore: `docker compose exec -T postgres pg_restore -U emly -d emly --clean --if-exists < emly.dump`.
+3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
+4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
+5. Start the app. Boot runs any pending migrations and checks every bot's config. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
+
+Test the restore on a separate host before you rely on it.
+
+## What the model sees
+
+Every model call goes to the bot's own endpoint (its LLM settings, or the `OPENAI_BASE_URL` default), which must be on `LLM_ENDPOINT_ALLOWLIST` when that is set. For each visitor message there are at most three calls. The same pipeline serves the widget and every chat channel.
+
+| Call | When | What it contains |
+|------|------|------------------|
+| Topic routing | The bot has two or more topics, and isn't partway through collecting details for one | Routing instructions; each topic's name and description; the current topic's name; the last `LATEST_N_MESSAGES` (default 3) exchanges of this conversation; the visitor's message |
+| Detail extraction | The topic collects details (slots) | The visitor's message, and the name, description and type of each detail to extract |
+| Answer | Always, except when a knowledge topic finds no passage above the threshold (then a fixed reply, no call) | The answer template (the topic's, else the bot's) filled with: the visitor's message; the details collected so far; the last `LATEST_N_MESSAGES` exchanges in this topic; for knowledge topics, up to `RAG_TOP_K` (default 5) passages from this bot's documents |
+
+Questions that ask for a missing detail come from templates and make no call.
+
+**Other calls:**
+
+- **Form-alert summary**, only when the bot's alerts are set to the full alert (new bots default to link-only, which makes no call): this conversation's messages and the summary instructions. The submitted form's field values are left out.
+- **Sentiment and intent**, only when *Analyse conversations* is on: one call per visitor message, containing that message (its first 2,000 characters) and the classifier instructions.
+- **Embeddings** run inside the deployment by default. With `EMBEDDING_PROVIDER=openai`, every document chunk and every search query is sent to `OPENAI_BASE_URL`. The re-ranker always runs locally.
+
+**Never sent:** the visitor's name, email, phone, IP address or location; the values of submitted forms; files visitors attach; other conversations; other bots' documents; API keys. LangSmith tracing stays off unless `ALLOW_LANGSMITH_TRACING=true`.
 
 ## Architecture
 

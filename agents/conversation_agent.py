@@ -1,3 +1,26 @@
+"""Conversation pipeline: LangGraph workflow for the widget and chat channels.
+
+What each model call contains (G1e; the README's "What the model sees"
+section is the operator-facing copy and must be kept in step):
+
+- Topic routing (``IntentRouter.detect_intent``): only with two or more
+  topics and no slot-filling in progress. Routing instructions, topic
+  names and descriptions, the current topic, the last
+  ``LATEST_N_MESSAGES`` exchanges (``ConversationManager.
+  global_history_text``) and the visitor's message.
+- Detail extraction (``SlotManager.extract_slots``): only for topics with
+  slots. The visitor's message and the slot names, descriptions and types.
+- Answer (``TopicAgent._generate_final_response``): the answer template
+  filled with the visitor's message, filled slots, the topic's last
+  ``LATEST_N_MESSAGES`` exchanges and, for RAG topics, up to ``TOP_K``
+  passages. A RAG topic with no passage returns ``DEFAULT_MESSAGE``
+  without a call.
+
+History comes from ``EMLYMessages.get_messages`` /
+``get_messages_by_topic``, which leave out form submissions (G1b). No
+visitor profile data (name, email, phone, IP, location) is put into any
+prompt.
+"""
 import asyncio
 import os
 import json
