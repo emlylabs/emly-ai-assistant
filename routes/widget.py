@@ -415,11 +415,10 @@ def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
         mime_allowlist = [m.lower() for m in (limits.mime_allowlist or [])]
 
     for f in files:
-        # Starlette/FastAPI exposes ``size`` only when the client sent
-        # a Content-Length per part. When absent we still cap during
-        # ``handle_file_uploads`` (it reads ``await file.read()`` once
-        # and the byte length is checked there), but rejecting
-        # known-too-large uploads here is cheaper for the client.
+        # Starlette's multipart parser sets ``size`` to the bytes it
+        # actually received for this part (not a client-supplied value),
+        # so this is the per-file cap. The whole request body is capped
+        # earlier, as it arrives, by WidgetBodyLimitMiddleware (G13c).
         size = getattr(f, "size", None)
         if size is not None and size > max_bytes:
             raise HTTPException(

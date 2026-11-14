@@ -385,6 +385,10 @@ if is_local_issuer_enabled():
 # like ``GET /widget/{bot_id}/config`` and ``POST /widget/{bot_id}/action``.
 app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=False)
 app.add_middleware(CustomMiddleware)
+# G13c: hard cap on widget request bodies, counted as bytes arrive. Inside
+# the CORS layers so the widget can read the 413.
+from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
+app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
 from services.audit import AuditRequestContextMiddleware  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)
