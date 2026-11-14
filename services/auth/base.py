@@ -81,8 +81,13 @@ class OAuthState:
 class AuthProvider(Protocol):
     """Provider-portable auth interface. The only auth surface routes import."""
 
-    def verify_token(self, token: str) -> Principal:
-        """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure."""
+    def verify_token(self, token: str, *, allow_expired: bool = False) -> Principal:
+        """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure.
+
+        ``allow_expired`` skips only the ``exp`` check (signature, issuer
+        and audience still apply). It is for attributing audit events on
+        routes that run as a session ends (logout, refresh), never for
+        granting access."""
 
     def authorize_url(self, oauth_state: OAuthState, redirect_uri: str) -> str:
         """Build the IdP authorize URL the browser should redirect to."""

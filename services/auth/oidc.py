@@ -191,7 +191,7 @@ class OidcProvider:
 
     # -------- token verification --------
 
-    def verify_token(self, token: str) -> Principal:
+    def verify_token(self, token: str, *, allow_expired: bool = False) -> Principal:
         if not token or not isinstance(token, str):
             raise InvalidTokenError("missing or non-string token")
 
@@ -210,10 +210,10 @@ class OidcProvider:
             raise InvalidTokenError(f"jwt decode failed: {e}") from e
 
         claims_dict = dict(claims)
-        self._validate_claims(claims_dict)
+        self._validate_claims(claims_dict, allow_expired=allow_expired)
         return self._principal_from_claims(claims_dict)
 
-    def _validate_claims(self, claims: dict[str, Any]) -> None:
+    def _validate_claims(self, claims: dict[str, Any], *, allow_expired: bool = False) -> None:
         now = _now()
 
         iss = claims.get("iss")
@@ -229,7 +229,7 @@ class OidcProvider:
             raise InvalidAudienceError(f"aud {aud!r} does not include any of {accepted!r}")
 
         exp = claims.get("exp")
-        if exp is None or int(exp) + self._leeway < now:
+        if exp is None or (not allow_expired and int(exp) + self._leeway < now):
             raise ExpiredTokenError(f"exp={exp} now={now} leeway={self._leeway}")
 
         nbf = claims.get("nbf")

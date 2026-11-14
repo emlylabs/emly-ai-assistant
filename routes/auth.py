@@ -489,6 +489,9 @@ async def logout(
     for the embedded issuer) and the lost-the-cookie path triggers
     a hard redirect-to-IdP on the next API call anyway.
     """
+    from services.auth.dependencies import audit_actor_id
+
+    actor_id = audit_actor_id(request, provider)
     response = JSONResponse(
         {"provider_logout_url": provider.logout_url(_app_base_url(request))}
     )
@@ -511,7 +514,7 @@ async def logout(
     except Exception:
         log.debug("BFF logout: refresh-token revoke skipped", exc_info=True)
 
-    audit("auth.logout", request=request, success=True)
+    audit("auth.logout", admin_id=actor_id, request=request, success=True)
     return response
 
 
