@@ -118,9 +118,9 @@ export default function ActionsSection({ config, patch, writable }: Props) {
             </label>
             <select
               id="alert-email-content"
-              value={config.alert_email_content === "link_only" ? "link_only" : "full"}
+              value={config.alert_email_content === "full" ? "full" : "link_only"}
               onChange={(e) =>
-                patch("alert_email_content", e.target.value === "link_only" ? "link_only" : undefined)
+                patch("alert_email_content", e.target.value === "full" ? "full" : "link_only")
               }
               disabled={!writable}
             >

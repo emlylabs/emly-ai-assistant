@@ -144,8 +144,9 @@ class BotConfig(BaseModel):
     # What form-alert emails contain. "full": AI summary, transcript,
     # visitor details and attachments. "link_only": just a link to the
     # conversation in the admin console, so visitor data stays out of
-    # mailboxes (services/widget_email.py).
-    alert_email_content: Literal["full", "link_only"] = "full"
+    # mailboxes (services/widget_email.py). New bots default to
+    # "link_only"; migration 013 pinned bots that predate it to "full".
+    alert_email_content: Literal["full", "link_only"] = "link_only"
 
     # Default instructions for the AI conversation summary in form-alert
     # emails; a form's own trigger ``analysis_prompt`` overrides it, and the

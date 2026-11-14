@@ -37,7 +37,8 @@ def scene(isolated_db, monkeypatch):
             return True
 
     monkeypatch.setattr(widget_email, "EmailSender", FakeSender)
-    bot = Bots.insert(id=_uid("bot"), slug=_uid("ff"), name="Acme", config_json={})
+    # "full" alerts are the ones that run an AI summary.
+    bot = Bots.insert(id=_uid("bot"), slug=_uid("ff"), name="Acme", config_json={"alert_email_content": "full"})
     EMLYUsers.insert_new_user(bot_id=bot.id, id="v1", first_name="Ann", last_name=None,
                               email="ann@example.com", phone="", ip="", browser="",
                               meta={"document": SECRET})

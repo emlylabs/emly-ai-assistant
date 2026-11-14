@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -81,10 +82,10 @@ def test_link_only_email_has_no_visitor_data(scene, monkeypatch):
     assert _attachments(msg) == []
 
 
-def test_full_email_unchanged_by_default(scene, monkeypatch):
+def test_full_email_has_the_details(scene, monkeypatch):
     make, sent = scene
     monkeypatch.setattr(widget_email, "_summarize_conversation", lambda *a, **k: "summary")
-    bot, session, files = make()
+    bot, session, files = make("full")
 
     _send(bot, session, files)
 
@@ -94,7 +95,7 @@ def test_full_email_unchanged_by_default(scene, monkeypatch):
     assert _attachments(msg) == ["passport.png"]
 
 
-@pytest.mark.parametrize("content, expect_files", [(None, True), ("link_only", False)])
+@pytest.mark.parametrize("content, expect_files", [("full", True), ("link_only", False), (None, False)])
 def test_queued_job_holds_only_what_it_needs(scene, monkeypatch, content, expect_files):
     make, _ = scene
     bot, session, files = make(content)
@@ -116,7 +117,71 @@ def test_option_is_validated():
 
     from services.bot_config import BotConfig
 
-    assert BotConfig().alert_email_content == "full"
+    assert BotConfig().alert_email_content == "link_only"  # G1c: new bots
+    assert BotConfig(alert_email_content="full").alert_email_content == "full"
     assert BotConfig(alert_email_content="link_only").alert_email_content == "link_only"
     with pytest.raises(ValidationError):
         BotConfig(alert_email_content="transcript")
+
+
+def test_new_bot_without_a_choice_gets_link_only_alerts(scene, monkeypatch):
+    """G1c: a bot that never picked a mode sends only the link."""
+    make, sent = scene
+    monkeypatch.setattr(widget_email, "_summarize_conversation",
+                        lambda *a, **k: pytest.fail("link-only alerts must not call the LLM"))
+    bot, session, files = make()
+
+    _send(bot, session, files)
+
+    (msg,) = sent
+    assert "998877" not in _html(msg)
+    assert _attachments(msg) == []
+
+
+# --------------------------------------------------------------- migration 013
+def _load_migration():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "migrations" / "013_alert_email_content_explicit.py"
+    spec = importlib.util.spec_from_file_location("mig013", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (json.dumps({"enrichment_enabled": True}), {"enrichment_enabled": True, "alert_email_content": "full"}),
+        (json.dumps({}), {"alert_email_content": "full"}),
+        ("", None),
+        (json.dumps({"alert_email_content": "link_only"}), None),
+        (json.dumps({"alert_email_content": "full"}), None),
+        (json.dumps(["not", "a", "dict"]), None),
+        ("not json", None),
+        (None, None),
+    ],
+)
+def test_migration_transform(raw, expected):
+    out = _load_migration()._with_explicit_full(raw)
+    assert (json.loads(out) if out else None) == expected
+
+
+def test_migration_keeps_existing_bots_on_full(isolated_db):
+    from db.db import DB
+    from models.bots import Bot, Bots
+    from services.bot_config import get_config_for_bot
+
+    legacy = Bots.insert(id=_uid("bot"), slug=_uid("l"), name="L", config_json={"enrichment_enabled": False})
+    chosen = Bots.insert(id=_uid("bot"), slug=_uid("c"), name="C", config_json={"alert_email_content": "link_only"})
+    Bot.update(config_draft_json=json.dumps({"enrichment_enabled": True})).where(Bot.id == legacy.id).execute()
+
+    # Before the migration, the legacy bot would read as link_only under the new default.
+    assert get_config_for_bot(legacy.id).alert_email_content == "link_only"
+
+    _load_migration()._backfill(DB, "bots", ("config_json", "config_draft_json"))
+
+    assert get_config_for_bot(legacy.id).alert_email_content == "full"
+    assert get_config_for_bot(chosen.id).alert_email_content == "link_only"
+    assert json.loads(Bot.get_by_id(legacy.id).config_draft_json)["alert_email_content"] == "full"
