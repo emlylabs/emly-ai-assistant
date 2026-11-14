@@ -129,7 +129,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
 | `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
 | Each bot's *Data retention* | Your retention period | Conversations, submissions and attachments older than this are deleted nightly |
-| Each bot's *Alert emails contain* | *Only a link* if alerts shouldn't carry visitor data | Keeps transcripts, visitor details and files out of mailboxes |
+| Each bot's *Alert emails contain* | *Only a link* (the default for new bots) | Keeps transcripts, visitor details and files out of mailboxes. Bots that existed before were migrated to the full alert: review them |
 | Workspace *OTP expiry* | 5 minutes (default) | One-time codes are single-use, hashed, and locked after 5 wrong attempts |
 
 **Email, models and data**
