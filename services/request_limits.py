@@ -8,11 +8,10 @@ PATCH to ``/widget/...`` with 413 once its body exceeds
 ``WIDGET_MAX_REQUEST_MB``: immediately when ``Content-Length`` says so,
 otherwise as soon as the running byte count passes it.
 
-The default (1000 MB) matches the existing hard limits (10 files of at
-most 100 MB each), so nothing that works today is refused; operators
-should lower it to what their bots really accept (e.g. a few files at
-the bots' ``max_file_size_mb``). Per-file limits are still checked by
-the route.
+The default (110 MB) fits two files at the default per-bot
+``max_file_size_mb`` (50) plus the form. Raise it for bots that accept more or larger
+files on one form; the absolute ceiling the route allows is 10 files of
+100 MB. Per-file limits are still checked by the route.
 """
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ import os
 log = logging.getLogger(__name__)
 
 MAX_REQUEST_ENV = "WIDGET_MAX_REQUEST_MB"
-DEFAULT_MAX_REQUEST_MB = 1000
+DEFAULT_MAX_REQUEST_MB = 110
 _GUARDED_METHODS = {"POST", "PUT", "PATCH"}
 
 

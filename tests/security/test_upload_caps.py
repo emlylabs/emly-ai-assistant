@@ -73,12 +73,13 @@ def test_other_paths_are_not_limited(limited_app):
     assert client.post("/api/admin/other", content=b"x" * (MB + 1)).json() == {"len": MB + 1}
 
 
-def test_default_matches_the_existing_hard_limits(monkeypatch):
-    from routes.widget import _ABSOLUTE_BYTE_CAP, _PER_REQUEST_FILE_CAP
+def test_default_fits_two_default_size_files_and_the_form(monkeypatch):
+    from services.bot_config import LimitsConfig
     from services.request_limits import widget_max_request_bytes
 
     monkeypatch.delenv("WIDGET_MAX_REQUEST_MB", raising=False)
-    assert widget_max_request_bytes() == _PER_REQUEST_FILE_CAP * _ABSOLUTE_BYTE_CAP
+    assert widget_max_request_bytes() == 110 * MB
+    assert widget_max_request_bytes() > 2 * LimitsConfig().max_file_size_mb * MB + MB
 
 
 def test_app_installs_the_middleware():
