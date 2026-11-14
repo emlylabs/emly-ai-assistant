@@ -167,6 +167,13 @@ class EMLYSessionsTable:
         except Exception:
             logger.debug("realtime publish failed (non-fatal)", exc_info=True)
 
+    @staticmethod
+    def _is_open(row, now: datetime, idle_after: timedelta) -> bool:
+        """Still taking turns: not resolved, not closed, not idle."""
+        if row.is_resolved or row.ended_at is not None:
+            return False
+        return row.last_activity_at is None or now - row.last_activity_at <= idle_after
+
     def current_channel_session(
         self,
         bot_id: str,
@@ -175,15 +182,17 @@ class EMLYSessionsTable:
         idle_after: timedelta,
         now: Optional[datetime] = None,
     ) -> str:
-        """Session id the next message on a messaging channel should use.
+        """Session id the next message in a running channel conversation
+        (a DM, a group chat) should use.
 
-        Channel conversations are keyed on a stable platform id (a DM, a
-        Telegram chat, a WhatsApp number), which on its own never ends:
-        a resolved conversation would swallow every later question and
-        each user would count as one session forever. Rotate instead:
-        ``base_id``, ``base_id-1``, ``base_id-2`` ... A new generation
-        starts once the latest one is resolved or idle for longer than
-        ``idle_after``.
+        Those conversations are keyed on a stable platform id that on its
+        own never ends: a resolved conversation would swallow every later
+        question and each user would count as one session forever. Rotate
+        instead: ``base_id``, ``base_id-1``, ``base_id-2`` ... A new
+        generation starts once the latest one is resolved, closed, or idle
+        for longer than ``idle_after``; an idle one is closed (``ended_at``)
+        so it leaves the open list. Threads don't come through here: a
+        thread is one conversation however long its gaps.
 
         Fails open to ``base_id`` so a DB hiccup never blocks a reply.
         """
@@ -194,6 +203,7 @@ class EMLYSessionsTable:
                 EMLYSession.select(
                     EMLYSession.id,
                     EMLYSession.is_resolved,
+                    EMLYSession.ended_at,
                     EMLYSession.last_activity_at,
                 ).where(
                     (EMLYSession.bot_id == bot_id)
@@ -216,13 +226,50 @@ class EMLYSessionsTable:
         if not rows:
             return base_id
         latest = max(rows, key=lambda r: generation(r.id))
-        idle = (
-            latest.last_activity_at is not None
-            and now - latest.last_activity_at > idle_after
-        )
-        if latest.is_resolved or idle:
-            return f"{base_id}-{generation(latest.id) + 1}"
-        return latest.id
+        if self._is_open(latest, now, idle_after):
+            return latest.id
+        if not latest.is_resolved and latest.ended_at is None:
+            self.close_idle(bot_id, latest.id, now=now)
+        return f"{base_id}-{generation(latest.id) + 1}"
+
+    def open_session(
+        self,
+        bot_id: str,
+        session_id: str,
+        *,
+        idle_after: timedelta,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """True if ``session_id`` exists and is still open (see
+        ``_is_open``). False on any DB error."""
+        now = now or datetime.utcnow()
+        try:
+            row = EMLYSession.get_or_none(
+                (EMLYSession.bot_id == bot_id) & (EMLYSession.id == session_id)
+            )
+        except Exception:
+            logger.exception("EMLYSessions.open_session failed for session=%s bot=%s", session_id, bot_id)
+            return False
+        return row is not None and self._is_open(row, now, idle_after)
+
+    def close_idle(self, bot_id: str, session_id: str, *, now: Optional[datetime] = None) -> None:
+        """Mark a session the user walked away from as ended without
+        resolving it, so it drops out of the open list but doesn't count
+        towards the resolution rate. Reopening it clears ``ended_at``.
+        Best-effort."""
+        try:
+            (
+                EMLYSession.update(ended_at=now or datetime.utcnow())
+                .where(
+                    (EMLYSession.bot_id == bot_id)
+                    & (EMLYSession.id == session_id)
+                    & EMLYSession.ended_at.is_null(True)
+                    & ((EMLYSession.is_resolved == False) | EMLYSession.is_resolved.is_null(True))  # noqa: E712
+                )
+                .execute()
+            )
+        except Exception:
+            logger.exception("EMLYSessions.close_idle failed for session=%s bot=%s", session_id, bot_id)
 
     def get(self, bot_id: str, session_id: str) -> Optional[EMLYSessionModel]:
         try:
@@ -262,10 +309,15 @@ class EMLYSessionsTable:
         if is_resolved is True:
             q = q.where(EMLYSession.is_resolved == True)  # noqa: E712
         elif is_resolved is False:
-            # Sessions nobody has marked yet carry NULL and count as unresolved.
+            # Sessions nobody has marked yet carry NULL and count as
+            # unresolved. A channel conversation closed for inactivity
+            # (``ended_at`` without a resolution) is no longer open.
             q = q.where(
-                (EMLYSession.is_resolved == False)  # noqa: E712
-                | EMLYSession.is_resolved.is_null(True)
+                (
+                    (EMLYSession.is_resolved == False)  # noqa: E712
+                    | EMLYSession.is_resolved.is_null(True)
+                )
+                & EMLYSession.ended_at.is_null(True)
             )
         if search:
             from models.emly_messages import EMLYMessage

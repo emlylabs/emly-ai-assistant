@@ -23,7 +23,7 @@ from channels.auth._http import make_client
 from channels.auth.base import InstallMetadata
 from channels.auth.service_account_jwt import ServiceAccountJWT
 from channels.base import ChannelAdapter, InstallError
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 from channels.jwt_verifier import (
     GOOGLE_OIDC_ISSUER,
     GOOGLE_SYSTEM_SA,
@@ -146,18 +146,23 @@ class GoogleChatAdapter(ChannelAdapter):
             return None
         # Chat assigns a fresh thread to every top-level message, so in a
         # DM keying on the thread split one conversation into a session
-        # per message: key DMs on space + user. In rooms each thread is
-        # its own conversation. The dispatcher rotates the id once a
-        # session is resolved or idle; the reply still lands on the
-        # thread via ``reply_handle``.
+        # per message: key DMs on space + user, and the dispatcher rotates
+        # that id once a session is resolved or idle. In rooms each thread
+        # is its own conversation and keeps its session. The reply still
+        # lands on the thread via ``reply_handle``.
         is_dm = (
             space.get("type") == "DM"
             or space.get("spaceType") == "DIRECT_MESSAGE"
             or bool(space.get("singleUserBotDm"))
         )
         chat_type: ChatType = "dm" if is_dm or not thread.get("name") else "thread"
+        # Earlier releases keyed DMs on the thread as well, so a DM
+        # conversation already in progress lives under the thread name;
+        # the dispatcher continues it while it is still open.
+        legacy_session_external: Optional[str] = None
         if is_dm or not thread.get("name"):
             session_external = f"gchat-{space.get('name','')}-{user_external}"
+            legacy_session_external = thread.get("name") or None
         else:
             session_external = thread["name"]
         return IncomingMessage(
@@ -172,6 +177,10 @@ class GoogleChatAdapter(ChannelAdapter):
                 "thread_name": thread.get("name"),
                 "envelope": envelope,
             },
+            legacy_session_external_id=legacy_session_external,
+            user_profile=UserProfile.from_display_name(
+                sender.get("displayName"), email=sender.get("email") or None,
+            ),
         )
 
     def is_self(self, secrets: GoogleChatSecrets, raw_payload: dict) -> bool:

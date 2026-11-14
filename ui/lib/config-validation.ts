@@ -329,6 +329,17 @@ export function isHttpUrl(value: string): boolean {
   }
 }
 
+/** An http(s) URL, a protocol-relative `//host/...` URL, a path on the
+ *  embedding site (`/logo.png`, `./logo.png`), or a `data:image/` URI.
+ *  Mirrors `is_logo_url` in services/config_validation.py. */
+export function isLogoUrl(value: string): boolean {
+  if (!value || /\s/.test(value)) return false;
+  if (value.startsWith("data:image/")) return true;
+  if (value.startsWith("//")) return isHttpUrl("https:" + value);
+  if (value.startsWith("/") || value.startsWith("./") || value.startsWith("../")) return true;
+  return isHttpUrl(value);
+}
+
 export function isValidColor(value: string): boolean {
   const v = value.trim();
   if (NAMED_COLORS.has(v.toLowerCase())) return true;
@@ -370,12 +381,12 @@ function fieldFormatIssues(config: Cfg): Issue[] {
 
   if (present(widget.logo)) {
     const logo = String(widget.logo);
-    if (!isHttpUrl(logo) && !logo.startsWith("data:image/")) {
+    if (!isLogoUrl(logo)) {
       issues.push({
         severity: "error",
         key: "R17_invalid_logo_url",
         section: "identity",
-        message: "Logo URL must be a full http:// or https:// address.",
+        message: "Logo URL must be an http:// or https:// address, or a path starting with /.",
       });
     }
   }

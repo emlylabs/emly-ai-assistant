@@ -58,6 +58,10 @@ class Issue:
     section: IssueSection
     message: str
     cta: Optional[Dict[str, str]] = None
+    # Dotted config path the issue is about, for rules that check a single
+    # value (R16–R23). Lets the save routes tell a value the admin just
+    # entered from one already stored. Not serialized.
+    field: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -549,6 +553,47 @@ def is_http_url(value: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
+def is_logo_url(value: str) -> bool:
+    """An ``http(s)://`` URL, a protocol-relative ``//host/...`` URL, a
+    path on the embedding site (``/logo.png``, ``./logo.png``), or an
+    inline ``data:image/`` URI."""
+    if not value or any(c.isspace() for c in value):
+        return False
+    if value.startswith("data:image/"):
+        return True
+    if value.startswith("//"):
+        return is_http_url("https:" + value)
+    if value.startswith(("/", "./", "../")):
+        return True
+    return is_http_url(value)
+
+
+def _value_at(config: Dict[str, Any], path: str) -> Any:
+    node: Any = config
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
+
+
+def blocking_format_issues(
+    issues: List[Issue], after: Dict[str, Any], before: Optional[Dict[str, Any]]
+) -> List[Issue]:
+    """Field-format errors that should stop a save of ``after`` over
+    ``before``: those on a value the save introduces or changes. A value
+    already stored that fails a newer or stricter rule still shows up as
+    an error in the editor, but doesn't hold every unrelated save hostage."""
+    out: List[Issue] = []
+    for i in issues:
+        if i.severity != "error" or not i.key.startswith(FIELD_FORMAT_RULE_PREFIXES):
+            continue
+        if before is not None and i.field and _value_at(before, i.field) == _value_at(after, i.field):
+            continue
+        out.append(i)
+    return out
+
+
 def is_valid_color(value: str) -> bool:
     """Hex, CSS named colour, a colour function, or a ``var()`` reference."""
     v = value.strip()
@@ -580,15 +625,17 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
                 key="R16_invalid_support_email",
                 section="identity",
                 message=f'Support email "{bad[0]}" is not a valid email address.',
+                field="support_email",
             ))
 
     logo = widget.get("logo")
-    if _present(logo) and not (is_http_url(str(logo)) or str(logo).startswith("data:image/")):
+    if _present(logo) and not is_logo_url(str(logo)):
         issues.append(Issue(
             severity="error",
             key="R17_invalid_logo_url",
             section="identity",
-            message="Logo URL must be a full http:// or https:// address.",
+            message="Logo URL must be an http:// or https:// address, or a path starting with /.",
+            field="widget.logo",
         ))
 
     for field, label in _THEME_COLOR_FIELDS:
@@ -599,6 +646,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
                 key=f"R18_invalid_color_{field}",
                 section="widget",
                 message=f'{label} "{color}" is not a colour. Use a hex value like #1a73e8, a CSS colour name, or rgb(…).',
+                field=f"widget.theme.{field}",
             ))
 
     endpoint = llm.get("api_endpoint")
@@ -608,6 +656,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             key="R19_invalid_api_endpoint",
             section="llm",
             message="API endpoint must be a full http:// or https:// address.",
+            field="llm.api_endpoint",
         ))
 
     def _range(value: Any, lo: float, hi: float) -> bool:
@@ -620,6 +669,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             key="R20_temperature_range",
             section="llm",
             message="Temperature must be between 0 and 2.",
+            field="llm.temperature",
         ))
     if rag.get("top_k") is not None and not _range(rag.get("top_k"), 1, 50):
         issues.append(Issue(
@@ -627,6 +677,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             key="R21_top_k_range",
             section="rag",
             message="Top K must be between 1 and 50.",
+            field="rag.top_k",
         ))
     if rag.get("embedding_threshold") is not None and not _range(rag.get("embedding_threshold"), 0, 1):
         issues.append(Issue(
@@ -634,6 +685,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             key="R22_threshold_range",
             section="rag",
             message="Score threshold must be between 0 and 1.",
+            field="rag.embedding_threshold",
         ))
     if limits.get("max_file_size_mb") is not None and not _range(limits.get("max_file_size_mb"), 1, float("inf")):
         issues.append(Issue(
@@ -641,6 +693,7 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             key="R23_max_file_size_range",
             section="limits",
             message="Max file size must be at least 1 MB.",
+            field="limits.max_file_size_mb",
         ))
     return issues
 
@@ -755,6 +808,8 @@ __all__ = [
     "has_deployment_endpoint",
     "has_deployment_model",
     "is_http_url",
+    "is_logo_url",
+    "blocking_format_issues",
     "is_valid_color",
     "probe_bot_api_key",
     "validate_config",

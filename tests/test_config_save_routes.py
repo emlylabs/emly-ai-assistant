@@ -137,3 +137,73 @@ def test_history_restore_applies_format_rules(client, bot):
 def test_conversation_search_needs_two_characters(client, bot):
     assert client.get(f"/api/admin/bots/{bot.slug}/sessions?q=a").status_code == 422
     assert client.get(f"/api/admin/bots/{bot.slug}/sessions?q=ab").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# A malformed value already live doesn't block saves that leave it alone
+# ---------------------------------------------------------------------------
+def _set_live(bot, config):
+    """Store a config as if saved before the current rules existed."""
+    import json
+
+    from models.bots import Bot
+
+    Bot.update(config_json=json.dumps(config)).where(Bot.id == bot.id).execute()
+
+
+def test_stale_bad_value_does_not_block_an_unrelated_save(client, bot):
+    _set_live(bot, {"widget": {"logo": "logo.png"}})
+    r = client.put(
+        f"/api/admin/bots/{bot.slug}/config",
+        json={"config": {"widget": {"logo": "logo.png"}, "llm": {"temperature": 0.5}}},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_changing_to_a_different_bad_value_still_blocks(client, bot):
+    _set_live(bot, {"widget": {"logo": "logo.png"}})
+    r = client.put(f"/api/admin/bots/{bot.slug}/config", json={"config": {"widget": {"logo": "other.png"}}})
+    assert r.status_code == 422
+    assert [i["key"] for i in r.json()["detail"]["issues"]] == ["R17_invalid_logo_url"]
+
+
+def test_new_bad_value_blocks_even_beside_a_stale_one(client, bot):
+    _set_live(bot, {"widget": {"logo": "logo.png"}})
+    r = client.put(
+        f"/api/admin/bots/{bot.slug}/config",
+        json={"config": {"widget": {"logo": "logo.png", "theme": {"header_background": "nope"}}}},
+    )
+    assert r.status_code == 422
+    assert [i["key"] for i in r.json()["detail"]["issues"]] == ["R18_invalid_color_header_background"]
+
+
+def test_relative_logo_path_saves(client, bot):
+    r = client.put(f"/api/admin/bots/{bot.slug}/config", json={"config": {"widget": {"logo": "/img/logo.png"}}})
+    assert r.status_code == 200, r.text
+
+
+def test_stale_bad_value_does_not_block_publishing_a_draft(client, bot, monkeypatch):
+    from routes import admin_bot_dashboard
+    from services.config_validation import ValidationContext
+
+    # No runtime probes, so only config rules decide.
+    monkeypatch.setattr(admin_bot_dashboard, "_build_validation_context", lambda _bot: ValidationContext())
+    _set_live(bot, {"widget": {"logo": "logo.png"}})
+    r = client.put(
+        f"/api/admin/bots/{bot.slug}/config/draft",
+        json={"config": {"widget": {"logo": "logo.png"}, "llm": {"temperature": 0.5}}},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/admin/bots/{bot.slug}/config/draft/publish")
+    assert r.status_code == 200, r.text
+
+
+def test_new_bad_value_in_a_draft_blocks_publish(client, bot, monkeypatch):
+    from routes import admin_bot_dashboard
+    from services.config_validation import ValidationContext
+
+    monkeypatch.setattr(admin_bot_dashboard, "_build_validation_context", lambda _bot: ValidationContext())
+    _set_live(bot, {"widget": {"logo": "https://example.com/logo.png"}})
+    client.put(f"/api/admin/bots/{bot.slug}/config/draft", json={"config": {"widget": {"logo": "logo.png"}}})
+    r = client.post(f"/api/admin/bots/{bot.slug}/config/draft/publish")
+    assert r.status_code == 422

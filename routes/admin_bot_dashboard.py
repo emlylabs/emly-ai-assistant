@@ -38,6 +38,7 @@ from services.bot_config import (
 )
 from services.config_validation import (
     FIELD_FORMAT_RULE_PREFIXES,
+    blocking_format_issues,
     Issue,
     ValidationContext,
     count_by_severity,
@@ -139,14 +140,14 @@ def _issues_to_response(issues: List[Issue]) -> ValidationResponse:
     )
 
 
-def _raise_on_format_errors(config: Dict[str, Any]) -> None:
+def _raise_on_format_errors(config: Dict[str, Any], before: Optional[Dict[str, Any]]) -> None:
     """422 on malformed field values (bad email / URL / colour,
-    out-of-range numbers). These are never a deliberate choice, so they
-    block regardless of the workspace save gate and of ``force``."""
-    format_issues = [
-        i for i in validate_config(config)
-        if i.severity == "error" and i.key.startswith(FIELD_FORMAT_RULE_PREFIXES)
-    ]
+    out-of-range numbers) that this save introduces or changes. These are
+    never a deliberate choice, so they block regardless of the workspace
+    save gate and of ``force``. A value already in ``before`` (the live
+    config) doesn't block, so one stored before a rule existed can't stop
+    every unrelated save."""
+    format_issues = blocking_format_issues(validate_config(config), config, before)
     if format_issues:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1320,7 +1321,7 @@ def bot_put_config(
 
     # Malformed values can't be forced, so check them before the save gate
     # (which offers ``force``) and before a forced save is audited.
-    _raise_on_format_errors(payload.config)
+    _raise_on_format_errors(payload.config, bot.config_json or {})
 
     # Optional save gate (§10 of improve-ux.md). Off by default — flipping
     # it on must not retroactively lock admins out of bots that are
@@ -1475,8 +1476,16 @@ def bot_publish_config_draft(
             detail="No draft to publish",
         )
     ctx = _build_validation_context(bot)
-    issues = validate_config(draft.model_dump(mode="json"), ctx)
-    errors = [i for i in issues if i.severity == "error"]
+    draft_config = draft.model_dump(mode="json")
+    issues = validate_config(draft_config, ctx)
+    # A malformed value already live doesn't block publishing a draft
+    # that leaves it alone (same rule as a direct save).
+    blocking_format = {id(i) for i in blocking_format_issues(issues, draft_config, bot.config_json or {})}
+    errors = [
+        i for i in issues
+        if i.severity == "error"
+        and (not i.key.startswith(FIELD_FORMAT_RULE_PREFIXES) or id(i) in blocking_format)
+    ]
     if errors:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1649,7 +1658,7 @@ def bot_restore_config_history(
     row = BotConfigHistories.get_by_id(entry_id)
     if row is None or row.bot_id != bot.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
-    _raise_on_format_errors(row.config_json or {})
+    _raise_on_format_errors(row.config_json or {}, bot.config_json or {})
     before_config = dict(bot.config_json or {})
     try:
         save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
