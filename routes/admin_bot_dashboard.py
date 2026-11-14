@@ -1708,6 +1708,7 @@ def bot_rag_search(
         query=query,
         top_k=top_k,
         embedding_threshold=threshold,
+        hybrid=rag_cfg.enable_hybrid_search if rag_cfg else None,
     )
     hits = [
         RAGSearchHit(

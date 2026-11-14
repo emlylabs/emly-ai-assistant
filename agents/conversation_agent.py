@@ -12,8 +12,8 @@ section is the operator-facing copy and must be kept in step):
   slots. The visitor's message and the slot names, descriptions and types.
 - Answer (``TopicAgent._generate_final_response``): the answer template
   filled with the visitor's message, filled slots, the topic's last
-  ``LATEST_N_MESSAGES`` exchanges and, for RAG topics, up to ``TOP_K``
-  passages. A RAG topic with no passage returns ``DEFAULT_MESSAGE``
+  ``LATEST_N_MESSAGES`` exchanges and, for RAG topics, up to the bot's
+  ``rag.top_k`` passages scoring at least ``rag.embedding_threshold``. A RAG topic with no passage returns ``DEFAULT_MESSAGE``
   without a call.
 
 History comes from ``EMLYMessages.get_messages`` /
@@ -47,7 +47,7 @@ from langchain_classic.memory import ConversationBufferWindowMemory
 
 from models.emly_messages import EMLYMessages
 from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
-    EMBEDDING_MODEL_INSTANCE, TOP_K, TEMPERATURE, \
+    EMBEDDING_MODEL_INSTANCE, TEMPERATURE, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
 from agents.rag_manager import get_rag_manager
@@ -340,16 +340,20 @@ class RAGManager:
     def should_use_rag(self, topic_name: str) -> bool:
         return topic_name in self._rag_topics
 
-    def get_context(self, query: str, topic_name: str, k: int = 3) -> tuple[str, list[Any]]:
+    def get_context(self, query: str, topic_name: str) -> tuple[str, list[Any]]:
+        """Retrieve with the bot's own settings (``rag.top_k``,
+        ``rag.embedding_threshold``, ``rag.enable_hybrid_search``), the
+        same ones the admin Retrieval page uses."""
         if not self.should_use_rag(topic_name):
             self.logger.warning("RAG is not enabled for topic '%s'.", topic_name)
             return "", []
-        threshold = float(get_config_for_bot(self.bot_id).model_dump(mode="json").get("embedding_threshold", 0.20))
+        rag = get_config_for_bot(self.bot_id).rag
         return self.rag.search(
             bot_id=self.bot_id,
             query=query,
-            top_k=k,
-            embedding_threshold=threshold,
+            top_k=rag.top_k,
+            embedding_threshold=rag.embedding_threshold,
+            hybrid=rag.enable_hybrid_search,
         )
 
 class ConversationManager:
@@ -754,7 +758,7 @@ class TopicAgent(BaseAgent):
         if self.rag_manager.should_use_rag(self.topic_name):
             search_query = " ".join([user_input] + [str(v) for v in filled_slots.values() if v])
 
-            context, citations = self.rag_manager.get_context(search_query, self.topic_name, TOP_K)
+            context, citations = self.rag_manager.get_context(search_query, self.topic_name)
 
             if context == "":
                 if stream:

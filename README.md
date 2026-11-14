@@ -216,10 +216,10 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 |----------|-------------|---------|
 | `EMBEDDING_PROVIDER` | `huggingface` (embeds inside this deployment) or `openai` (every document chunk and search query is sent to `OPENAI_BASE_URL`, which is then required and must be on `LLM_ENDPOINT_ALLOWLIST` if that is set; the app won't start otherwise) | `huggingface` |
 | `RAG_EMBEDDING_MODEL` | Embedding model name | `Alibaba-NLP/gte-base-en-v1.5` |
-| `RAG_TOP_K` | Number of chunks to retrieve | `5` |
+| `RAG_TOP_K` | Fallback passage count for searches made without a bot. Answers use each bot's *Top K* setting | `5` |
 | `CHUNK_SIZE` | Text chunk size for splitting | `2048` |
 | `CHUNK_OVERLAP` | Overlap between chunks | `256` |
-| `ENABLE_RAG_HYBRID_SEARCH` | Enable CrossEncoder re-ranking | `false` |
+| `ENABLE_RAG_HYBRID_SEARCH` | Load the CrossEncoder re-ranker so bots can use it. Each bot's *Hybrid search* setting decides whether its answers are re-ranked; without this the setting has no effect | `false` |
 | `RE_RANKING_MODEL` | Cross-encoder for re-ranking (a name under `cross-encoder/`, or a full repo id) | `ms-marco-TinyBERT-L2-v2` |
 | `RE_RANKING_MODEL_HOME` | Re-ranking model cache directory. Leave unset in Docker | `./data/models/re_ranking` (local) / `/opt/models/re_ranking` (Docker) |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | Load models from the local cache only, never from Hugging Face. Set to `1` in the Docker image | unset (local) / `1` (Docker) |
@@ -753,7 +753,7 @@ Every model call goes to the bot's own endpoint (its LLM settings, or the `OPENA
 |------|------|------------------|
 | Topic routing | The bot has two or more topics, and isn't partway through collecting details for one | Routing instructions; each topic's name and description; the current topic's name; the last `LATEST_N_MESSAGES` (default 3) exchanges of this conversation; the visitor's message |
 | Detail extraction | The topic collects details (slots) | The visitor's message, and the name, description and type of each detail to extract |
-| Answer | Always, except when a knowledge topic finds no passage above the threshold (then a fixed reply, no call) | The answer template (the topic's, else the bot's) filled with: the visitor's message; the details collected so far; the last `LATEST_N_MESSAGES` exchanges in this topic; for knowledge topics, up to `RAG_TOP_K` (default 5) passages from this bot's documents |
+| Answer | Always, except when a knowledge topic finds no passage above the threshold (then a fixed reply, no call) | The answer template (the topic's, else the bot's) filled with: the visitor's message; the details collected so far; the last `LATEST_N_MESSAGES` exchanges in this topic; for knowledge topics, up to the bot's *Top K* (default 5) passages from its documents that score at least its *Embedding threshold* |
 
 Questions that ask for a missing detail come from templates and make no call.
 
