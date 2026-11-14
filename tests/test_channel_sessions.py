@@ -4,8 +4,9 @@ Adapters key a conversation on a platform id (a Slack DM, a Chat thread).
 For a running conversation (DM, group chat) the dispatcher rotates that key
 through ``EMLYSessions.current_channel_session`` so a resolved or idle
 conversation doesn't absorb every later question from the same person; a
-thread keeps one session for life. A Slack / Google Chat DM conversation
-that was open when DMs were re-keyed (flagged by migration 012) carries on.
+thread keeps one session for life. A reply inside a DM thread whose session
+the old keying stored under that thread carries on there; a new top-level DM
+message after the upgrade starts fresh, as it always did before.
 """
 from __future__ import annotations
 
@@ -60,6 +61,21 @@ def test_slack_separate_channel_threads_are_separate_sessions():
     assert a.session_external_id != b.session_external_id
 
 
+def test_slack_dm_thread_reply_names_the_pre_upgrade_key():
+    """Before this release a DM conversation lived under its thread; a
+    reply in that thread names it so the dispatcher can carry it on."""
+    reply = _slack({"channel": "D1", "channel_type": "im", "ts": "150.1", "thread_ts": "100.1"})
+    top = _slack({"channel": "D1", "channel_type": "im", "ts": "200.1"})
+    assert reply.session_external_id == top.session_external_id == "D1:U1"
+    assert reply.legacy_session_external_id == "D1:100.1"
+    assert top.legacy_session_external_id is None
+
+
+def test_slack_channel_threads_have_no_legacy_key():
+    reply = _slack({"channel": "C1", "channel_type": "channel", "ts": "150.1", "thread_ts": "100.1"})
+    assert reply.legacy_session_external_id is None
+
+
 def _gchat(space: dict, thread: str | None, user: str = "a@example.com"):
     from channels.google_chat import GoogleChatAdapter, GoogleChatSecrets
 
@@ -76,6 +92,14 @@ def test_gchat_dm_ignores_per_message_threads():
     b = _gchat(space, "spaces/DM1/threads/t2")
     assert a.session_external_id == b.session_external_id
     assert a.reply_handle["thread_name"] == "spaces/DM1/threads/t1"
+
+
+def test_gchat_dm_names_the_pre_upgrade_thread_key():
+    space = {"name": "spaces/DM1", "type": "DM"}
+    a = _gchat(space, "spaces/DM1/threads/t1")
+    assert a.legacy_session_external_id == "spaces/DM1/threads/t1"
+    room = _gchat({"name": "spaces/ROOM", "type": "ROOM"}, "spaces/ROOM/threads/t1")
+    assert room.legacy_session_external_id is None
 
 
 def test_gchat_room_threads_are_separate_sessions():
@@ -97,29 +121,21 @@ def bot_id():
     from models.emly_messages import EMLYMessage
     from models.emly_sessions import EMLYSession
 
-    from models.emly_sessions import EMLYSessionsTable
-
     DB.connect(reuse_if_open=True)
-    EMLYSessionsTable._carryover_done = False
-    EMLYSessionsTable._carryover_swept_at = None
     bid = f"bot-{uuid.uuid4().hex[:8]}"
     Bots.insert(id=bid, slug=f"s-{bid}", name="B")
     yield bid
     EMLYMessage.delete().where(EMLYMessage.bot == bid).execute()
     EMLYSession.delete().where(EMLYSession.bot_id == bid).execute()
-    EMLYSessionsTable._carryover_done = False
-    EMLYSessionsTable._carryover_swept_at = None
 
 
-def _session(bot_id, sid, *, last_activity, is_resolved=None, ended_at=None,
-             user_id="u", channel_id=None, dm_carryover=None):
+def _session(bot_id, sid, *, last_activity, is_resolved=None, ended_at=None):
     from models.emly_sessions import EMLYSession
 
     EMLYSession.create(
-        id=sid, bot_id=bot_id, user_id=user_id, channel_id=channel_id,
+        id=sid, bot_id=bot_id, user_id="u", channel_id=None,
         started_at=last_activity, last_activity_at=last_activity,
         turn_count=1, is_resolved=is_resolved, ended_at=ended_at,
-        dm_carryover=dm_carryover,
     )
 
 
@@ -244,43 +260,27 @@ def test_new_activity_reopens_a_closed_session(bot_id):
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher: which conversations rotate, and the DM carry-over
+# Dispatcher: which conversations rotate, and the pre-upgrade carry-over
 # ---------------------------------------------------------------------------
-USER = "user-1"
-CH = "ch-1"
-
-
-def _incoming(session_key, chat_type):
+def _incoming(session_key, chat_type, legacy=None):
     from channels.contracts import IncomingMessage
 
     return IncomingMessage(
-        channel_id=CH, user_external_id="U1", session_external_id=session_key,
-        text="hi", chat_type=chat_type,
+        channel_id="ch", user_external_id="U1", session_external_id=session_key,
+        text="hi", chat_type=chat_type, legacy_session_external_id=legacy,
     )
 
 
-def _resolve(bot_id, incoming, user_id=USER, channel_id=CH):
+def _resolve(bot_id, incoming):
     from channels.dispatcher import _resolve_session_id
 
-    return _resolve_session_id(bot_id, "T1", user_id, channel_id, incoming)
+    return _resolve_session_id(bot_id, "T1", incoming)
 
 
 def _sid(bot_id, key):
     from channels.dispatcher import emly_id_for
 
     return emly_id_for(bot_id, "T1", key)
-
-
-def _flagged(bot_id, sid, *, last_activity, **kw):
-    kw.setdefault("user_id", USER)
-    kw.setdefault("channel_id", CH)
-    _session(bot_id, sid, last_activity=last_activity, dm_carryover=True, **kw)
-
-
-def _flag(bot_id, sid):
-    from models.emly_sessions import EMLYSessions
-
-    return EMLYSessions.get(bot_id, sid).dm_carryover
 
 
 @pytest.mark.parametrize("chat_type", ["thread", "channel"])
@@ -304,125 +304,26 @@ def test_running_conversation_rotates_after_idle(bot_id, chat_type):
     assert _resolve(bot_id, _incoming("D1:U1", chat_type)) == f"{base}-1"
 
 
-def test_next_dm_message_continues_the_open_pre_upgrade_session(bot_id):
-    """The reviewer's case: the person just sends their next DM (a new
-    top-level Slack message, a new Google Chat thread) and the lead in
-    progress carries on."""
-    old = _sid(bot_id, "D1:100.1")  # pre-upgrade per-thread key
-    _flagged(bot_id, old, last_activity=datetime.utcnow() - timedelta(minutes=10))
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == old
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == old, "and keeps doing so while open"
-
-
-def test_most_recent_open_pre_upgrade_session_wins(bot_id):
-    now = datetime.utcnow()
-    _flagged(bot_id, "older", last_activity=now - timedelta(hours=3))
-    _flagged(bot_id, "newer", last_activity=now - timedelta(minutes=3))
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == "newer"
-
-
-def test_idle_pre_upgrade_session_is_closed_and_the_dm_moves_on(bot_id):
-    from models.emly_sessions import EMLYSessions
-
-    old = "old-thread"
-    _flagged(bot_id, old, last_activity=datetime.utcnow() - IDLE - timedelta(hours=1))
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == _sid(bot_id, "D1:U1")
-    row = EMLYSessions.get(bot_id, old)
-    assert row.ended_at is not None and row.is_resolved is None
-    assert row.dm_carryover is None
-    assert old not in {s.id for s in EMLYSessions.list_for_bot(bot_id, is_resolved=False)}
-
-
-def test_abandoned_pre_upgrade_session_is_closed_without_its_sender(bot_id):
-    """The sender never writes again: the sweep still closes the session
-    once it is idle, so it doesn't stay on the open list."""
-    from models.emly_sessions import EMLYSessions
-
-    _flagged(bot_id, "abandoned", last_activity=datetime.utcnow() - IDLE - timedelta(hours=1), user_id="gone")
-    _flagged(bot_id, "active", last_activity=datetime.utcnow(), user_id="still-here")
-    EMLYSessions.take_dm_carryover(bot_id, "someone", CH, idle_after=IDLE)
-    gone = EMLYSessions.get(bot_id, "abandoned")
-    assert gone.ended_at is not None and gone.dm_carryover is None
-    active = EMLYSessions.get(bot_id, "active")
-    assert active.ended_at is None and active.dm_carryover is True
-
-
-def test_resolved_pre_upgrade_session_is_not_continued(bot_id):
-    _flagged(bot_id, "old", last_activity=datetime.utcnow(), is_resolved=True)
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == _sid(bot_id, "D1:U1")
-    assert _flag(bot_id, "old") is None
-
-
-def test_other_senders_and_installs_are_not_continued(bot_id):
-    now = datetime.utcnow()
-    _flagged(bot_id, "someone-else", last_activity=now, user_id="user-2")
-    _flagged(bot_id, "other-install", last_activity=now, channel_id="ch-2")
+def test_new_top_level_dm_does_not_pick_up_other_sessions(bot_id):
+    """No guessing: an open session from before the upgrade, or a channel
+    thread, is never pulled into a DM that doesn't name it."""
+    _session(bot_id, _sid(bot_id, "D1:100.1"), last_activity=datetime.utcnow())
+    _session(bot_id, _sid(bot_id, "C1:200.1"), last_activity=datetime.utcnow())
     assert _resolve(bot_id, _incoming("D1:U1", "dm")) == _sid(bot_id, "D1:U1")
 
 
-def test_unflagged_session_is_not_continued(bot_id):
-    """Sessions started after the deploy (e.g. a channel thread) are never
-    pulled into a DM."""
-    _session(bot_id, "thread-after-deploy", last_activity=datetime.utcnow(), user_id=USER, channel_id=CH)
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == _sid(bot_id, "D1:U1")
+def test_dm_continues_an_open_pre_upgrade_session(bot_id):
+    """A lead in progress under the old per-thread key isn't dropped."""
+    legacy = _sid(bot_id, "D1:100.1")
+    _session(bot_id, legacy, last_activity=datetime.utcnow() - timedelta(minutes=10))
+    assert _resolve(bot_id, _incoming("D1:U1", "dm", legacy="D1:100.1")) == legacy
 
 
-def test_multi_person_pre_upgrade_thread_is_skipped_not_closed(bot_id):
-    """A flagged session with turns from someone else is a channel thread:
-    leave it alone (still open), just drop the flag."""
-    from models.emly_messages import EMLYMessages
-    from models.emly_sessions import EMLYSessions
-
-    _flagged(bot_id, "shared-thread", last_activity=datetime.utcnow())
-    EMLYMessages.insert_new_message(bot_id, USER, "shared-thread", "user", "q", False, None, None)
-    EMLYMessages.insert_new_message(bot_id, "user-2", "shared-thread", "user", "me too", False, None, None)
-    assert _resolve(bot_id, _incoming("D1:U1", "dm")) == _sid(bot_id, "D1:U1")
-    row = EMLYSessions.get(bot_id, "shared-thread")
-    assert row.ended_at is None and row.dm_carryover is None
-
-
-def test_group_chat_does_not_use_the_carry_over(bot_id):
-    _flagged(bot_id, "old", last_activity=datetime.utcnow())
-    assert _resolve(bot_id, _incoming("G1", "group")) == _sid(bot_id, "G1")
-
-
-def test_carry_over_stops_querying_once_nothing_is_left(bot_id, monkeypatch):
-    from models.emly_sessions import EMLYSession, EMLYSessions
-
-    EMLYSession.update(dm_carryover=None).where(EMLYSession.dm_carryover == True).execute()  # noqa: E712
-    assert EMLYSessions.take_dm_carryover(bot_id, USER, CH, idle_after=IDLE) is None
-    assert EMLYSessions._carryover_done
-    calls = []
-    monkeypatch.setattr(EMLYSession, "select", lambda *a, **kw: calls.append(a))
-    assert EMLYSessions.take_dm_carryover(bot_id, USER, CH, idle_after=IDLE) is None
-    assert calls == []
-
-
-def test_migration_flags_only_open_slack_and_gchat_sessions(bot_id):
-    import importlib
-
-    from db.db import DB
-    from models.bot_channels import BotChannel
-
-    mig = importlib.import_module("migrations.012_channel_dm_carryover")
-    now = datetime.utcnow()
-    for cid, type_ in (("c-slack", "slack"), ("c-gchat", "google_chat"), ("c-tg", "telegram")):
-        BotChannel.create(id=f"{bot_id}-{cid}", bot=bot_id, type=type_, created_at=now)
-    try:
-        _session(bot_id, "slack-open", last_activity=now, channel_id=f"{bot_id}-c-slack")
-        _session(bot_id, "gchat-open", last_activity=now, channel_id=f"{bot_id}-c-gchat")
-        _session(bot_id, "slack-reopened", last_activity=now, channel_id=f"{bot_id}-c-slack", is_resolved=False)
-        _session(bot_id, "slack-resolved", last_activity=now, channel_id=f"{bot_id}-c-slack", is_resolved=True)
-        _session(bot_id, "slack-ended", last_activity=now, channel_id=f"{bot_id}-c-slack", ended_at=now)
-        _session(bot_id, "slack-idle", last_activity=now - IDLE * 2, channel_id=f"{bot_id}-c-slack")
-        _session(bot_id, "telegram-open", last_activity=now, channel_id=f"{bot_id}-c-tg")
-        _session(bot_id, "widget-open", last_activity=now)
-        mig._flag_open_sessions(DB)
-        flagged = {
-            sid for sid in ("slack-open", "gchat-open", "slack-reopened", "slack-resolved",
-                            "slack-ended", "slack-idle", "telegram-open", "widget-open")
-            if _flag(bot_id, sid)
-        }
-        assert flagged == {"slack-open", "gchat-open", "slack-reopened"}
-    finally:
-        BotChannel.delete().where(BotChannel.bot == bot_id).execute()
+@pytest.mark.parametrize("state", ["resolved", "idle", "missing"])
+def test_dm_starts_on_the_new_key_when_the_pre_upgrade_session_is_done(bot_id, state):
+    legacy = _sid(bot_id, "D1:100.1")
+    if state == "resolved":
+        _session(bot_id, legacy, last_activity=datetime.utcnow(), is_resolved=True)
+    elif state == "idle":
+        _session(bot_id, legacy, last_activity=datetime.utcnow() - timedelta(days=3))
+    assert _resolve(bot_id, _incoming("D1:U1", "dm", legacy="D1:100.1")) == _sid(bot_id, "D1:U1")

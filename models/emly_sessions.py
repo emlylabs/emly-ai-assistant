@@ -54,8 +54,6 @@ class EMLYSession(Model):
     taken_over_by = CharField(max_length=64, null=True)
     taken_over_at = DateTimeField(null=True)
     taken_over_until = DateTimeField(null=True)
-    # Migration 012: open at the DM re-keying deploy; see take_dm_carryover.
-    dm_carryover = BooleanField(null=True)
 
     class Meta:
         database = DB
@@ -82,7 +80,6 @@ class EMLYSessionModel(BaseModel):
     taken_over_by: Optional[str] = None
     taken_over_at: Optional[datetime] = None
     taken_over_until: Optional[datetime] = None
-    dm_carryover: Optional[bool] = None
 
 
 def _row_to_model(row: EMLYSession) -> EMLYSessionModel:
@@ -239,103 +236,25 @@ class EMLYSessionsTable:
             self.close_idle(bot_id, latest.id, now=now)
         return f"{base_id}-{generation(latest.id) + 1}"
 
-    # Once no flagged session is left, none can appear again (the flag is
-    # only set by migration 012), so stop looking.
-    _carryover_done = False
-    _carryover_swept_at: Optional[float] = None
-    _CARRYOVER_SWEEP_EVERY_S = 300.0
-
-    def _sweep_carryover(self, now: datetime, idle_after: timedelta) -> bool:
-        """Close flagged sessions that went idle (``ended_at``) and drop
-        flags that no longer apply, so an abandoned pre-upgrade session
-        leaves the open list even if its sender never writes again. Runs
-        at most every few minutes per process. Returns False once no flag
-        is left."""
-        import time
-
-        cls = type(self)
-        mono = time.monotonic()
-        if cls._carryover_swept_at is not None and mono - cls._carryover_swept_at < cls._CARRYOVER_SWEEP_EVERY_S:
-            return True
-        cls._carryover_swept_at = mono
-        flagged = EMLYSession.dm_carryover == True  # noqa: E712
-        unresolved = (EMLYSession.is_resolved == False) | EMLYSession.is_resolved.is_null(True)  # noqa: E712
-        EMLYSession.update(ended_at=now, dm_carryover=None).where(
-            flagged & unresolved & EMLYSession.ended_at.is_null(True)
-            & (EMLYSession.last_activity_at < now - idle_after)
-        ).execute()
-        EMLYSession.update(dm_carryover=None).where(
-            flagged & ((EMLYSession.is_resolved == True) | EMLYSession.ended_at.is_null(False))  # noqa: E712
-        ).execute()
-        if not EMLYSession.select().where(flagged).exists():
-            cls._carryover_done = True
-            return False
-        return True
-
-    def take_dm_carryover(
+    def open_session(
         self,
         bot_id: str,
-        user_id: str,
-        channel_id: str,
+        session_id: str,
         *,
         idle_after: timedelta,
         now: Optional[datetime] = None,
-    ) -> Optional[str]:
-        """The sender's DM conversation that was open when DMs were
-        re-keyed (migration 012), if it is still open; else ``None``.
-
-        A DM message continues the sender's most recent flagged session
-        on this install. Flags on sessions that are no longer open are
-        cleared, and one that went idle is closed (``ended_at``) so it
-        leaves the open list; ``_sweep_carryover`` does the same for
-        senders who don't write again. A flagged session with turns from more than
-        one person is a channel thread, not a DM, and is skipped.
-
-        Fails closed to ``None`` (the DM starts on its new key).
-        """
-        if self._carryover_done:
-            return None
+    ) -> bool:
+        """True if ``session_id`` exists and is still open (see
+        ``_is_open``). False on any DB error."""
         now = now or datetime.utcnow()
         try:
-            if not self._sweep_carryover(now, idle_after):
-                return None
-            rows = list(
-                EMLYSession.select()
-                .where(
-                    (EMLYSession.bot_id == bot_id)
-                    & (EMLYSession.user_id == user_id)
-                    & (EMLYSession.channel_id == channel_id)
-                    & (EMLYSession.dm_carryover == True)  # noqa: E712
-                )
-                .order_by(EMLYSession.last_activity_at.desc())
+            row = EMLYSession.get_or_none(
+                (EMLYSession.bot_id == bot_id) & (EMLYSession.id == session_id)
             )
-            for row in rows:
-                is_open = self._is_open(row, now, idle_after)
-                if is_open and self._single_sender(bot_id, row.id, user_id):
-                    return row.id
-                self._clear_carryover(bot_id, row.id)
-                if not is_open and not row.is_resolved and row.ended_at is None:
-                    self.close_idle(bot_id, row.id, now=now)
         except Exception:
-            logger.exception("EMLYSessions.take_dm_carryover failed for user=%s bot=%s", user_id, bot_id)
-        return None
-
-    @staticmethod
-    def _single_sender(bot_id: str, session_id: str, user_id: str) -> bool:
-        from models.emly_messages import EMLYMessage
-
-        return not EMLYMessage.select().where(
-            (EMLYMessage.bot == bot_id)
-            & (EMLYMessage.session_id == session_id)
-            & (EMLYMessage.role == "user")
-            & (EMLYMessage.user_id != user_id)
-        ).exists()
-
-    @staticmethod
-    def _clear_carryover(bot_id: str, session_id: str) -> None:
-        EMLYSession.update(dm_carryover=None).where(
-            (EMLYSession.bot_id == bot_id) & (EMLYSession.id == session_id)
-        ).execute()
+            logger.exception("EMLYSessions.open_session failed for session=%s bot=%s", session_id, bot_id)
+            return False
+        return row is not None and self._is_open(row, now, idle_after)
 
     def close_idle(self, bot_id: str, session_id: str, *, now: Optional[datetime] = None) -> None:
         """Mark a session the user walked away from as ended without

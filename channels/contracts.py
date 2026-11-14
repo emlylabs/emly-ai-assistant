@@ -93,6 +93,11 @@ class IncomingMessage:
     ``{phone_number_id, to, context_message_id}``; Google Chat:
     ``{space, thread}``).
 
+    ``legacy_session_external_id`` is the key an earlier release used for
+    the same conversation, when it differs from ``session_external_id``.
+    The dispatcher continues a still-open session stored under it so a
+    conversation in progress survives the keying change.
+
     ``user_profile`` carries the sender's name / email / phone when the
     payload includes them.
 
@@ -115,6 +120,7 @@ class IncomingMessage:
     reply_handle: Any = None
     kind: Literal["text", "canned_reply"] = "text"
     canned_reply_text: str = ""
+    legacy_session_external_id: Optional[str] = None
     user_profile: UserProfile = field(default_factory=UserProfile)
 
 

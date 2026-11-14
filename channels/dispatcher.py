@@ -447,9 +447,7 @@ async def handle_inbound(
         raise HTTPException(status_code=503, detail="channel install incomplete")
     install_key = channel.external_id
     user_id = emly_id_for(bot_id, install_key, incoming.user_external_id)
-    session_id = await run_in_threadpool(
-        _resolve_session_id, bot_id, install_key, user_id, channel.id, incoming
-    )
+    session_id = await run_in_threadpool(_resolve_session_id, bot_id, install_key, incoming)
 
     reply_mode = _resolve_reply_mode(channel, adapter)
 
@@ -558,28 +556,27 @@ async def handle_inbound(
     return JSONResponse(content=adapter.async_ack_body)
 
 
-def _resolve_session_id(
-    bot_id: str, install_key: str, user_id: str, channel_id: str, incoming: IncomingMessage
-) -> str:
+def _resolve_session_id(bot_id: str, install_key: str, incoming: IncomingMessage) -> str:
     """Map an inbound message onto an emly session id.
 
+    - A reply inside a DM thread whose session an earlier release stored
+      under that thread (``legacy_session_external_id``) continues it
+      while it is still open. That is exactly the continuity the old
+      keying offered; a new top-level DM message started fresh then too.
     - A thread keeps one session for life: a reply days later still sees
       the earlier turns.
     - A running conversation (DM, group chat) rotates to a new session
       once the current one is resolved or idle.
-    - A DM first continues the sender's conversation that was open when
-      DMs were re-keyed (``EMLYSessions.take_dm_carryover``), so a lead
-      in progress at deploy isn't dropped.
     """
     base_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
+    if incoming.legacy_session_external_id:
+        legacy_id = emly_id_for(bot_id, install_key, incoming.legacy_session_external_id)
+        if legacy_id != base_id and EMLYSessions.open_session(
+            bot_id, legacy_id, idle_after=_SESSION_IDLE_AFTER
+        ):
+            return legacy_id
     if incoming.chat_type not in RUNNING_CHAT_TYPES:
         return base_id
-    if incoming.chat_type == "dm":
-        carried = EMLYSessions.take_dm_carryover(
-            bot_id, user_id, channel_id, idle_after=_SESSION_IDLE_AFTER
-        )
-        if carried:
-            return carried
     return EMLYSessions.current_channel_session(bot_id, base_id, idle_after=_SESSION_IDLE_AFTER)
 
 
