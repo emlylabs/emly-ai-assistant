@@ -1,5 +1,6 @@
 "use client";
 
+import { channelLabel } from "@/components/ChannelChip";
 import type { MessageCountByChannel } from "@/lib/api";
 
 type ChannelMixCardProps = {
@@ -14,12 +15,11 @@ type ChannelMixCardProps = {
 
 /** Pretty-print a channel row label. Display name (when set) wins;
  * channel type fills in for OAuth-installed channels that didn't get
- * a custom name. The orphan bucket (channel_id null, channel_type
- * null) reads as "[unattributed]" so reports written before Phase 3
- * channel threading don't get folded into the wrong slot. */
+ * a custom name. Rows whose channel has since been deleted have no
+ * type and read as "[unattributed]". */
 function rowLabel(row: MessageCountByChannel): string {
   if (row.display_name) return row.display_name;
-  if (row.channel_type) return row.channel_type;
+  if (row.channel_type) return channelLabel(row.channel_type);
   return "[unattributed]";
 }
 

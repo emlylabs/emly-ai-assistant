@@ -39,7 +39,7 @@ from channels.auth._http import make_client
 from channels.auth.base import InstallMetadata
 from channels.auth.oauth2_auth_code import OAuth2AuthCodeBase, TokenSet
 from channels.base import ChannelAdapter, InstallError
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 from channels.registry import register
 from models.bot_channels import BotChannelModel
 
@@ -248,6 +248,15 @@ class WhatsAppCloudAdapter(ChannelAdapter):
         msg = messages[0]
         msg_type = msg.get("type")
         from_number = msg.get("from", "")
+        # ``contacts`` carries the sender's WhatsApp profile name.
+        contact = next(
+            (c for c in (value.get("contacts") or []) if c.get("wa_id") == from_number),
+            (value.get("contacts") or [{}])[0],
+        )
+        profile = UserProfile.from_display_name(
+            (contact.get("profile") or {}).get("name"),
+            phone=f"+{from_number}" if from_number and not from_number.startswith("+") else from_number or None,
+        )
         reply_handle = {
             "to": from_number,
             "phone_number_id": secrets.phone_number_id,
@@ -268,6 +277,7 @@ class WhatsAppCloudAdapter(ChannelAdapter):
                 reply_handle=reply_handle,
                 kind="canned_reply",
                 canned_reply_text="I can only handle text messages right now.",
+                user_profile=profile,
             )
         text = (msg.get("text") or {}).get("body", "")
         if not text:
@@ -280,6 +290,7 @@ class WhatsAppCloudAdapter(ChannelAdapter):
             chat_type="dm",
             raw_payload=body,
             reply_handle=reply_handle,
+            user_profile=profile,
         )
 
     def is_self(self, secrets: WhatsAppCloudSecrets, raw_payload: dict) -> bool:

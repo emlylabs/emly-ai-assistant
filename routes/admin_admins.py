@@ -21,7 +21,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from db.db import DB
 from models.admin_bot_memberships import AdminBotMemberships, ROLES
 from models.admin_users import AdminUserModel, AdminUsers
-from models.bots import Bots
+from models.bots import Bot, Bots
 from models.pending_admins import (
     KIND_SPACE_INVITE,
     KIND_SUPERADMIN_LEGACY,
@@ -100,6 +100,12 @@ class PendingInviteRequest(BaseModel):
 async def list_admins(admin: AdminUserModel = Depends(get_admin)) -> AdminListResponse:
     require_superadmin(admin)
     admins = AdminUsers.list()
+    # Memberships on soft-deleted bots survive until purge (so a restore
+    # keeps access); they must not inflate the "N bots" count.
+    live_bot_ids = {
+        row.id
+        for row in Bot.select(Bot.id).where(Bot.is_deleted == False)  # noqa: E712
+    }
     items: List[AdminListItem] = []
     for a in admins:
         mem = AdminBotMemberships.list_for_admin(a.id)
@@ -107,7 +113,9 @@ async def list_admins(admin: AdminUserModel = Depends(get_admin)) -> AdminListRe
             AdminListItem(
                 **a.model_dump(),
                 memberships=[
-                    AdminListMembership(bot_id=m.bot_id, role=m.role) for m in mem
+                    AdminListMembership(bot_id=m.bot_id, role=m.role)
+                    for m in mem
+                    if m.bot_id in live_bot_ids
                 ],
             )
         )

@@ -31,7 +31,7 @@ from channels.auth._http import make_client
 from channels.auth.base import InstallMetadata
 from channels.auth.oauth2_client_credentials import OAuth2ClientCredentials
 from channels.base import ChannelAdapter, InstallError
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 from channels.jwt_verifier import extract_unverified_audience, verify_bot_framework_jwt
 from channels.registry import register
 from models.bot_channels import BotChannelModel
@@ -85,7 +85,7 @@ class TeamsAdapter(ChannelAdapter):
     install_addressing = "by_payload"
     default_reply_mode = "async"
     supported_reply_modes = {"async"}
-    chat_types_supported = {"dm", "channel"}
+    chat_types_supported = {"dm", "channel", "group"}
     capabilities = ChannelCaps(
         supports_threading=True,
         supports_attachments=True,
@@ -154,7 +154,9 @@ class TeamsAdapter(ChannelAdapter):
         if conv_type == "personal":
             chat_type: ChatType = "dm"
         elif conv_type in ("channel", "groupChat"):
-            chat_type = "channel"
+            # A channel conversation id names one thread (``;messageid=``);
+            # a group chat's id is the whole running chat.
+            chat_type = "channel" if conv_type == "channel" else "group"
             # In channels, Bot Framework already filters to bot mentions,
             # but defense-in-depth: only proceed when our app_id is in
             # the entities list.
@@ -176,6 +178,7 @@ class TeamsAdapter(ChannelAdapter):
                 "conversation_id": conversation.get("id"),
                 "activity_id": body.get("id"),
             },
+            user_profile=UserProfile.from_display_name(sender.get("name")),
         )
 
     def is_self(self, secrets: TeamsSecrets, raw_payload: dict) -> bool:

@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,10 @@ class Issue:
     section: IssueSection
     message: str
     cta: Optional[Dict[str, str]] = None
+    # Dotted config path the issue is about, for rules that check a single
+    # value (R16–R23). Lets the save routes tell a value the admin just
+    # entered from one already stored. Not serialized.
+    field: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -101,7 +107,16 @@ def _as_str(v: Any) -> str:
     return v if isinstance(v, str) else ""
 
 
+_DECIMAL_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+
+
 def _as_num(v: Any) -> Optional[float]:
+    """Numeric value of ``v``, or None. Numeric strings ("0.7") count, as
+    the config schema coerces them, so rules judge the value that's saved."""
+    if isinstance(v, str):
+        if not _DECIMAL_RE.match(v.strip()):
+            return None
+        v = float(v.strip())
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         if v != v or v == float("inf") or v == float("-inf"):  # NaN / inf guard
             return None
@@ -468,6 +483,218 @@ def _run_config_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[Is
             message="Visitors will land on a blank chat with no welcome message and no skills.",
         ))
 
+    issues.extend(_field_format_issues(config))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Field-format rules (R16–R23). Malformed single values; the save route
+# always blocks on these, independent of the workspace save gate.
+# ---------------------------------------------------------------------------
+FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_")
+
+_EMAIL_RE = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+# CSS colour functions whose arguments are 3–4 numeric components
+# (number / percentage / angle / ``none``) separated by commas, spaces
+# or a ``/`` before alpha. Out-of-range components are valid CSS (the
+# browser clamps them), so only the shape is checked.
+_NUM = r"(?:[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|deg|rad|grad|turn)?|none)"
+_FUNC_COLOR_RE = re.compile(
+    rf"^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*{_NUM}(?:\s*[,/]\s*{_NUM}|\s+{_NUM}){{2,3}}\s*\)$",
+    re.IGNORECASE,
+)
+# ``var(--x)`` / ``var(--x, fallback)``, ``color(...)`` and
+# ``color-mix(...)``: allowed as long as nothing in them could escape the
+# declaration they're inlined into.
+_VAR_COLOR_RE = re.compile(r"^var\(\s*--[A-Za-z0-9_-]+\s*(?:,[^;{}<>]*)?\)$")
+_OTHER_FUNC_COLOR_RE = re.compile(r"^(?:color|color-mix)\([^;{}<>]+\)$", re.IGNORECASE)
+_NAMED_COLORS = frozenset("""
+    aliceblue antiquewhite aqua aquamarine azure beige bisque black
+    blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+    chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+    darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+    darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+    darkslateblue darkslategray darkslategrey darkturquoise darkviolet
+    deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite
+    forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green
+    greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender
+    lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+    lightgoldenrodyellow lightgray lightgreen lightgrey lightpink
+    lightsalmon lightseagreen lightskyblue lightslategray lightslategrey
+    lightsteelblue lightyellow lime limegreen linen magenta maroon
+    mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+    mediumslateblue mediumspringgreen mediumturquoise mediumvioletred
+    midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive
+    olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise
+    palevioletred papayawhip peachpuff peru pink plum powderblue purple
+    rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+    seagreen seashell sienna silver skyblue slateblue slategray slategrey
+    snow springgreen steelblue tan teal thistle tomato turquoise violet
+    wheat white whitesmoke yellow yellowgreen transparent currentcolor
+""".split())
+_THEME_COLOR_FIELDS = (
+    ("launcher_background", "Launcher background"),
+    ("container_background", "Container background"),
+    ("header_background", "Header background"),
+    ("header_foreground", "Header foreground"),
+    ("user_message_background", "User message background"),
+    ("user_message_foreground", "User message foreground"),
+    ("bot_message_background", "Bot message background"),
+    ("bot_message_foreground", "Bot message foreground"),
+)
+
+
+def is_http_url(value: str) -> bool:
+    """``http(s)://`` with a host and no whitespace."""
+    if not value or any(c.isspace() for c in value):
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def is_logo_url(value: str) -> bool:
+    """An ``http(s)://`` URL, a protocol-relative ``//host/...`` URL, a
+    path on the embedding site (``/logo.png``, ``./logo.png``), or an
+    inline ``data:image/`` URI."""
+    if not value or any(c.isspace() for c in value):
+        return False
+    if value.startswith("data:image/"):
+        return True
+    if value.startswith("//"):
+        return is_http_url("https:" + value)
+    if value.startswith(("/", "./", "../")):
+        return True
+    return is_http_url(value)
+
+
+def _value_at(config: Dict[str, Any], path: str) -> Any:
+    node: Any = config
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
+
+
+def blocking_format_issues(
+    issues: List[Issue], after: Dict[str, Any], before: Optional[Dict[str, Any]]
+) -> List[Issue]:
+    """Field-format errors that should stop a save of ``after`` over
+    ``before``: those on a value the save introduces or changes. A value
+    already stored that fails a newer or stricter rule still shows up as
+    an error in the editor, but doesn't hold every unrelated save hostage."""
+    out: List[Issue] = []
+    for i in issues:
+        if i.severity != "error" or not i.key.startswith(FIELD_FORMAT_RULE_PREFIXES):
+            continue
+        if before is not None and i.field and _value_at(before, i.field) == _value_at(after, i.field):
+            continue
+        out.append(i)
+    return out
+
+
+def is_valid_color(value: str) -> bool:
+    """Hex, CSS named colour, a colour function, or a ``var()`` reference."""
+    v = value.strip()
+    if v.lower() in _NAMED_COLORS:
+        return True
+    if v.count("(") != v.count(")"):
+        return False
+    return any(r.match(v) for r in (_HEX_COLOR_RE, _FUNC_COLOR_RE, _VAR_COLOR_RE, _OTHER_FUNC_COLOR_RE))
+
+
+def _present(v: Any) -> bool:
+    return v is not None and not (isinstance(v, str) and not v.strip())
+
+
+def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
+    issues: List[Issue] = []
+    widget = _as_obj(config.get("widget"))
+    theme = _as_obj(widget.get("theme"))
+    llm = _as_obj(config.get("llm"))
+    rag = _as_obj(config.get("rag"))
+    limits = _as_obj(config.get("limits"))
+
+    support_email = config.get("support_email")
+    if _present(support_email):
+        bad = [p.strip() for p in str(support_email).split(",") if not _EMAIL_RE.match(p.strip())]
+        if bad:
+            issues.append(Issue(
+                severity="error",
+                key="R16_invalid_support_email",
+                section="identity",
+                message=f'Support email "{bad[0]}" is not a valid email address.',
+                field="support_email",
+            ))
+
+    logo = widget.get("logo")
+    if _present(logo) and not is_logo_url(str(logo)):
+        issues.append(Issue(
+            severity="error",
+            key="R17_invalid_logo_url",
+            section="identity",
+            message="Logo URL must be an http:// or https:// address, or a path starting with /.",
+            field="widget.logo",
+        ))
+
+    for field, label in _THEME_COLOR_FIELDS:
+        color = theme.get(field)
+        if _present(color) and not is_valid_color(str(color)):
+            issues.append(Issue(
+                severity="error",
+                key=f"R18_invalid_color_{field}",
+                section="widget",
+                message=f'{label} "{color}" is not a colour. Use a hex value like #1a73e8, a CSS colour name, or rgb(…).',
+                field=f"widget.theme.{field}",
+            ))
+
+    endpoint = llm.get("api_endpoint")
+    if _present(endpoint) and not is_http_url(str(endpoint)):
+        issues.append(Issue(
+            severity="error",
+            key="R19_invalid_api_endpoint",
+            section="llm",
+            message="API endpoint must be a full http:// or https:// address.",
+            field="llm.api_endpoint",
+        ))
+
+    def _range(value: Any, lo: float, hi: float) -> bool:
+        n = _as_num(value)
+        return n is not None and lo <= n <= hi
+
+    if llm.get("temperature") is not None and not _range(llm.get("temperature"), 0, 2):
+        issues.append(Issue(
+            severity="error",
+            key="R20_temperature_range",
+            section="llm",
+            message="Temperature must be between 0 and 2.",
+            field="llm.temperature",
+        ))
+    if rag.get("top_k") is not None and not _range(rag.get("top_k"), 1, 50):
+        issues.append(Issue(
+            severity="error",
+            key="R21_top_k_range",
+            section="rag",
+            message="Top K must be between 1 and 50.",
+            field="rag.top_k",
+        ))
+    if rag.get("embedding_threshold") is not None and not _range(rag.get("embedding_threshold"), 0, 1):
+        issues.append(Issue(
+            severity="error",
+            key="R22_threshold_range",
+            section="rag",
+            message="Score threshold must be between 0 and 1.",
+            field="rag.embedding_threshold",
+        ))
+    if limits.get("max_file_size_mb") is not None and not _range(limits.get("max_file_size_mb"), 1, float("inf")):
+        issues.append(Issue(
+            severity="error",
+            key="R23_max_file_size_range",
+            section="limits",
+            message="Max file size must be at least 1 MB.",
+            field="limits.max_file_size_mb",
+        ))
     return issues
 
 
@@ -570,6 +797,7 @@ def probe_bot_api_key(bot_id: str) -> bool:
 
 
 __all__ = [
+    "FIELD_FORMAT_RULE_PREFIXES",
     "Issue",
     "IssueSection",
     "IssueSeverity",
@@ -579,6 +807,10 @@ __all__ = [
     "has_deployment_api_key",
     "has_deployment_endpoint",
     "has_deployment_model",
+    "is_http_url",
+    "is_logo_url",
+    "blocking_format_issues",
+    "is_valid_color",
     "probe_bot_api_key",
     "validate_config",
 ]

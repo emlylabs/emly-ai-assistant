@@ -672,17 +672,19 @@ export default function BotAnalyticsPage() {
             {PRESET_RANGES.map((r) => (
               <button
                 key={r.value}
+                role="tab"
                 className={range === r.value ? "active" : ""}
                 onClick={() => setRange(r.value)}
-                aria-pressed={range === r.value}
+                aria-selected={range === r.value}
               >
                 {r.label}
               </button>
             ))}
             <button
+              role="tab"
               className={range === "custom" ? "active" : ""}
               onClick={() => setRange("custom")}
-              aria-pressed={range === "custom"}
+              aria-selected={range === "custom"}
               title="Choose a custom date range"
             >
               Custom
@@ -692,6 +694,7 @@ export default function BotAnalyticsPage() {
             <div className="row" style={{ gap: 4, alignItems: "center" }}>
               <input
                 type="date"
+                aria-label="From date"
                 className="ghost compact"
                 value={tsToDateInput(customWindow.fromTs)}
                 onChange={(e) => {
@@ -703,6 +706,7 @@ export default function BotAnalyticsPage() {
               <span className="muted" style={{ fontSize: 12 }}>→</span>
               <input
                 type="date"
+                aria-label="To date"
                 className="ghost compact"
                 value={tsToDateInput(customWindow.toTs)}
                 onChange={(e) => {
@@ -1003,7 +1007,11 @@ export default function BotAnalyticsPage() {
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <EnrichmentCard data={enrichment} rangeDays={viewWindow.days} />
+            <EnrichmentCard
+              data={enrichment}
+              rangeDays={viewWindow.days}
+              configHref={`/bots/${encodeURIComponent(bot.slug)}/config?tab=llm`}
+            />
           </div>
 
           <ModelUsageCard

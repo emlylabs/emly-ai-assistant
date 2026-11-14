@@ -202,6 +202,7 @@ export default function AdminMembershipMatrixPage() {
           >
             <input
               type="search"
+              aria-label="Search bots"
               placeholder="Search bots…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -211,8 +212,9 @@ export default function AdminMembershipMatrixPage() {
               {(["all", "members", "non-members"] as const).map((opt) => (
                 <button
                   key={opt}
+                  role="tab"
                   className={filter === opt ? "active" : ""}
-                  aria-pressed={filter === opt}
+                  aria-selected={filter === opt}
                   onClick={() => setFilter(opt)}
                 >
                   {opt === "all" ? "All" : opt === "members" ? "Members" : "Non-members"}

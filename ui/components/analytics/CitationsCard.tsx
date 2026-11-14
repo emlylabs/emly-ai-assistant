@@ -43,7 +43,7 @@ export default function CitationsCard({ data, rangeDays }: CitationsCardProps) {
         }}
       >
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>RAG citations</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>Knowledge citations</div>
           <div className="muted" style={{ fontSize: 11.5 }}>
             assistant turns with ≥1 source · last {rangeDays} days
           </div>
@@ -62,10 +62,8 @@ export default function CitationsCard({ data, rangeDays }: CitationsCardProps) {
         </div>
       ) : data.citation_rate === null || data.with_citations === 0 ? (
         <div style={{ padding: 16, color: "var(--muted)", fontSize: 12.5 }}>
-          No citations recorded. The bot either doesn&apos;t use RAG or none of
-          its retrievals matched the citation threshold; the{" "}
-          <code>citations</code> column on <code>emly_messages</code> stayed
-          null for every assistant turn in this window.
+          No citations recorded. Knowledge retrieval is off for this bot, or
+          no answer in this period used a retrieved passage.
         </div>
       ) : (
         <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>

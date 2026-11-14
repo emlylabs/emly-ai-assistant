@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useBot } from "@/components/BotShell";
+import { channelLabel } from "@/components/ChannelChip";
 import { EndUser, api } from "@/lib/api";
 
 const PAGE_SIZE = 50;
@@ -83,6 +84,7 @@ export default function BotUsersPage() {
             <thead>
               <tr>
                 <th>ID</th>
+                <th>Channel</th>
                 <th>Email</th>
                 <th>Phone</th>
                 <th>Country</th>
@@ -95,6 +97,9 @@ export default function BotUsersPage() {
                 <tr key={u.id}>
                   <td className="cell-truncate" style={{ maxWidth: 200 }}>
                     {u.id}
+                  </td>
+                  <td className="muted">
+                    {channelLabel(typeof u.meta?.channel === "string" ? u.meta.channel : "web_widget")}
                   </td>
                   <td>{u.email ?? "—"}</td>
                   <td>{u.phone ?? "—"}</td>

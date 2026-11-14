@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from models.admin_bot_memberships import AdminBotMemberships
 from models.admin_users import AdminUserModel
-from models.bot_channels import BotChannels
+from models.bot_channels import BotChannels, channel_filter
 from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_sessions import EMLYSessionModel, EMLYSessions
@@ -58,6 +58,7 @@ class SessionRow(BaseModel):
 
     session: EMLYSessionModel
     last_message: Optional[EMLYMessageModel] = None
+    channel_type: str = "web_widget"
 
 
 class SessionListResponse(BaseModel):
@@ -70,6 +71,24 @@ class SessionListResponse(BaseModel):
 class SessionDetailResponse(BaseModel):
     session: EMLYSessionModel
     messages: List[EMLYMessageModel]
+    channel_type: str = "web_widget"
+
+
+def _channel_type_for(channel_id: Optional[str], cache: Optional[dict] = None) -> str:
+    """Translate ``bot_channel.id`` into its adapter type.
+
+    No channel id means widget traffic (chats from before a web_widget
+    install row existed). An id whose channel row is gone is reported as
+    ``unknown`` rather than guessed: it was some other install, and
+    labelling it "Website" would be wrong.
+    """
+    if not channel_id:
+        return "web_widget"
+    cache = {} if cache is None else cache
+    if channel_id not in cache:
+        ch = BotChannels.get_by_id(channel_id)
+        cache[channel_id] = ch.type if ch is not None else "unknown"
+    return cache[channel_id]
 
 
 class ResolvePayload(BaseModel):
@@ -140,7 +159,7 @@ def list_sessions_daily(
         & (EMLYSession.started_at <= end)
     )
     if channel_id_q:
-        started_q = started_q.where(EMLYSession.channel_id == channel_id_q)
+        started_q = started_q.where(channel_filter(EMLYSession.channel_id, channel_id_q))
     for row in started_q.dicts():
         ts = row["started_at"]
         if ts is None:
@@ -157,7 +176,7 @@ def list_sessions_daily(
         & (EMLYSession.resolved_at <= end)
     )
     if channel_id_q:
-        resolved_q = resolved_q.where(EMLYSession.channel_id == channel_id_q)
+        resolved_q = resolved_q.where(channel_filter(EMLYSession.channel_id, channel_id_q))
     for row in resolved_q.dicts():
         ts = row["resolved_at"]
         if ts is None:
@@ -199,6 +218,12 @@ def list_sessions(
         pattern="^(rated|unrated|positive|negative)$",
         description="Filter by rating state of any message in the session.",
     ),
+    q: Optional[str] = Query(
+        None,
+        min_length=2,
+        max_length=200,
+        description="Case-insensitive text search over every turn, plus session and user ids.",
+    ),
     admin: AdminUserModel = Depends(get_admin),
 ):
     bot = _resolve_bot(slug)
@@ -216,10 +241,12 @@ def list_sessions(
         started_after=started_after,
         started_before=started_before,
         rating=rating,
+        search=q,
     )
     rows = EMLYSessions.list_for_bot(bot.id, skip=skip, limit=limit, **filter_kwargs)
     total = EMLYSessions.count_for_bot(bot.id, **filter_kwargs)
     items: List[SessionRow] = []
+    channel_types: dict = {}
     for s in rows:
         last = None
         try:
@@ -228,7 +255,13 @@ def list_sessions(
                 last = paged[0]
         except Exception:
             log.exception("list_sessions: failed to fetch last message for %s", s.id)
-        items.append(SessionRow(session=s, last_message=last))
+        items.append(
+            SessionRow(
+                session=s,
+                last_message=last,
+                channel_type=_channel_type_for(s.channel_id, channel_types),
+            )
+        )
     return SessionListResponse(items=items, total=total, skip=skip, limit=limit)
 
 
@@ -248,7 +281,11 @@ def get_session(
     # up to 500 turns; larger sessions get a follow-up paging param.
     messages = EMLYMessages.list_all(bot.id, session_id=session_id, skip=0, limit=500)
     messages = list(reversed(messages or []))
-    return SessionDetailResponse(session=session, messages=messages)
+    return SessionDetailResponse(
+        session=session,
+        messages=messages,
+        channel_type=_channel_type_for(session.channel_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,13 +360,6 @@ class TakeoverReplyPayload(BaseModel):
     message: str
 
 
-def _channel_kind_or_none(channel_id: Optional[str]) -> Optional[str]:
-    if not channel_id:
-        return None
-    ch = BotChannels.get_by_id(channel_id)
-    return ch.type if ch is not None else None
-
-
 @router.post("/bots/{slug}/sessions/{session_id}/takeover", response_model=EMLYSessionModel)
 def takeover_session(
     slug: str,
@@ -354,8 +384,8 @@ def takeover_session(
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    kind = _channel_kind_or_none(session.channel_id)
-    if kind is not None and kind != "web_widget":
+    kind = _channel_type_for(session.channel_id)
+    if kind != "web_widget":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={

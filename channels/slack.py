@@ -37,7 +37,7 @@ from channels.auth._http import make_client
 from channels.auth.base import InstallMetadata
 from channels.auth.static_token import StaticToken
 from channels.base import ChannelAdapter, InstallError
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 from channels.registry import register
 from models.bot_channels import BotChannelModel
 
@@ -159,7 +159,25 @@ class SlackAdapter(ChannelAdapter):
             return None
 
         channel_external = event.get("channel")
-        session_external_id = f"{channel_external}:{thread_ts or ts}"
+        # DMs are one running conversation per user (every DM message is
+        # top-level, so keying on ``ts`` split it into a session per
+        # message). In channels each thread is its own conversation; a
+        # top-level mention's ``ts`` is the root its replies carry as
+        # ``thread_ts``. The dispatcher rotates the id once a session is
+        # resolved or idle.
+        #
+        # Earlier releases keyed DMs on the thread too, and the bot replies
+        # in a thread under each DM message, so a DM conversation already
+        # in progress lives under ``channel:thread_ts``. Name that key so
+        # the dispatcher can carry the conversation across the change.
+        legacy_session_external_id: Optional[str] = None
+        if chat_type == "dm":
+            who = event.get("user") or "unknown"
+            session_external_id = f"{channel_external}:{who}"
+            if thread_ts:
+                legacy_session_external_id = f"{channel_external}:{thread_ts}"
+        else:
+            session_external_id = f"{channel_external}:{thread_ts or ts}"
 
         return IncomingMessage(
             channel_id="",
@@ -172,11 +190,41 @@ class SlackAdapter(ChannelAdapter):
                 "channel": channel_external,
                 "thread_ts": thread_ts or ts,
             },
+            legacy_session_external_id=legacy_session_external_id,
         )
 
     def is_self(self, secrets: SlackSecrets, raw_payload: dict) -> bool:
         event = raw_payload.get("event") or {}
         return bool(event.get("bot_id")) or event.get("user") == secrets.bot_user_id
+
+    async def fetch_user_profile(
+        self, channel: BotChannelModel, user_external_id: str
+    ) -> Optional[UserProfile]:
+        """Slack events carry only the user id; ``users.info`` has the
+        name (``users:read``) and email (``users:read.email``). A missing
+        scope comes back as ``ok: false`` and yields no profile."""
+        if not user_external_id:
+            return None
+        token = await self.auth.get_access_token(channel)
+        async with make_client() as client:
+            resp = await client.get(
+                f"{SLACK_API}/users.info",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"user": user_external_id},
+            )
+        body = resp.json() if resp.status_code == 200 else {}
+        if not body.get("ok"):
+            log.info("Slack users.info unavailable for channel=%s: %s", channel.id, body.get("error"))
+            return None
+        user = body.get("user") or {}
+        profile = user.get("profile") or {}
+        first = (profile.get("first_name") or "").strip()
+        last = (profile.get("last_name") or "").strip()
+        email = (profile.get("email") or "").strip() or None
+        if first or last:
+            return UserProfile(first_name=first or None, last_name=last or None, email=email)
+        name = profile.get("real_name") or profile.get("display_name") or user.get("real_name") or user.get("name")
+        return UserProfile.from_display_name(name, email=email)
 
     # ------------------------------------------------------------------
     # Outbound

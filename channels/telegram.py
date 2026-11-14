@@ -26,7 +26,7 @@ from channels.auth._http import make_client
 from channels.auth.base import InstallMetadata
 from channels.auth.static_token import StaticToken
 from channels.base import ChannelAdapter, InstallError
-from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage
+from channels.contracts import ChannelCaps, ChatType, IncomingMessage, OutgoingMessage, UserProfile
 from channels.registry import register
 from models.bot_channels import BotChannelModel
 
@@ -117,6 +117,10 @@ class TelegramAdapter(ChannelAdapter):
                 "chat_id": chat.get("id"),
                 "reply_to_message_id": msg.get("message_id"),
             },
+            user_profile=UserProfile(
+                first_name=sender.get("first_name") or sender.get("username") or None,
+                last_name=sender.get("last_name") or None,
+            ),
         )
 
     def extract_event_id(self, request: Request) -> Optional[str]:

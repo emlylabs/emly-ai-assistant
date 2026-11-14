@@ -37,6 +37,46 @@ class ChannelCaps:
 # replies correctly.
 ChatType = Literal["dm", "group", "channel", "thread"]
 
+# Chat types whose session key is a running conversation (a DM, a group
+# chat) rather than a thread. Only these rotate to a new session once the
+# current one is resolved or idle; a thread is one conversation for life.
+RUNNING_CHAT_TYPES = frozenset({"dm", "group"})
+
+
+@dataclass
+class UserProfile:
+    """Who sent the message, as far as the platform tells us. Any field
+    may be missing; the dispatcher stores what it gets on the end-user
+    row and never overwrites a value already there."""
+
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+    @classmethod
+    def from_display_name(cls, name: Optional[str], **kw: Optional[str]) -> "UserProfile":
+        parts = (name or "").strip().split(None, 1)
+        return cls(
+            first_name=parts[0] if parts else None,
+            last_name=parts[1] if len(parts) > 1 else None,
+            **kw,
+        )
+
+    def is_empty(self) -> bool:
+        return not (self.first_name or self.last_name or self.email or self.phone)
+
+    def merged(self, other: Optional["UserProfile"]) -> "UserProfile":
+        """Fill this profile's gaps from ``other``."""
+        if other is None:
+            return self
+        return UserProfile(
+            first_name=self.first_name or other.first_name,
+            last_name=self.last_name or other.last_name,
+            email=self.email or other.email,
+            phone=self.phone or other.phone,
+        )
+
 
 @dataclass
 class IncomingMessage:
@@ -52,6 +92,14 @@ class IncomingMessage:
     ``{chat_id, reply_to_message_id}``; WhatsApp:
     ``{phone_number_id, to, context_message_id}``; Google Chat:
     ``{space, thread}``).
+
+    ``legacy_session_external_id`` is the key an earlier release used for
+    the same conversation, when it differs from ``session_external_id``.
+    The dispatcher continues a still-open session stored under it so a
+    conversation in progress survives the keying change.
+
+    ``user_profile`` carries the sender's name / email / phone when the
+    payload includes them.
 
     ``kind`` distinguishes message types the dispatcher routes
     differently. ``"text"`` runs the agent. ``"canned_reply"`` skips
@@ -72,6 +120,8 @@ class IncomingMessage:
     reply_handle: Any = None
     kind: Literal["text", "canned_reply"] = "text"
     canned_reply_text: str = ""
+    legacy_session_external_id: Optional[str] = None
+    user_profile: UserProfile = field(default_factory=UserProfile)
 
 
 @dataclass

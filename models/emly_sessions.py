@@ -12,7 +12,7 @@ fetch.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from peewee import (
@@ -28,6 +28,7 @@ from playhouse.shortcuts import model_to_dict
 from pydantic import BaseModel
 
 from db.db import DB
+from models.bot_channels import channel_filter
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,10 @@ class EMLYSessionsTable:
             # whenever the threading is complete).
             if channel_id and not row.channel_id:
                 updates["channel_id"] = channel_id
+            # New activity on a session closed for inactivity (not
+            # resolved) puts it back on the open list.
+            if row.ended_at is not None and not row.is_resolved:
+                updates["ended_at"] = None
             EMLYSession.update(**updates).where(EMLYSession.id == session_id).execute()
         except Exception:
             logger.exception(
@@ -166,6 +171,110 @@ class EMLYSessionsTable:
         except Exception:
             logger.debug("realtime publish failed (non-fatal)", exc_info=True)
 
+    @staticmethod
+    def _is_open(row, now: datetime, idle_after: timedelta) -> bool:
+        """Still taking turns: not resolved, not closed, not idle."""
+        if row.is_resolved or row.ended_at is not None:
+            return False
+        return row.last_activity_at is None or now - row.last_activity_at <= idle_after
+
+    def current_channel_session(
+        self,
+        bot_id: str,
+        base_id: str,
+        *,
+        idle_after: timedelta,
+        now: Optional[datetime] = None,
+    ) -> str:
+        """Session id the next message in a running channel conversation
+        (a DM, a group chat) should use.
+
+        Those conversations are keyed on a stable platform id that on its
+        own never ends: a resolved conversation would swallow every later
+        question and each user would count as one session forever. Rotate
+        instead: ``base_id``, ``base_id-1``, ``base_id-2`` ... A new
+        generation starts once the latest one is resolved, closed, or idle
+        for longer than ``idle_after``; an idle one is closed (``ended_at``)
+        so it leaves the open list. Threads don't come through here: a
+        thread is one conversation however long its gaps.
+
+        Fails open to ``base_id`` so a DB hiccup never blocks a reply.
+        """
+        now = now or datetime.utcnow()
+        prefix = f"{base_id}-"
+        try:
+            rows = list(
+                EMLYSession.select(
+                    EMLYSession.id,
+                    EMLYSession.is_resolved,
+                    EMLYSession.ended_at,
+                    EMLYSession.last_activity_at,
+                ).where(
+                    (EMLYSession.bot_id == bot_id)
+                    & ((EMLYSession.id == base_id) | EMLYSession.id.startswith(prefix))
+                )
+            )
+        except Exception:
+            logger.exception(
+                "EMLYSessions.current_channel_session failed for base=%s bot=%s",
+                base_id,
+                bot_id,
+            )
+            return base_id
+
+        def generation(session_id: str) -> int:
+            suffix = session_id[len(prefix):] if session_id.startswith(prefix) else ""
+            return int(suffix) if suffix.isdigit() else 0
+
+        rows = [r for r in rows if r.id == base_id or r.id[len(prefix):].isdigit()]
+        if not rows:
+            return base_id
+        latest = max(rows, key=lambda r: generation(r.id))
+        if self._is_open(latest, now, idle_after):
+            return latest.id
+        if not latest.is_resolved and latest.ended_at is None:
+            self.close_idle(bot_id, latest.id, now=now)
+        return f"{base_id}-{generation(latest.id) + 1}"
+
+    def open_session(
+        self,
+        bot_id: str,
+        session_id: str,
+        *,
+        idle_after: timedelta,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """True if ``session_id`` exists and is still open (see
+        ``_is_open``). False on any DB error."""
+        now = now or datetime.utcnow()
+        try:
+            row = EMLYSession.get_or_none(
+                (EMLYSession.bot_id == bot_id) & (EMLYSession.id == session_id)
+            )
+        except Exception:
+            logger.exception("EMLYSessions.open_session failed for session=%s bot=%s", session_id, bot_id)
+            return False
+        return row is not None and self._is_open(row, now, idle_after)
+
+    def close_idle(self, bot_id: str, session_id: str, *, now: Optional[datetime] = None) -> None:
+        """Mark a session the user walked away from as ended without
+        resolving it, so it drops out of the open list but doesn't count
+        towards the resolution rate. Reopening it clears ``ended_at``.
+        Best-effort."""
+        try:
+            (
+                EMLYSession.update(ended_at=now or datetime.utcnow())
+                .where(
+                    (EMLYSession.bot_id == bot_id)
+                    & (EMLYSession.id == session_id)
+                    & EMLYSession.ended_at.is_null(True)
+                    & ((EMLYSession.is_resolved == False) | EMLYSession.is_resolved.is_null(True))  # noqa: E712
+                )
+                .execute()
+            )
+        except Exception:
+            logger.exception("EMLYSessions.close_idle failed for session=%s bot=%s", session_id, bot_id)
+
     def get(self, bot_id: str, session_id: str) -> Optional[EMLYSessionModel]:
         try:
             row = EMLYSession.get(
@@ -187,6 +296,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ):
         """Shared filter application for list_for_bot / count_for_bot.
 
@@ -194,12 +304,38 @@ class EMLYSessionsTable:
         an ``IN (SELECT session_id ...)`` subquery so the session list can
         be narrowed to sessions that have (or lack) ratings of a given
         polarity without denormalising rating state onto the session row.
+        ``search`` matches any turn (user or assistant) plus the session
+        and user ids, case-insensitively.
         """
         q = q.where(EMLYSession.bot_id == bot_id)
         if channel_id is not None:
-            q = q.where(EMLYSession.channel_id == channel_id)
-        if is_resolved is not None:
-            q = q.where(EMLYSession.is_resolved == is_resolved)
+            q = q.where(channel_filter(EMLYSession.channel_id, channel_id))
+        if is_resolved is True:
+            q = q.where(EMLYSession.is_resolved == True)  # noqa: E712
+        elif is_resolved is False:
+            # Sessions nobody has marked yet carry NULL and count as
+            # unresolved. A channel conversation closed for inactivity
+            # (``ended_at`` without a resolution) is no longer open.
+            q = q.where(
+                (
+                    (EMLYSession.is_resolved == False)  # noqa: E712
+                    | EMLYSession.is_resolved.is_null(True)
+                )
+                & EMLYSession.ended_at.is_null(True)
+            )
+        if search:
+            from models.emly_messages import EMLYMessage
+
+            term = search.strip()
+            if term:
+                matching = EMLYMessage.select(EMLYMessage.session_id).where(
+                    (EMLYMessage.bot == bot_id) & EMLYMessage.message.contains(term)
+                )
+                q = q.where(
+                    EMLYSession.id.in_(matching)
+                    | EMLYSession.id.contains(term)
+                    | EMLYSession.user_id.contains(term)
+                )
         if session_id is not None:
             q = q.where(EMLYSession.id == session_id)
         if user_id is not None:
@@ -241,6 +377,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> List[EMLYSessionModel]:
         """Return sessions newest-first (last_activity_at desc)."""
         q = self._apply_filters(
@@ -253,6 +390,7 @@ class EMLYSessionsTable:
             started_after=started_after,
             started_before=started_before,
             rating=rating,
+            search=search,
         )
         q = q.order_by(EMLYSession.last_activity_at.desc()).offset(skip).limit(limit)
         return [_row_to_model(r) for r in q]
@@ -268,6 +406,7 @@ class EMLYSessionsTable:
         started_after: Optional[datetime] = None,
         started_before: Optional[datetime] = None,
         rating: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> int:
         q = self._apply_filters(
             EMLYSession.select(),
@@ -279,6 +418,7 @@ class EMLYSessionsTable:
             started_after=started_after,
             started_before=started_before,
             rating=rating,
+            search=search,
         )
         return q.count()
 

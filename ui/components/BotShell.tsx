@@ -295,7 +295,7 @@ export default function BotShell({ children }: { children: ReactNode }) {
       ["g d", "dashboard", "Dashboard"],
       ["g a", "analytics", "Analytics"],
       ["g v", "conversations", "Conversations"],
-      ["g k", "files", "Knowledge (files)"],
+      ["g k", "files", "Knowledge"],
       ["g r", "retrieval", "Retrieval"],
       ["g h", "channels", "Channels"],
       ["g c", "config", "Config"],

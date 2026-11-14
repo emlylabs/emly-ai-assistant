@@ -1,5 +1,6 @@
 "use client";
 
+import { channelLabel } from "@/components/ChannelChip";
 import type { MessageCountByChannel } from "@/lib/api";
 
 type ChannelFilterProps = {
@@ -13,10 +14,6 @@ type ChannelFilterProps = {
  * `bot_channel.id`. Sources its options from the channel-mix endpoint
  * (so a channel that hasn't sent any messages in the window simply
  * doesn't appear — keeps the menu honest about what's filterable).
- *
- * The orphan bucket (channel_id null) is omitted as a filter target
- * since the backend filter requires a non-null id; users can still
- * see those messages in the unfiltered view.
  */
 export default function ChannelFilter({ channels, value, onChange }: ChannelFilterProps) {
   const options = (channels ?? []).filter((c) => c.channel_id);
@@ -42,9 +39,9 @@ export default function ChannelFilter({ channels, value, onChange }: ChannelFilt
     >
       <option value="">All channels</option>
       {options.map((c) => {
-        const label = c.display_name || c.channel_type || c.channel_id || "?";
-        const suffix =
-          c.display_name && c.channel_type ? ` (${c.channel_type})` : "";
+        const type = c.channel_type ? channelLabel(c.channel_type) : null;
+        const label = c.display_name || type || c.channel_id || "?";
+        const suffix = c.display_name && type ? ` (${type})` : "";
         return (
           <option key={c.channel_id ?? "?"} value={c.channel_id ?? ""}>
             {label}{suffix} · {c.count.toLocaleString()}
