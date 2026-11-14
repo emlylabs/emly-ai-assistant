@@ -390,8 +390,14 @@ app.add_middleware(CustomMiddleware)
 from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
 app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
-from services.audit import AuditRequestContextMiddleware  # noqa: E402
+from services.audit import AuditRequestContextMiddleware, AuditUnavailable  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)
+
+
+@app.exception_handler(AuditUnavailable)
+async def _audit_unavailable(request: Request, exc: AuditUnavailable):
+    # Q-G5a: a security event couldn't be audited, so the request fails.
+    return JSONResponse(status_code=503, content={"detail": {"code": "audit_unavailable"}})
 # CSRF: cookie-authenticated mutating requests must carry an Origin from the
 # trusted-list. Bearer-only callers (no cookie) bypass — without ambient
 # credentials there's no CSRF surface. Mounted before CORS so the response

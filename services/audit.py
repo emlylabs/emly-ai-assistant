@@ -145,6 +145,38 @@ def audit(
             _WRITE_FAILURES += 1
         log.error("AUDIT WRITE FAILED: action=%s admin=%s bot=%s error=%s",
                   action, admin_id, bot_id, type(exc).__name__)
+        if fails_closed(action):
+            raise AuditUnavailable(action) from None
+
+
+# -------- fail closed (Q-G5a) --------
+
+# Sign-ins, permission and configuration changes: the events the product
+# promises are audited. Content events (messages, files, sessions, crawls)
+# only log loudly when their audit write fails.
+SECURITY_ACTION_PREFIXES = (
+    "auth.", "authz.", "csrf.", "admin.", "membership.", "pending.", "invite.", "local.",
+    "keystore.", "bot.", "bots.", "config.", "channel.", "workspace.", "audit.",
+)
+FAIL_CLOSED_ENV = "AUDIT_FAIL_CLOSED"
+
+
+class AuditUnavailable(RuntimeError):
+    """A security event's audit row couldn't be written while serving a
+    request with fail-closed on. main.py turns it into a 503."""
+
+
+def fails_closed(action: str) -> bool:
+    """Whether a failed write of ``action`` must fail the request: a
+    security event, during an HTTP request (background jobs only log), with
+    ``AUDIT_FAIL_CLOSED`` on (the default when ``MODE`` is production-like)."""
+    from utils.runtime import env_flag, is_prod_mode
+
+    return (
+        action.startswith(SECURITY_ACTION_PREFIXES)
+        and _request_scope.get() is not None
+        and env_flag(FAIL_CLOSED_ENV, default=is_prod_mode())
+    )
 
 
 _WRITE_FAILURES = 0

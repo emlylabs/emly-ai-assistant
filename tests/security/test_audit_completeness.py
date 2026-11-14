@@ -127,3 +127,101 @@ def test_failures_show_on_readyz(monkeypatch):
     monkeypatch.setattr(audit_mod, "_WRITE_FAILURES", 3)
     codes = {w["code"]: w["message"] for w in main._collect_runtime_warnings()}
     assert codes["audit_write_failures"].startswith("3 audit log write(s) failed")
+
+
+# ------------------------------------------------------------------ Q-G5a
+@pytest.fixture
+def broken_audit(isolated_db, monkeypatch):
+    """An app whose audit table can't be written, with main's 503 handler."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from models.admin_audit_log import AdminAuditLogs
+    from services.audit import AuditRequestContextMiddleware, AuditUnavailable, audit
+
+    def boom(**kw):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(AdminAuditLogs, "insert", boom)
+    did = []
+    app = FastAPI()
+
+    @app.post("/do/{action}")
+    def do(action: str):
+        audit(action, admin_id="a1")
+        did.append(action)
+        return {"ok": True}
+
+    import main
+
+    app.add_exception_handler(AuditUnavailable, main.app.exception_handlers[AuditUnavailable])
+    app.add_middleware(AuditRequestContextMiddleware)
+    return TestClient(app), did, monkeypatch
+
+
+@pytest.mark.parametrize("action", ["auth.login", "admin.updated", "membership.granted", "bot.created",
+                                    "config.updated", "channel.secrets_rotated"])
+def test_prod_security_event_fails_the_request(broken_audit, action):
+    client, did, mp = broken_audit
+    mp.setenv("MODE", "prod")
+    mp.delenv("AUDIT_FAIL_CLOSED", raising=False)
+    r = client.post(f"/do/{action}")
+    assert (r.status_code, r.json()) == (503, {"detail": {"code": "audit_unavailable"}})
+    assert did == []
+
+
+@pytest.mark.parametrize("mode, flag, action", [
+    ("prod", None, "message.updated"),  # content event: logged only
+    ("dev", None, "auth.login"),        # dev default is off
+    ("prod", "false", "auth.login"),    # explicit opt-out
+])
+def test_other_cases_carry_on(broken_audit, mode, flag, action):
+    client, did, mp = broken_audit
+    mp.setenv("MODE", mode)
+    if flag is None:
+        mp.delenv("AUDIT_FAIL_CLOSED", raising=False)
+    else:
+        mp.setenv("AUDIT_FAIL_CLOSED", flag)
+    assert client.post(f"/do/{action}").status_code == 200
+    assert did == [action]
+
+
+def test_background_jobs_only_log(isolated_db, monkeypatch):
+    from models.admin_audit_log import AdminAuditLogs
+    from services.audit import audit
+
+    monkeypatch.setenv("MODE", "prod")
+    monkeypatch.setattr(AdminAuditLogs, "insert", lambda **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    audit("bot.purged", admin_id=None)  # no request in flight: must not raise
+
+
+def test_unaudited_superadmin_bypass_is_refused(isolated_db, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import main
+    from models.admin_audit_log import AdminAuditLogs
+    from models.admin_users import AdminUsers
+    from models.bots import Bots
+    from routes import admin_bot_sessions
+    from services import authz
+    from services.audit import AuditRequestContextMiddleware, AuditUnavailable
+    from services.auth.dependencies import get_admin
+
+    authz._bypass_seen.clear()
+    monkeypatch.setenv("MODE", "prod")
+    bot = Bots.insert(id=_uid("bot"), slug=_uid("fc"), name="FC")
+    admin = AdminUsers.insert(id=_uid("adm"), email=f"{_uid('s')}@example.com", is_active=True,
+                              is_superadmin=True)
+    app = FastAPI()
+    app.include_router(admin_bot_sessions.router, prefix="/api/admin")
+    app.add_middleware(AuditRequestContextMiddleware)
+    app.add_exception_handler(AuditUnavailable, main.app.exception_handlers[AuditUnavailable])
+    app.dependency_overrides[get_admin] = lambda: admin
+    monkeypatch.setattr(AdminAuditLogs, "insert", lambda **kw: (_ for _ in ()).throw(RuntimeError("down")))
+
+    client = TestClient(app)
+    assert client.get(f"/api/admin/bots/{bot.slug}/sessions").status_code == 503
+    # The failed write didn't open the 10-minute window.
+    assert client.get(f"/api/admin/bots/{bot.slug}/sessions").status_code == 503
+    authz._bypass_seen.clear()

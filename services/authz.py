@@ -90,14 +90,22 @@ def _audit_superadmin_bypass(admin: AdminUserModel, bot_id: str, needed: str) ->
             last = _bypass_seen.get(key)
             if last is not None and now - last < SUPERADMIN_AUDIT_WINDOW_SECONDS:
                 return
+        audit("authz.superadmin_bypass", admin_id=admin.id, bot_id=bot_id,
+              payload={"needed": needed, "method": method, "route": route})
+        # Start the window only once the row is written (a fail-closed
+        # failure raises above), so a failed write isn't followed by
+        # unaudited access.
+        with _bypass_lock:
             _bypass_seen[key] = now
             if len(_bypass_seen) > 10_000:
                 cutoff = now - SUPERADMIN_AUDIT_WINDOW_SECONDS
                 for k in [k for k, t in _bypass_seen.items() if t < cutoff]:
                     del _bypass_seen[k]
-        audit("authz.superadmin_bypass", admin_id=admin.id, bot_id=bot_id,
-              payload={"needed": needed, "method": method, "route": route})
-    except Exception:  # auditing must never change the response
+    except Exception as exc:
+        from services.audit import AuditUnavailable
+
+        if isinstance(exc, AuditUnavailable):
+            raise  # fail closed: no unaudited superadmin access
         log.debug("authz.superadmin_bypass audit failed", exc_info=True)
 
 
