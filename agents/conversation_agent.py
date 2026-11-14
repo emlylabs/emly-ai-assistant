@@ -17,7 +17,6 @@ from langgraph.graph.message import add_messages
 # LangChain imports
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langchain_classic.memory import ConversationBufferWindowMemory
 
@@ -99,6 +98,11 @@ class ConversationState(TypedDict):
     # path can record per-message channel attribution. Optional because
     # legacy callers may not know it.
     channel_id: Optional[str] = None
+    # LLM telemetry for the answer (model, token counts, latency), set by
+    # TopicAgent. Declared so LangGraph passes it through to the stream
+    # handler; undeclared keys are dropped from node output. For streamed
+    # answers the dict is filled in as the response generator is drained.
+    _llm_telemetry: Optional[Dict[str, Any]] = None
 
 @dataclass
 class SlotDefinition:
@@ -447,6 +451,18 @@ class ConversationManager:
                 "last_question_slot": None
             }
 
+def _add_stream_usage(telemetry: Dict[str, Any], usage: Optional[Dict[str, Any]]) -> None:
+    """Add one stream chunk's ``usage_metadata`` to ``telemetry``.
+
+    OpenAI sends usage once, on the final chunk; summing (as LangChain does
+    when it merges chunks) also handles providers that split it."""
+    if not usage:
+        return
+    for key, field in (("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")):
+        if usage.get(field) is not None:
+            telemetry[key] = (telemetry.get(key) or 0) + usage[field]
+
+
 # --- Agent Definitions ---
 
 class BaseAgent(ABC):
@@ -703,9 +719,7 @@ class TopicAgent(BaseAgent):
         Returns ``(response, citations, telemetry)``. Telemetry carries the
         Phase 2 backfill fields: ``model``, ``prompt_tokens``,
         ``completion_tokens``, ``response_time_ms``. For streaming responses
-        token counts stay ``None`` (the streaming usage capture is wired
-        via ``stream_options.include_usage`` but not yet plumbed through
-        the LangGraph stream chunks — separate follow-up).
+        they are filled in as the returned generator is consumed.
         """
         citations = []
         telemetry: Dict[str, Any] = {
@@ -783,17 +797,20 @@ class TopicAgent(BaseAgent):
         prompt = ChatPromptTemplate.from_template(template)
         t0 = time.perf_counter()
         if stream:
-            # Streaming path keeps the StrOutputParser pipeline. We wrap
-            # the generator so latency is captured at completion; token
-            # counts remain None until the LangGraph stream-chunk plumbing
-            # surfaces the final-chunk usage (separate follow-up).
-            chain = prompt | self.llm | StrOutputParser()
-            base_gen = chain.stream(data)
+            # Stream the raw message chunks rather than through
+            # StrOutputParser, which drops ``usage_metadata``: with
+            # ``stream_options.include_usage`` the provider reports token
+            # usage on the final chunk. The counts land on ``telemetry``,
+            # which the handler reads after it has drained this generator.
+            base_gen = (prompt | self.llm).stream(data)
 
             def timed_stream():
                 try:
                     for chunk in base_gen:
-                        yield chunk
+                        _add_stream_usage(telemetry, getattr(chunk, "usage_metadata", None))
+                        text = chunk.text if hasattr(chunk, "text") else str(chunk)
+                        if text:
+                            yield text
                 finally:
                     telemetry["response_time_ms"] = int((time.perf_counter() - t0) * 1000)
 
@@ -1025,10 +1042,9 @@ class AgenticConversationHandler:
                     ConversationManager.remember_turn(topic_memory, user_input, full_response)
 
                     # Phase 2 telemetry: prefer the per-node telemetry the
-                    # TopicAgent recorded; if it's missing, fall back to a
-                    # wall-clock latency measured from `stream_t0`. Token
-                    # counts may stay None for streaming today (separate
-                    # follow-up parses the final OpenAI usage chunk).
+                    # TopicAgent recorded (its token counts are filled in as
+                    # the response stream is drained above); if it's missing,
+                    # fall back to a wall-clock latency from `stream_t0`.
                     elapsed_ms = int((time.perf_counter() - stream_t0) * 1000)
                     model_used = final_telemetry.get("model") or getattr(self.llm, "model_name", None) or getattr(self.llm, "model", None)
                     response_time_ms = final_telemetry.get("response_time_ms") or elapsed_ms
