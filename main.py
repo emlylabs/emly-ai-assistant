@@ -168,6 +168,18 @@ def _init_embedded_issuer() -> None:
         )
 
 
+def _log_llm_endpoint_policy() -> None:
+    """G2a: say at boot whether model traffic is restricted, and flag a
+    deployment default endpoint that the allowlist itself blocks."""
+    from services.llm_settings import ALLOWLIST_ENV, endpoint_allowlist, endpoint_policy_warnings
+
+    entries = endpoint_allowlist()
+    if entries is not None:
+        log.info("%s: model traffic limited to %d approved endpoint(s)", ALLOWLIST_ENV, len(entries))
+    for w in endpoint_policy_warnings():
+        log.warning(w["message"])
+
+
 def _bootstrap_pending_superadmin() -> None:
     """Pre-stage the first admin from ``AUTH_BOOTSTRAP_SUPERADMIN_EMAIL``.
     See ``services.auth.bootstrap`` — a generated temporary password is
@@ -182,6 +194,7 @@ _assert_runtime_topology()
 from services.secrets import validate_configuration as _validate_secrets_key  # noqa: E402
 _validate_secrets_key()
 _init_embedded_issuer()
+_log_llm_endpoint_policy()
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
@@ -618,6 +631,9 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
             "message": "Multi-worker deploy with SQLite — expect write contention. Use Postgres for production.",
         })
 
+    from services.llm_settings import endpoint_policy_warnings
+
+    out.extend(endpoint_policy_warnings())
     return out
 
 

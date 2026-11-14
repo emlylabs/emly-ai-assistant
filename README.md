@@ -138,6 +138,7 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
 | `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
+| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning on `/api/readyz` |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
 | `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
 | `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION`, `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Only when using non-default models | Pin a commit; allow remote code only for a model you have reviewed |
@@ -172,6 +173,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `MODEL` | Default model name, e.g. `gpt-4o-mini` | unset |
 | `OPENAI_BASE_URL` | Default OpenAI-compatible endpoint, including the version path, e.g. `https://api.openai.com/v1` or `https://openrouter.ai/api/v1` | unset |
 | `OPENAI_API_KEY` | Default API key (also the embedding key when `EMBEDDING_PROVIDER=openai`) | unset |
+| `LLM_ENDPOINT_ALLOWLIST` | Model endpoints any bot may use, comma-separated: base URLs (`https://llm.example.com/v1`), hosts with an optional port (`llm.internal:8443`) or `*.example.com`. A bot whose endpoint isn't listed can't save it and refuses to answer; it never falls back to another endpoint. `OPENAI_BASE_URL` must be listed too | unset (any endpoint) |
 
 ### Runtime and Security
 
