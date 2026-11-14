@@ -183,14 +183,20 @@ def _upgrade(raw: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def parse_raw_config(raw: Dict[str, Any], schema_version: int = CURRENT_CONFIG_SCHEMA_VERSION) -> BotConfig:
+    """Parse a stored-shape config the way ``get_config_for_bot`` does
+    (upgrade chain, then ``BotConfig``). Doesn't mutate ``raw``. Raises
+    ``pydantic.ValidationError`` when the schema rejects it."""
+    raw = dict(raw or {})
+    raw.setdefault("schema_version", schema_version)
+    return BotConfig.model_validate(_upgrade(raw))
+
+
 def get_config_for_bot(bot_id: str) -> BotConfig:
     bot = Bots.get_by_id(bot_id)
     if bot is None:
         raise LookupError(f"bot not found: {bot_id}")
-    raw = bot.config_json or {}
-    raw.setdefault("schema_version", bot.config_schema_version or 1)
-    raw = _upgrade(raw)
-    return BotConfig.model_validate(raw)
+    return parse_raw_config(bot.config_json or {}, bot.config_schema_version or 1)
 
 
 def save_config_for_bot(
