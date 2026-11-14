@@ -165,17 +165,9 @@ class SlackAdapter(ChannelAdapter):
         # top-level mention's ``ts`` is the root its replies carry as
         # ``thread_ts``. The dispatcher rotates the id once a session is
         # resolved or idle.
-        #
-        # Earlier releases keyed DMs on the thread too, and the bot replies
-        # in a thread under each DM message, so a DM conversation already
-        # in progress lives under ``channel:thread_ts``. Name that key so
-        # the dispatcher can carry the conversation across the change.
-        legacy_session_external_id: Optional[str] = None
         if chat_type == "dm":
             who = event.get("user") or "unknown"
             session_external_id = f"{channel_external}:{who}"
-            if thread_ts:
-                legacy_session_external_id = f"{channel_external}:{thread_ts}"
         else:
             session_external_id = f"{channel_external}:{thread_ts or ts}"
 
@@ -190,7 +182,6 @@ class SlackAdapter(ChannelAdapter):
                 "channel": channel_external,
                 "thread_ts": thread_ts or ts,
             },
-            legacy_session_external_id=legacy_session_external_id,
         )
 
     def is_self(self, secrets: SlackSecrets, raw_payload: dict) -> bool:

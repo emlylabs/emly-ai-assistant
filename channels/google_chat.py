@@ -156,13 +156,8 @@ class GoogleChatAdapter(ChannelAdapter):
             or bool(space.get("singleUserBotDm"))
         )
         chat_type: ChatType = "dm" if is_dm or not thread.get("name") else "thread"
-        # Earlier releases keyed DMs on the thread as well, so a DM
-        # conversation already in progress lives under the thread name;
-        # the dispatcher continues it while it is still open.
-        legacy_session_external: Optional[str] = None
         if is_dm or not thread.get("name"):
             session_external = f"gchat-{space.get('name','')}-{user_external}"
-            legacy_session_external = thread.get("name") or None
         else:
             session_external = thread["name"]
         return IncomingMessage(
@@ -177,7 +172,6 @@ class GoogleChatAdapter(ChannelAdapter):
                 "thread_name": thread.get("name"),
                 "envelope": envelope,
             },
-            legacy_session_external_id=legacy_session_external,
             user_profile=UserProfile.from_display_name(
                 sender.get("displayName"), email=sender.get("email") or None,
             ),

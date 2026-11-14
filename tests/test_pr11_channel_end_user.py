@@ -410,3 +410,87 @@ def test_slack_profile_lookup_without_scope_returns_nothing(monkeypatch):
 
     monkeypatch.setattr(adapter.auth, "get_access_token", _token)
     assert asyncio.run(adapter.fetch_user_profile(_channel("b"), "U1")) is None
+
+
+# ---------------------------------------------------------------------------
+# The platform lookup never holds up the webhook ack
+# ---------------------------------------------------------------------------
+def test_lookup_false_writes_the_row_but_leaves_the_lookup_for_later(bot):
+    from models.emly_users import EMLYUsers
+
+    user_id = _uid()
+    adapter = _Adapter(UserProfile(first_name="Grace"))
+    channel = _channel(bot.id)
+    from channels.dispatcher import _ensure_end_user
+
+    incoming = IncomingMessage(channel_id=channel.id, user_external_id="U1", session_external_id="s", text="hi")
+    asyncio.run(_ensure_end_user(adapter, bot.id, user_id, channel, incoming, lookup=False))
+    assert adapter.calls == []
+    assert EMLYUsers.get_user_by_id(bot.id, user_id).first_name is None
+
+    asyncio.run(_ensure_end_user(adapter, bot.id, user_id, channel, incoming))
+    assert adapter.calls == ["U1"], "not cached as done, so the follow-up still asks"
+    assert EMLYUsers.get_user_by_id(bot.id, user_id).first_name == "Grace"
+
+
+def test_async_webhook_is_acked_before_the_profile_lookup(bot, monkeypatch):
+    """Slack retries an event not acked within 3s and the retry is dropped
+    as a duplicate, so the users.info call must not run before the ack."""
+    from types import SimpleNamespace
+
+    from fastapi import BackgroundTasks
+
+    from channels import dispatcher
+    from channels.base import ChannelAdapter
+    from channels.contracts import OutgoingMessage
+
+    events: list = []
+    channel = _channel(bot.id, "slack")
+
+    class _Fake(ChannelAdapter):
+        type = "slack"
+
+        async def verify_signature(self, request, secrets):
+            return True
+
+        async def parse_inbound(self, request, secrets):
+            return IncomingMessage(channel_id="", user_external_id="U1", session_external_id="D1:U1",
+                                   text="hi", chat_type="dm", reply_handle={})
+
+        async def fetch_user_profile(self, channel, user_external_id):
+            events.append("lookup")
+            return UserProfile(first_name="Ada")
+
+        async def send(self, channel, reply_handle, out):
+            events.append("send")
+
+    fake = _Fake()
+    monkeypatch.setattr(dispatcher, "registry_get", lambda _t: fake)
+
+    async def _resolve_channel(*a):
+        return channel
+
+    monkeypatch.setattr(dispatcher, "_resolve_channel", _resolve_channel)
+    monkeypatch.setattr(dispatcher, "decrypt_secrets", lambda _c: SimpleNamespace())
+    monkeypatch.setattr(dispatcher.BotChannels, "get_by_id", lambda _id: channel)
+    monkeypatch.setattr(dispatcher, "_resolve_session_id", lambda *a: "sess")
+
+    async def _agent(*a, **kw):
+        events.append("agent")
+        return OutgoingMessage(text="ok")
+
+    monkeypatch.setattr(dispatcher, "_run_agent", _agent)
+
+    from starlette.requests import Request
+
+    req = Request({"type": "http", "method": "POST", "headers": []})
+    req._body = b"{}"
+    tasks = BackgroundTasks()
+
+    async def _go():
+        await dispatcher.handle_inbound("slack", channel.id, req, tasks)
+        events.append("ack")
+        await tasks()
+
+    asyncio.run(_go())
+    assert events == ["ack", "lookup", "agent", "send"]

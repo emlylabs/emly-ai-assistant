@@ -447,12 +447,17 @@ async def handle_inbound(
         raise HTTPException(status_code=503, detail="channel install incomplete")
     install_key = channel.external_id
     user_id = emly_id_for(bot_id, install_key, incoming.user_external_id)
-    session_id = await run_in_threadpool(_resolve_session_id, bot_id, install_key, incoming)
-    await _ensure_end_user(adapter, bot_id, user_id, channel, incoming)
+    session_id = await run_in_threadpool(
+        _resolve_session_id, bot_id, install_key, user_id, channel.id, incoming
+    )
 
     reply_mode = _resolve_reply_mode(channel, adapter)
 
     if reply_mode == "sync":
+        # The row is written in the request (no network call); a platform
+        # profile lookup, if one is needed, runs after the response.
+        await _ensure_end_user(adapter, bot_id, user_id, channel, incoming, lookup=False)
+        background_tasks.add_task(_ensure_end_user, adapter, bot_id, user_id, channel, incoming)
         sync_timeout = adapter.sync_response_timeout
         agent_task: Optional[asyncio.Task] = None
         try:
@@ -536,6 +541,9 @@ async def handle_inbound(
             raise HTTPException(status_code=429, detail="overloaded")
         _inflight += 1
 
+    # The end-user step (which may call the platform, e.g. Slack
+    # ``users.info``) runs after the ack: Slack retries an event not
+    # acked within 3s, and the retry is dropped as a duplicate.
     background_tasks.add_task(
         _run_agent_and_send,
         channel.id,
@@ -545,30 +553,33 @@ async def handle_inbound(
         incoming.text,
         incoming.reply_handle,
         dedupe_key,
+        incoming,
     )
     return JSONResponse(content=adapter.async_ack_body)
 
 
-def _resolve_session_id(bot_id: str, install_key: str, incoming: IncomingMessage) -> str:
+def _resolve_session_id(
+    bot_id: str, install_key: str, user_id: str, channel_id: str, incoming: IncomingMessage
+) -> str:
     """Map an inbound message onto an emly session id.
 
-    - A conversation still open under the key an earlier release used
-      (``legacy_session_external_id``) carries on there, so a lead in
-      progress at deploy time isn't dropped.
     - A thread keeps one session for life: a reply days later still sees
       the earlier turns.
     - A running conversation (DM, group chat) rotates to a new session
       once the current one is resolved or idle.
+    - A DM first continues the sender's conversation that was open when
+      DMs were re-keyed (``EMLYSessions.take_dm_carryover``), so a lead
+      in progress at deploy isn't dropped.
     """
     base_id = emly_id_for(bot_id, install_key, incoming.session_external_id)
-    if incoming.legacy_session_external_id:
-        legacy_id = emly_id_for(bot_id, install_key, incoming.legacy_session_external_id)
-        if legacy_id != base_id and EMLYSessions.open_session(
-            bot_id, legacy_id, idle_after=_SESSION_IDLE_AFTER
-        ):
-            return legacy_id
     if incoming.chat_type not in RUNNING_CHAT_TYPES:
         return base_id
+    if incoming.chat_type == "dm":
+        carried = EMLYSessions.take_dm_carryover(
+            bot_id, user_id, channel_id, idle_after=_SESSION_IDLE_AFTER
+        )
+        if carried:
+            return carried
     return EMLYSessions.current_channel_session(bot_id, base_id, idle_after=_SESSION_IDLE_AFTER)
 
 
@@ -614,11 +625,16 @@ async def _ensure_end_user(
     user_id: str,
     channel: BotChannelModel,
     incoming: IncomingMessage,
+    lookup: bool = True,
 ) -> None:
     """Create the bot-user row for a chat-app sender on first contact, the
     way the widget chat route does for website visitors, with whatever
     name / email / phone the platform gives. A row from an earlier
     message that has no name or email yet is filled in.
+
+    ``lookup=False`` skips the adapter's platform profile lookup (for use
+    inside a request); the sender then isn't cached as done unless the
+    payload named them, so a later call with ``lookup=True`` still asks.
 
     Best-effort end to end: any failure, including in the cache, is
     logged and the reply goes ahead."""
@@ -634,7 +650,8 @@ async def _ensure_end_user(
             return
 
         profile = incoming.user_profile or UserProfile()
-        if not (profile.first_name or profile.email):
+        named = bool(profile.first_name or profile.email)
+        if not named and lookup:
             try:
                 fetched = await asyncio.wait_for(
                     adapter.fetch_user_profile(channel, incoming.user_external_id),
@@ -645,7 +662,8 @@ async def _ensure_end_user(
                 log.info("Profile lookup failed type=%s channel=%s", channel.type, channel.id, exc_info=True)
 
         await run_in_threadpool(_write_end_user, bot_id, user_id, channel, existing is None, profile)
-        _KNOWN_END_USERS.add(key)
+        if named or lookup:
+            _KNOWN_END_USERS.add(key)
     except Exception:
         log.warning("Could not record end-user for bot=%s channel=%s", bot_id, channel.id, exc_info=True)
 
@@ -753,6 +771,7 @@ async def _run_agent_and_send(
     text: str,
     reply_handle: Any,
     dedupe_key: Optional[str],
+    incoming: Optional[IncomingMessage] = None,
 ) -> None:
     global _inflight
     try:
@@ -762,6 +781,9 @@ async def _run_agent_and_send(
         adapter = registry_get(channel.type)
         if adapter is None:
             return
+        if incoming is not None:
+            # Never raises; a failure here doesn't stop the reply.
+            await _ensure_end_user(adapter, bot_id, user_id, channel, incoming)
         try:
             out = await _run_agent(bot_id, user_id, session_id, text, channel_id=channel_id)
         except Exception:
