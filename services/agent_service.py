@@ -130,6 +130,13 @@ class AgentService:
         except Exception:
             logger.debug("takeover gating skipped (non-fatal)", exc_info=True)
 
+        # G13a: the bot's own cost limits, before any model call.
+        from services.bot_limits import check as check_bot_limits
+
+        refusal = check_bot_limits(bot_id, user_id)
+        if refusal is not None:
+            return self._canned_reply(refusal, stream)
+
         try:
             agent_handler = self.session_manager.get_handler(bot_id, user_id, session_id)
         except LLMNotConfigured as exc:

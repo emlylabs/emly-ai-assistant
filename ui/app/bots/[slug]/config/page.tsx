@@ -2234,7 +2234,7 @@ function LimitsSection({
       <h2 style={{ marginTop: 0 }}>Cost &amp; usage</h2>
       <NumberField
         label="Daily token cap"
-        hint="Reject chat once this many LLM tokens are spent in 24h. Empty = no cap. (Enforcement ships when the cost ledger lands; advisory until then.)"
+        hint="Visitors get a short 'limit reached' reply once answers have used this many tokens in the last 24 hours. Counts answer tokens only. Empty or 0 = no cap."
         value={limits.daily_token_cap}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "daily_token_cap"], v)}
@@ -2243,7 +2243,7 @@ function LimitsSection({
       />
       <NumberField
         label="Messages per minute, per user"
-        hint="Rate limit for a single end user."
+        hint="Messages one visitor can send per minute before getting a 'try again' reply. Empty or 0 = no limit."
         value={limits.messages_per_minute_per_user}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "messages_per_minute_per_user"], v)}
@@ -2252,7 +2252,7 @@ function LimitsSection({
       />
       <NumberField
         label="Messages per minute, bot-wide"
-        hint="Aggregate cap across all end users."
+        hint="Messages all visitors together can send per minute. Empty or 0 = no limit."
         value={limits.messages_per_minute_per_bot}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "messages_per_minute_per_bot"], v)}
