@@ -26,6 +26,17 @@ from models.bot_channels import channel_filter
 from models.bots import Bot
 from config import IMPRESSION_USER
 
+# ``expanded_query`` marker on the pair of rows written when a visitor
+# submits a form (services/widget_email.py). The user row holds the
+# submitted field values so admins see them in the transcript; they must
+# not reach any LLM call (router history, alert summaries, enrichment).
+FORM_SUBMISSION_MARKER = "call_back"
+
+
+def is_form_submission(expanded_query: Optional[str]) -> bool:
+    return expanded_query == FORM_SUBMISSION_MARKER
+
+
 ####################
 # Message DB Schema
 ####################
@@ -221,7 +232,7 @@ class EMLYMessagesTable:
         # Phase 8 backend-backfill: enqueue enrichment for user turns
         # only. The worker is opt-in per bot and short-circuits when
         # disabled. Failures here are silent — enrichment is best-effort.
-        if role == "user" and row is not None:
+        if role == "user" and row is not None and not is_form_submission(expanded_query):
             try:
                 from services.enrichment import enqueue as _enqueue_enrichment
                 _enqueue_enrichment(
@@ -299,6 +310,11 @@ class EMLYMessagesTable:
         skip: int = 0,
         limit: int = 50,
     ) -> List[EMLYMessageModel]:
+        """Conversation turns for the agent's history, newest first.
+
+        Leaves out widget-view markers and form submissions (their field
+        values must not reach the LLM). Filtered in SQL so skipped rows
+        don't use up ``limit``."""
         return [
             _row_to_model(m)
             for m in (
@@ -307,12 +323,17 @@ class EMLYMessagesTable:
                     (EMLYMessage.bot == bot_id)
                     & (EMLYMessage.user_id == user_id)
                     & (EMLYMessage.session_id == session_id)
+                    & (
+                        EMLYMessage.expanded_query.is_null(True)
+                        | EMLYMessage.expanded_query.not_in(
+                            ["VIEW_BOT", "BOT_VIEWED", FORM_SUBMISSION_MARKER]
+                        )
+                    )
                 )
                 .order_by(EMLYMessage.created_at.desc())
                 .limit(limit)
                 .offset(skip)
             )
-            if m.expanded_query not in ("VIEW_BOT", "BOT_VIEWED")
         ]
 
     def list_all(
