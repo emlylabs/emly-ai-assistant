@@ -141,7 +141,9 @@ COPY --chown=emly:emly utils/__init__.py utils/model_pins.py ./utils/
 RUN python -m utils.model_pins
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    HF_HUB_DISABLE_TELEMETRY=1
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    LANGSMITH_TRACING=false \
+    LANGCHAIN_TRACING_V2=false
 
 # ---- Application source: changes most often, copied last ---------------------
 # .dockerignore strips node_modules, .next, .venv, .git, data/, etc.

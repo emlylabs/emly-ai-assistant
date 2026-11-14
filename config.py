@@ -2,7 +2,13 @@ import logging
 import os
 import time
 from pathlib import Path
-from langchain_openai import OpenAIEmbeddings
+
+# G2c: before LangChain is imported. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing
+
+disable_unapproved_tracing()
+
+from langchain_openai import OpenAIEmbeddings  # noqa: E402
 from sentence_transformers import CrossEncoder
 from sentence_transformers import SentenceTransformer
 from datetime import timedelta

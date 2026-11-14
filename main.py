@@ -7,7 +7,12 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+# G2c: before anything imports LangChain. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing
+
+disable_unapproved_tracing()
+
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from routes import (

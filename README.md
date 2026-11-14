@@ -120,6 +120,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
 | `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
+| `ALLOW_LANGSMITH_TRACING` | Leave unset | Tracing stays off even if a `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` variable is left in `.env` |
 
 **Widget and visitors**
 
@@ -181,6 +182,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 |----------|-------------|---------|
 | `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
+| `ALLOW_LANGSMITH_TRACING` | Allow LangSmith tracing, which sends every prompt and reply (conversation text included) to LangSmith's cloud. Unless this is `true`, the app removes `LANGSMITH_TRACING`, `LANGCHAIN_TRACING_V2` and their aliases at start-up and logs a warning | `false` |
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys, channel credentials and the admin refresh cookie, and signs widget tokens. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
 | `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
