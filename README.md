@@ -209,7 +209,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 
 | Variable | What it does | Default |
 |----------|-------------|---------|
-| `EMBEDDING_PROVIDER` | `huggingface` or `openai` | `huggingface` |
+| `EMBEDDING_PROVIDER` | `huggingface` (embeds inside this deployment) or `openai` (every document chunk and search query is sent to `OPENAI_BASE_URL`, which is then required and must be on `LLM_ENDPOINT_ALLOWLIST` if that is set; the app won't start otherwise) | `huggingface` |
 | `RAG_EMBEDDING_MODEL` | Embedding model name | `Alibaba-NLP/gte-base-en-v1.5` |
 | `RAG_TOP_K` | Number of chunks to retrieve | `5` |
 | `CHUNK_SIZE` | Text chunk size for splitting | `2048` |

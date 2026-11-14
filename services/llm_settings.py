@@ -122,6 +122,30 @@ def endpoint_host(endpoint: str) -> str:
     return _host_port(urlparse(endpoint.strip()))[0] or "?"
 
 
+def embedding_endpoint() -> str:
+    """G2b: where remote embeddings go when ``EMBEDDING_PROVIDER=openai``.
+
+    Every document chunk and every search query is sent there, so there
+    is no default: without ``OPENAI_BASE_URL`` the OpenAI client would
+    silently use api.openai.com. Raises ``RuntimeError`` (refusing to
+    boot) when it is unset or not on ``LLM_ENDPOINT_ALLOWLIST``."""
+    endpoint = deployment_endpoint()
+    if not endpoint:
+        raise RuntimeError(
+            f"EMBEDDING_PROVIDER=openai requires {ENDPOINT_ENV}: every document chunk and search "
+            "query is sent to that endpoint, and there is no default. Set it, or use "
+            "EMBEDDING_PROVIDER=huggingface to embed inside this deployment."
+        )
+    if not is_endpoint_allowed(endpoint):
+        raise RuntimeError(
+            f"EMBEDDING_PROVIDER=openai: {ENDPOINT_ENV} host {endpoint_host(endpoint)} is not on "
+            f"{ALLOWLIST_ENV}."
+        )
+    log.warning("Remote embeddings are on (EMBEDDING_PROVIDER=openai): every document chunk and "
+                "search query is sent to %s", endpoint_host(endpoint))
+    return endpoint
+
+
 def endpoint_policy_warnings() -> List[Dict[str, str]]:
     """Deploy-shape hazards for ``/api/readyz`` and the boot log, as
     ``{code, message}``. Hosts only, never full URLs."""
