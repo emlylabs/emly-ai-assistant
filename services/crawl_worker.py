@@ -209,7 +209,7 @@ def _resolve_srcset(value: str, base: str) -> str:
 
 def _extract_links(html: str, base_url: str) -> list[str]:
     # bs4 import is local so the worker module imports cheaply if it isn't
-    # used. bs4 is already a transitive dep through langchain-community.
+    # used. beautifulsoup4 (and lxml, used by BSHTMLLoader) are direct deps.
     from bs4 import BeautifulSoup
 
     out: list[str] = []
