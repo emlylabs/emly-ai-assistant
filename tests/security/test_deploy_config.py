@@ -167,6 +167,14 @@ def test_ci_runs_required_checks():
     assert "syft" in release and "spdx-json" in release and "gh release upload" in release
 
 
+def test_pip_audit_blocks_the_build():
+    # Q8: the runtime dependencies audit clean, so a new advisory must fail CI.
+    job = yaml.safe_load(_workflows()["ci.yml"])["jobs"]["pip-audit"]
+    assert not job.get("continue-on-error"), "pip-audit must fail the build on a known advisory"
+    audit = next(step["run"] for step in job["steps"] if step.get("name") == "Audit")
+    assert 'exit "${status:-0}"' in audit  # the audit's exit status reaches the job
+
+
 def test_workflow_dependencies_are_pinned():
     for name, text in _workflows().items():
         for ref in re.findall(r"uses:\s*(\S+)", text):
