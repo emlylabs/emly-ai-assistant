@@ -398,6 +398,26 @@ class ConversationManager:
 
 
 
+    @staticmethod
+    def remember_turn(memory: ConversationBufferWindowMemory, user_input: str, response: str) -> None:
+        """Append one exchange, then drop anything older than the memory's
+        window so a long session's buffer stays bounded. Reads already go
+        through the window; this keeps the stored list to the same size."""
+        memory.chat_memory.add_user_message(user_input)
+        memory.chat_memory.add_ai_message(response)
+        keep = memory.k * 2
+        messages = memory.chat_memory.messages
+        if len(messages) > keep:
+            memory.chat_memory.messages = messages[-keep:] if keep > 0 else []
+
+    def global_history_text(self) -> str:
+        """The router's view of the conversation: the same last-N window
+        the answer prompt uses (``LATEST_N_MESSAGES`` exchanges)."""
+        window = self.global_memory.load_memory_variables({}).get("history", [])
+        return "\n".join(
+            f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}" for m in window
+        )
+
     def get_topic_memory(self, topic_name: str) -> ConversationBufferWindowMemory:
         """Get the memory for a specific topic."""
         return self.topic_memories[topic_name]
@@ -512,8 +532,7 @@ class TopicAgent(BaseAgent):
             # For non-streaming, save the message now.
             # For streaming, the message will be saved in the AgenticConversationHandler after the stream is complete.
             if not stream:
-                topic_memory.chat_memory.add_user_message(user_input)
-                topic_memory.chat_memory.add_ai_message(response_state["response"])
+                ConversationManager.remember_turn(topic_memory, user_input, response_state["response"])
                 # Phase 2 backend backfill: pull telemetry off the state
                 # (set by `_generate_final_response`) and persist it on the
                 # assistant row. User rows carry no LLM telemetry.
@@ -932,7 +951,7 @@ class AgenticConversationHandler:
             citations=[],
             stream=stream,
             page_id=page_id,
-            global_history="\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}" for m in self.conversation_manager.global_memory.chat_memory.messages]),
+            global_history=self.conversation_manager.global_history_text(),
             slot_filling_attempts=slot_filling_attempts,
             is_slot_filling_active=is_slot_filling_active,
             skip_router=skip_router,
@@ -944,8 +963,9 @@ class AgenticConversationHandler:
                 result = self.workflow.invoke(initial_state)
                 if result.get("current_topic"):
                     self.conversation_manager.current_topic = result["current_topic"]
-                self.conversation_manager.global_memory.chat_memory.add_user_message(user_input)
-                self.conversation_manager.global_memory.chat_memory.add_ai_message(result["response"])
+                ConversationManager.remember_turn(
+                    self.conversation_manager.global_memory, user_input, result["response"]
+                )
                 return result["response"], result.get("citations", [])
 
             # Streaming logic
@@ -992,8 +1012,9 @@ class AgenticConversationHandler:
                     full_response = fallback
 
                 # After stream is complete, update memory and save messages
-                self.conversation_manager.global_memory.chat_memory.add_user_message(user_input)
-                self.conversation_manager.global_memory.chat_memory.add_ai_message(full_response)
+                ConversationManager.remember_turn(
+                    self.conversation_manager.global_memory, user_input, full_response
+                )
                 message_id = None
                 # If there's only one topic, set it as current
                 if len(list(self.topics.keys())) == 1:
@@ -1001,8 +1022,7 @@ class AgenticConversationHandler:
                     self.conversation_manager.current_topic = current_topic
                 if current_topic:
                     topic_memory = self.conversation_manager.get_topic_memory(current_topic)
-                    topic_memory.chat_memory.add_user_message(user_input)
-                    topic_memory.chat_memory.add_ai_message(full_response)
+                    ConversationManager.remember_turn(topic_memory, user_input, full_response)
 
                     # Phase 2 telemetry: prefer the per-node telemetry the
                     # TopicAgent recorded; if it's missing, fall back to a
