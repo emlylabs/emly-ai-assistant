@@ -134,7 +134,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
 | `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |
 | `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
-| Each bot's *Data retention* | Your retention period | Conversations, submissions and attachments older than this are deleted nightly |
+| Each bot's *Data retention* | Your retention period (new bots start at 365 days; older bots may be empty, which keeps everything) | Conversations, submissions and attachments older than this are deleted nightly |
 | Each bot's *Alert emails contain* | *Only a link* (the default for new bots) | Keeps transcripts, visitor details and files out of mailboxes. Bots that existed before were migrated to the full alert: review them |
 | Workspace *OTP expiry* | 5 minutes (default) | One-time codes are single-use, hashed, and locked after 5 wrong attempts |
 
@@ -220,7 +220,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 
 #### Visitor data: retention and erasure
 
-- **Retention:** each bot's *Config → Limits → Data retention* sets how many days to keep conversations. Every night (03:45) messages, conversations, form submissions and chat attachments older than that are deleted, along with visitor profiles that have nothing left. Empty keeps everything.
+- **Retention:** each bot's *Config → Limits → Data retention* sets how many days to keep conversations. Every night (03:45) messages, conversations, form submissions and chat attachments older than that are deleted, along with visitor profiles that have nothing left. Empty keeps everything. New bots start at 365 days (unless their workspace template sets a value); bots created before this default, and duplicates of them, keep what they had.
 - **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
 - **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
 

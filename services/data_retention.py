@@ -28,6 +28,21 @@ log = logging.getLogger(__name__)
 
 RETENTION_MIN_DAYS = 1
 RETENTION_MAX_DAYS = 3650
+# Q-G13b: what a bot created from scratch or a template starts with.
+# Written into its config at creation, so existing bots (no value: keep
+# everything) are unchanged and clearing the field still means "keep".
+NEW_BOT_RETENTION_DAYS = 365
+
+
+def with_new_bot_retention(config: dict) -> dict:
+    """``config`` with ``limits.retention_days`` set to the new-bot default
+    unless it already has the key (a template's explicit choice wins)."""
+    config = dict(config or {})
+    limits = dict(config.get("limits") or {})
+    if "retention_days" not in limits:
+        limits["retention_days"] = NEW_BOT_RETENTION_DAYS
+    config["limits"] = limits
+    return config
 # Expired OTP rows are kept this long after expiry (for the attempt
 # counter), then deleted.
 OTP_ROW_GRACE = timedelta(days=1)

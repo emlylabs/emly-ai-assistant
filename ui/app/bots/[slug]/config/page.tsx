@@ -2308,7 +2308,7 @@ function LimitsSection({
       <h2 style={{ marginTop: 24 }}>Data retention</h2>
       <NumberField
         label="Delete conversations after (days)"
-        hint="Messages, conversations, form submissions and chat attachments older than this are deleted every night, along with visitor profiles that have nothing left. Empty = keep until deleted by hand. 1–3650."
+        hint="Messages, conversations, form submissions and chat attachments older than this are deleted every night, along with visitor profiles that have nothing left. Empty = keep until deleted by hand. New bots start at 365. 1–3650."
         value={limits.retention_days}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "retention_days"], v)}

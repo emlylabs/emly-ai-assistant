@@ -220,6 +220,13 @@ def create_bot(
                 detail=f"Unknown template id: {template_id}",
             )
 
+    # Q-G13b: new bots keep conversations for a year unless the template
+    # says otherwise. A duplicate keeps its source's setting.
+    if copied_from is None:
+        from services.data_retention import with_new_bot_retention
+
+        config_json = with_new_bot_retention(config_json)
+
     # Whatever the source, the stored config must load at boot: a key
     # BotConfig forbids would stop the app starting (G1d/N4).
     check_new_config(config_json, copied_from=copied_from)
