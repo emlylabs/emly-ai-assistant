@@ -270,7 +270,7 @@ async def _refresh_response(
         )
         try:
             principal = provider.verify_token(id_token)
-            admin = resolve_or_create_admin(principal)
+            admin = resolve_or_create_admin(principal, record_login=False)  # a refresh, not a sign-in
             memberships = AdminBotMemberships.list_for_admin(admin.id)
             payload["admin"] = {
                 "id": admin.id,

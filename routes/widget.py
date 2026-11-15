@@ -444,7 +444,9 @@ class WidgetRatePayload(BaseModel):
     rating: int  # -1, 0, +1
     session_id: str
     user_id: Optional[str] = None
-    free_text: Optional[str] = None  # captured by the audit log only for v1
+    # G13f: a free-text comment used to be accepted and copied into the
+    # audit log, where every bot viewer could read it. Unknown keys are
+    # ignored, so older clients that still send it keep working.
 
 
 class WidgetRateResponse(BaseModel):
@@ -502,7 +504,6 @@ def widget_rate_message(
                 "rating": payload.rating,
                 "session_id": payload.session_id,
                 "user_id": payload.user_id,
-                "free_text": payload.free_text,
             },
         )
     except Exception:

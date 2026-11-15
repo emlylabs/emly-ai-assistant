@@ -82,7 +82,8 @@ def get_admin(
         ) from e
 
     try:
-        admin = resolve_or_create_admin(principal)
+        # Not a sign-in: don't write last_login_at on every request (G13f).
+        admin = resolve_or_create_admin(principal, record_login=False)
     except AdminNotProvisioned as e:
         # 401 + structured body so the UI can route to the "Request access" page.
         raise HTTPException(

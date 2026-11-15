@@ -272,8 +272,8 @@ async def create_pending(
         token=secrets.token_urlsafe(32),
         target_bot_id=primary_bot_id,
     )
-    log.info("admin.pending.created by=%s email=%s superadmin=%s",
-             admin.id, payload.email, payload.is_superadmin)
+    log.info("admin.pending.created by=%s pending=%s superadmin=%s",
+             admin.id, pending.id, payload.is_superadmin)
     audit(
         "pending.created",
         admin_id=admin.id,
@@ -327,10 +327,11 @@ async def revoke_pending(
     admin: AdminUserModel = Depends(get_admin),
 ) -> None:
     require_superadmin(admin)
-    if PendingAdmins.get_active_by_email(email) is None:
+    row = PendingAdmins.get_active_by_email(email)
+    if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "pending_not_found"})
     PendingAdmins.revoke(email)
-    log.info("admin.pending.revoked by=%s email=%s", admin.id, email)
+    log.info("admin.pending.revoked by=%s pending=%s", admin.id, row.id)
     audit(
         "pending.revoked",
         admin_id=admin.id,
@@ -803,8 +804,8 @@ async def create_space_invite(
     )
 
     log.info(
-        "invite.space.created by=%s email=%s bot=%s role=%s",
-        admin.id, payload.email, bot.id, payload.role,
+        "invite.space.created by=%s pending=%s bot=%s role=%s",
+        admin.id, pending.id, bot.id, payload.role,
     )
     audit(
         "invite.created",
@@ -917,8 +918,8 @@ async def accept_invite(
         )
     if row.email.lower() != admin.email.lower():
         log.warning(
-            "invite.accept email mismatch admin=%s invite_email=%s invite_id=%s",
-            admin.id, row.email, row.id,
+            "invite.accept email mismatch admin=%s invite_id=%s",
+            admin.id, row.id,
         )
         raise deny(admin, "invite_email_mismatch", detail={"code": "invite_email_mismatch"},
                    invite_id=row.id)

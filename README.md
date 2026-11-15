@@ -767,6 +767,14 @@ Questions that ask for a missing detail come from templates and make no call.
 
 **Never sent:** the visitor's name, email, phone, IP address or location; the values of submitted forms; files visitors attach; other conversations; other bots' documents; API keys. LangSmith tracing stays off unless `ALLOW_LANGSMITH_TRACING=true`.
 
+## What the logs contain
+
+- **Never:** message text, form values, passwords, tokens, cookies or API keys.
+- **Email addresses** are masked in every log line as `<email:1a2b3c4d at corp.example>`. That's a short SHA-256 hash of the lower-cased address plus its domain, so lines about the same person still match. To find someone, hash their address the same way.
+- **Admins and invites** are named by id (`adm-…`, `pend-…`). Failed sign-ins name the sign-in provider and the user's subject id there.
+- **The audit log** records who did what, with ids. A visitor's rating is recorded as the score only.
+- **`last_login_at`** is updated at sign-in only, not on every request.
+
 ## Architecture
 
 ```
