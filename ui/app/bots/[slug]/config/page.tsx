@@ -1493,6 +1493,19 @@ function WidgetSection({
           onChange={(v) => patchPath(["show_citations"], v || undefined)}
           disabled={!writable}
         />
+        <FlagToggle
+          label="Answer only from your documents"
+          checked={Boolean(config.require_citation)}
+          onChange={(v) => patchPath(["require_citation"], v)}
+          disabled={!writable}
+        />
+        <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          Topics that answer directly search this bot&rsquo;s documents even
+          if not set to. With no matching passage, the bot says it can&rsquo;t
+          find the information instead of answering from the model&rsquo;s
+          general knowledge. Topics that collect details (forms) aren&rsquo;t
+          affected. New bots start with this on.
+        </div>
       </div>
     </div>
   );

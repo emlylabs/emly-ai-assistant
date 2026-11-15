@@ -156,6 +156,14 @@ class BotConfig(BaseModel):
     # Opt-in for the sentiment / intent classifier (services/enrichment.py).
     enrichment_enabled: bool = False
 
+    # Q-G12: answer only from this bot's documents. Topics that answer
+    # directly (no form-style detail collection) and don't search documents
+    # search them anyway; with no matching passage the bot replies with
+    # the "cannot find" message instead of answering from the model's own
+    # knowledge. Topics that already search documents behave that way
+    # regardless. New bots start with it on (routes/admin_bots.py).
+    require_citation: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Lazy upgrade chain

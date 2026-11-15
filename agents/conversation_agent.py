@@ -369,6 +369,10 @@ class RAGManager:
         if not self.should_use_rag(topic_name):
             self.logger.warning("RAG is not enabled for topic '%s'.", topic_name)
             return "", []
+        return self.search(query)
+
+    def search(self, query: str) -> tuple[str, list[Any]]:
+        """Retrieve for any topic (``require_citation``, Q-G12)."""
         rag = get_config_for_bot(self.bot_id).rag
         return self.rag.search(
             bot_id=self.bot_id,
@@ -663,7 +667,8 @@ class TopicAgent(BaseAgent):
     def _handle_direct_response(self, state: ConversationState, user_input: str, memory) -> ConversationState:
         """Handle topics that don't require slot filling (e.g., general chat)."""
         stream = state.get("stream", False)
-        response, citations, telemetry = self._generate_final_response(user_input, {}, memory, stream=stream)
+        response, citations, telemetry = self._generate_final_response(
+            user_input, {}, memory, stream=stream, ground=self._require_citation())
         state["response"] = response
         state["conversation_complete"] = True
         state["needs_slot_filling"] = False
@@ -675,6 +680,12 @@ class TopicAgent(BaseAgent):
         state["slot_filling_attempts"] = 0
         state["skip_router"] = False
         return state
+
+    def _require_citation(self) -> bool:
+        try:
+            return bool(get_config_for_bot(self.conversation_manager.bot_id).require_citation)
+        except LookupError:
+            return False
 
     def _handle_slot_based_response(self, state: ConversationState, user_input: str, memory) -> ConversationState:
         """Handle topics that use slot filling."""
@@ -762,8 +773,13 @@ class TopicAgent(BaseAgent):
             self.topic_name
         )
 
-    def _generate_final_response(self, user_input: str, filled_slots: Dict[str, Any], memory, stream: bool = False) -> tuple[Any, list[Any], Dict[str, Any]]:
+    def _generate_final_response(self, user_input: str, filled_slots: Dict[str, Any], memory, stream: bool = False,
+                                 ground: bool = False) -> tuple[Any, list[Any], Dict[str, Any]]:
         """Generate the final response using RAG or a direct LLM call.
+
+        ``ground`` searches the bot's documents even when the topic doesn't
+        (``require_citation``, Q-G12): no passage means the "cannot find"
+        reply, never an answer from the model's own knowledge.
 
         Returns ``(response, citations, telemetry)``. Telemetry carries the
         Phase 2 backfill fields: ``model``, ``prompt_tokens``,
@@ -777,10 +793,14 @@ class TopicAgent(BaseAgent):
             "completion_tokens": None,
             "response_time_ms": None,
         }
-        if self.rag_manager.should_use_rag(self.topic_name):
+        grounded = ground or self.rag_manager.should_use_rag(self.topic_name)
+        if grounded:
             search_query = " ".join([user_input] + [str(v) for v in filled_slots.values() if v])
 
-            context, citations = self.rag_manager.get_context(search_query, self.topic_name)
+            if self.rag_manager.should_use_rag(self.topic_name):
+                context, citations = self.rag_manager.get_context(search_query, self.topic_name)
+            else:
+                context, citations = self.rag_manager.search(search_query)
 
             if context == "":
                 if stream:
