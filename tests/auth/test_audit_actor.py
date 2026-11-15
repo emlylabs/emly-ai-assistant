@@ -73,13 +73,15 @@ def _last(action):
 
 
 def _cookies(client, session=None, refresh=None):
-    from services.secrets import encrypt_session_cookie
+    import time as _time
+
+    from services.secrets import encrypt_refresh_cookie
 
     client.cookies.clear()
     if session:
         client.cookies.set("emly_admin_session", session)
     if refresh:
-        client.cookies.set("emly_admin_refresh", encrypt_session_cookie(refresh))
+        client.cookies.set("emly_admin_refresh", encrypt_refresh_cookie(refresh, _time.time()))
 
 
 @pytest.mark.parametrize("token", ["live", "expired"])

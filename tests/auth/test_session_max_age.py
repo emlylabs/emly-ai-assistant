@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services.secrets import decrypt_refresh_cookie, encrypt_refresh_cookie, encrypt_session_cookie
+from services.secrets import decrypt_refresh_cookie, encrypt_refresh_cookie
 from tests.auth.test_mfa_required import ISSUER, FakeIdP, _provider
 
 HOUR = 3600
@@ -90,11 +90,43 @@ def test_cookie_carries_the_sign_in_time():
     assert "rt" not in repr(c)
 
 
-def test_old_cookies_are_accepted_once():
-    """Cookies set before this change hold the bare token: the session's
-    clock starts at that cookie's creation (its last refresh)."""
-    c = decrypt_refresh_cookie(encrypt_session_cookie("legacy-rt"))
-    assert c.refresh_token == "legacy-rt" and abs(c.auth_time - time.time()) < 5
+def test_a_stored_secret_cant_be_replayed_as_a_cookie():
+    """G6b: the cookie has its own derived key. A bot secret's ciphertext
+    (from a backup, say) set as the refresh cookie must not decrypt, or
+    the BFF would send the plaintext API key to the IdP."""
+    from services.secrets import encrypt
+
+    assert decrypt_refresh_cookie(encrypt("sk-live-api-key")) is None
+    assert decrypt_refresh_cookie(encrypt('{"v": 1, "rt": "x", "auth_time": 1}')) is None
+
+
+def test_cookie_key_differs_from_the_root_key():
+    from cryptography.fernet import Fernet, InvalidToken
+
+    from services.secrets import root_keys
+
+    token = encrypt_refresh_cookie("rt", 1)
+    with pytest.raises(InvalidToken):
+        Fernet(root_keys()[0]).decrypt(token.encode())
+
+
+def test_cookies_survive_a_root_key_rotation(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    from services import secrets
+
+    old = Fernet.generate_key().decode()
+    monkeypatch.setenv("BOT_SECRETS_KEY", old)
+    secrets.reset_for_tests()
+    token = encrypt_refresh_cookie("rt", 5)
+    monkeypatch.setenv("BOT_SECRETS_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("BOT_SECRETS_KEY_PREVIOUS", old)
+    secrets.reset_for_tests()
+    try:
+        assert decrypt_refresh_cookie(token).refresh_token == "rt"
+    finally:
+        monkeypatch.undo()
+        secrets.reset_for_tests()
 
 
 def test_tampered_cookie_is_missing():
