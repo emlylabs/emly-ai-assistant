@@ -219,6 +219,16 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 - **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
 - **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
 
+#### Uploaded files
+
+Admin documents and widget form attachments are checked by their bytes, not only by the type the browser declares. Refused with 415:
+
+- programs (Windows, Linux and macOS executables) and files named like one (`.exe`, `.js`, `.bat`, `.ps1`, `.jar`, …);
+- archives (zip, gzip, 7z, rar, tar). Word, Excel, PowerPoint and OpenDocument files are zips inside and are accepted, unless they unpack to more than 512 MB;
+- a file whose content isn't what its name and declared type say, such as a zip named `notes.txt` or a program named `report.pdf`.
+
+This is a type check, not a malware scan: a PDF with a malicious payload is still a PDF. Scan stored files with your own tooling if you need that (`DATA_DIR/bots/*/uploads/` and `DATA_DIR/attachments/`).
+
 #### Secrets from files
 
 For Docker and Kubernetes secrets, set `NAME_FILE` to a file's path instead of setting `NAME`, and the app reads the value from that file at start-up. The value then isn't in `docker inspect`, the pod spec or the process environment of other tools. A trailing newline is removed. Setting both `NAME` and `NAME_FILE`, or pointing at a missing or empty file, stops start-up. Only the variable names are logged.

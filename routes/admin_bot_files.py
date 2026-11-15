@@ -50,6 +50,7 @@ from models.emly_files import (
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_writer
 from services.bot_config import get_config_for_bot
+from services.upload_types import UploadRejected, check_upload
 from utils.utils import safe_filename
 
 log = logging.getLogger(__name__)
@@ -341,6 +342,17 @@ async def upload_file(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File exceeds the {cfg.limits.max_file_size_mb} MB cap for this bot",
         )
+
+    # G13c: refuse programs, archives and files whose bytes aren't what
+    # their name and declared type say.
+    try:
+        with open(target_path, "rb") as fh:
+            check_upload(fh, file.filename, file.content_type)
+    except UploadRejected as exc:
+        target_path.unlink(missing_ok=True)
+        target_dir.rmdir()
+        log.warning("Upload refused bot=%s: %s", bot.id, exc)
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc))
 
     Emly_Files.insert_new_file(
         id=file_id,
