@@ -3,6 +3,8 @@ revoking the built-in issuer's refresh token directly."""
 
 from __future__ import annotations
 
+import time
+
 import tempfile
 from types import SimpleNamespace
 
@@ -70,7 +72,7 @@ def test_session_cookies_are_secure_httponly_lax_in_prod(monkeypatch):
     resp = JSONResponse({})
     auth._set_session_cookies(
         resp, _req("http"), id_token="idt", refresh_token="rt",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1), auth_time=time.time(),
     )
     cookies = resp.headers.getlist("set-cookie")
     assert len(cookies) == 3

@@ -206,6 +206,8 @@ _validate_secrets_key()
 _init_embedded_issuer()
 from services.auth.factory import check_required_authentication as _check_mfa  # noqa: E402
 _check_mfa()  # G3b: required acr/amr need an external IdP
+from services.auth.session_limits import check_settings as _check_session_limits  # noqa: E402
+_check_session_limits()  # G3a: a malformed AUTH_SESSION_MAX_AGE_SECONDS stops start-up
 _log_llm_endpoint_policy()
 from services.crawl_fetch import log_crawl_settings as _log_crawl_settings  # noqa: E402
 _log_crawl_settings()  # G10a: a malformed CRAWL_ALLOWED_PRIVATE_CIDRS stops start-up

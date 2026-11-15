@@ -118,6 +118,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in |
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS`, `AUTH_OIDC_EMAIL_CLAIMS`, `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Per your IdP (see [SSO](#external-identity-provider-sso)) | Keep `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` `false`; for Entra ID set `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS=upn` instead |
 | `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | `mfa` for Entra ID and Okta | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
+| `AUTH_SESSION_MAX_AGE_SECONDS` | `43200` (12 h, the prod default) or your policy | Admin sessions end a fixed time after sign-in instead of refreshing for as long as a tab is open |
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
 | `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
@@ -256,6 +257,7 @@ The app includes a built-in OIDC identity provider — no external auth service 
 | `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in email + password sign-in (`true`) or only an external IdP (`false`). If unset it is on, except when `MODE=prod` and `AUTH_OIDC_ISSUER` points at an external IdP. In production the app logs a warning while built-in sign-in is active | `true` (see left) |
 | `AUTH_COOKIE_SECURE` | Force the admin session cookies' `Secure` flag on or off. Unset: on when `MODE=prod` or `APP_BASE_URL` is https, otherwise it follows the request scheme | (auto) |
 | `AUTH_COOKIE_SAMESITE` | SameSite for the admin session cookies. Keep `lax`: `strict` breaks the redirect back from the IdP after sign-in. CSRF is handled by an Origin check | `lax` |
+| `AUTH_SESSION_MAX_AGE_SECONDS` | How long an admin stays signed in, counted from sign-in. After it, the background refresh is refused (audited as `auth.session_expired`) and the admin signs in again; no session cookie is set to outlive it. Applies to built-in and external sign-in, and the built-in issuer refuses older refresh tokens even when presented to it directly. The last ID token stays valid until it expires (usually within the hour). `0` means no limit. Sessions with no visible admin tab already end when the ID token expires, because the UI only refreshes while a tab is visible | `43200` (12 h) when `MODE=prod`, else no limit |
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | Minimum length for a new built-in password. The bootstrap password, and any password flagged for change, must be replaced at first sign-in | `12` |
 
 To use an external IdP (Keycloak, Okta, Auth0, Entra, etc.), see the detailed [Authentication section](#authentication-details) below.

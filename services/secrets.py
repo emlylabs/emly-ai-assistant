@@ -188,10 +188,66 @@ def decrypt_session_cookie(ciphertext: Optional[str]) -> Optional[str]:
         return None
 
 
+class RefreshCookie:
+    """What the BFF refresh cookie holds: the IdP refresh token and the
+    time (epoch seconds) the admin signed in (G3a)."""
+
+    __slots__ = ("refresh_token", "auth_time")
+
+    def __init__(self, refresh_token: str, auth_time: float):
+        self.refresh_token = refresh_token
+        self.auth_time = auth_time
+
+    def __repr__(self) -> str:  # never print the token
+        return f"RefreshCookie(auth_time={self.auth_time})"
+
+
+def encrypt_refresh_cookie(refresh_token: Optional[str], auth_time: float) -> Optional[str]:
+    """Encrypt the refresh token together with the sign-in time."""
+    if not refresh_token:
+        return None
+    import json
+
+    return encrypt(json.dumps({"v": 1, "rt": refresh_token, "auth_time": int(auth_time)}))
+
+
+def decrypt_refresh_cookie(ciphertext: Optional[str]) -> Optional[RefreshCookie]:
+    """Decrypt a refresh cookie. ``None`` for missing or tampered input.
+
+    Cookies set before G3a hold the bare refresh token. They are accepted
+    once, with the sign-in time taken as the cookie's own creation time
+    (its last refresh): the next refresh rewrites it in the new format."""
+    if not ciphertext:
+        return None
+    import json
+
+    try:
+        plaintext = decrypt(ciphertext)
+        issued_at = _get_fernet().extract_timestamp(ciphertext.encode("utf-8"))
+    except InvalidToken:
+        log.warning("decrypt_refresh_cookie: invalid ciphertext — treating as missing")
+        return None
+    if not plaintext:
+        return None
+    if plaintext.startswith("{"):
+        try:
+            data = json.loads(plaintext)
+            if data.get("v") == 1 and isinstance(data.get("rt"), str) and data["rt"]:
+                return RefreshCookie(data["rt"], float(data.get("auth_time") or issued_at))
+        except (ValueError, TypeError):
+            pass
+        log.warning("decrypt_refresh_cookie: unreadable payload — treating as missing")
+        return None
+    return RefreshCookie(plaintext, float(issued_at))  # pre-G3a format
+
+
 __all__ = [
     "encrypt",
     "decrypt",
     "encrypt_session_cookie",
     "decrypt_session_cookie",
+    "RefreshCookie",
+    "encrypt_refresh_cookie",
+    "decrypt_refresh_cookie",
     "InvalidToken",
 ]

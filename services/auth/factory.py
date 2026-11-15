@@ -234,6 +234,7 @@ def _build_provider() -> AuthProvider:
                 name=record.name,
                 scope=record.scope,
                 ttl=timedelta(seconds=refresh_token_ttl_seconds()),
+                auth_time=record.auth_time or record.issued_at,
             )
             return {
                 "access_token": access,
