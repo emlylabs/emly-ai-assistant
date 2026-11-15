@@ -149,8 +149,10 @@ class _Provider:
         return self.principal
 
 
-def test_api_requests_dont_write_last_login(isolated_db):
+def test_api_requests_dont_write_last_login(isolated_db, monkeypatch):
     from models.admin_users import AdminUser, AdminUsers
+
+    monkeypatch.setenv("AUTH_ALLOW_BEARER", "true")
     from services.auth.dependencies import get_admin, get_auth_provider
 
     AdminUsers.insert(id="adm-ll", email="ll@corp.example", issuer="https://idp.test/", subject="sub-ll",

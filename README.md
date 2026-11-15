@@ -120,6 +120,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | The value your IdP sends after MFA, e.g. `mfa` ([check first](#identity-provider-setup)) | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
 | `AUTH_SESSION_MAX_AGE_SECONDS` | `43200` (12 h, the prod default) or your policy | Admin sessions end a fixed time after sign-in instead of refreshing for as long as a tab is open |
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
+| `AUTH_ALLOW_BEARER` | Leave unset (off) unless a script needs the admin API | Admin APIs then accept only the session cookie |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
 | `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
 | `ALLOW_LANGSMITH_TRACING` | Leave unset | A `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` left in `.env` stops the app starting, so it can't silently send conversations to LangSmith |
@@ -285,6 +286,7 @@ The app includes a built-in OIDC identity provider — no external auth service 
 | `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First admin password. If unset, a random one is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600, never logged) and the file is deleted after the first sign-in | — |
 | `AUTH_LOCAL_ISSUER_ENABLED` | Use built-in email + password sign-in (`true`) or only an external IdP (`false`). If unset it is on, except when `MODE=prod` and `AUTH_OIDC_ISSUER` points at an external IdP. In production the app logs a warning while built-in sign-in is active | `true` (see left) |
 | `AUTH_COOKIE_SECURE` | Force the admin session cookies' `Secure` flag on or off. Unset: on when `MODE=prod` or `APP_BASE_URL` is https, otherwise it follows the request scheme | (auto) |
+| `AUTH_ALLOW_BEARER` | Accept `Authorization: Bearer <ID token>` on admin APIs, for scripts and CI. When off, a request carrying only a Bearer header gets 401 `bearer_disabled`. Widget tokens are unaffected | `false` |
 | `AUTH_COOKIE_SAMESITE` | SameSite for the admin session cookies. Keep `lax`: `strict` breaks the redirect back from the IdP after sign-in. CSRF is handled by an Origin check | `lax` |
 | `AUTH_SESSION_MAX_AGE_SECONDS` | How long an admin stays signed in, counted from sign-in. After it, the background refresh is refused (audited as `auth.session_expired`) and the admin signs in again; no session cookie is set to outlive it. Applies to built-in and external sign-in, and the built-in issuer refuses older refresh tokens even when presented to it directly. The last ID token stays valid until it expires (usually within the hour). `0` means no limit. Sessions with no visible admin tab already end when the ID token expires, because the UI only refreshes while a tab is visible | `43200` (12 h) when `MODE=prod`, else no limit |
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | Minimum length for a new built-in password. The bootstrap password, and any password flagged for change, must be replaced at first sign-in | `12` |
@@ -797,7 +799,7 @@ Access is by invitation: signing in at the IdP doesn't by itself give access. In
 2. **Disable them at the IdP.** They can't sign in again. A session already open lasts until its ID token expires (usually up to an hour) or its next refresh, which the IdP normally refuses for a disabled user.
 3. Every session ends `AUTH_SESSION_MAX_AGE_SECONDS` after sign-in at the latest (12 hours by default in production).
 
-The ID token is also accepted as a `Bearer` header for API clients, with the same checks.
+Admin APIs accept the ID token as a `Bearer` header only when `AUTH_ALLOW_BEARER=true` (for scripts and CI), with the same checks. Off by default, so a token copied out of a browser can't be replayed from elsewhere.
 
 ---
 
