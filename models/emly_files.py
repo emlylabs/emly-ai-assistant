@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 import peewee as pw
@@ -81,7 +83,7 @@ class EMLYFilesTable:
         id: Optional[str] = None,
         document_type: str = DEFAULT_DOCUMENT_TYPE,
     ) -> Optional[dict]:
-        now = datetime.now()
+        now = utc_now()
         row = EMLYFiles.create(
             id=id or str(uuid.uuid4()),
             bot=bot_id,
@@ -102,7 +104,7 @@ class EMLYFilesTable:
 
     def update_document_type(self, bot_id: str, file_id: str, document_type: str) -> bool:
         rows = (
-            EMLYFiles.update(document_type=document_type, updated_at=datetime.now())
+            EMLYFiles.update(document_type=document_type, updated_at=utc_now())
             .where((EMLYFiles.id == file_id) & (EMLYFiles.bot == bot_id))
             .execute()
         )
@@ -251,7 +253,7 @@ class EMLYFilesTable:
             EMLYFiles.update(
                 embedding_status=embedding_status,
                 error_message=error_message,
-                updated_at=datetime.now(),
+                updated_at=utc_now(),
             )
             .where((EMLYFiles.id == file_id) & (EMLYFiles.bot == bot_id))
             .execute()

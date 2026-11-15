@@ -554,8 +554,10 @@ def _maybe_purge_old_jobs() -> None:
         return
     _last_purge_at = now
     try:
-        from datetime import datetime, timedelta
-        cutoff = datetime.now() - timedelta(days=CRAWL_JOB_RETENTION_DAYS)
+        from datetime import timedelta
+
+        from utils.clock import utc_now
+        cutoff = utc_now() - timedelta(days=CRAWL_JOB_RETENTION_DAYS)
         deleted = Crawl_Jobs.purge_older_than(cutoff)
         if deleted:
             log.info(
@@ -573,13 +575,13 @@ def _spawn_due_schedules() -> int:
     Returns the number of jobs spawned. Errors on a single schedule are
     isolated so one bad row doesn't block the others.
     """
-    from datetime import datetime
+    from utils.clock import utc_now
     try:
         from models.crawl_schedules import Crawl_Schedules
     except Exception:
         # Table may not exist yet on a partial migration boot — defer.
         return 0
-    now = datetime.now()
+    now = utc_now()
     spawned = 0
     for sched in Crawl_Schedules.due(now):
         try:

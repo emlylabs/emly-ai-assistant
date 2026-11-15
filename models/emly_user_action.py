@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import Dict, Optional
 
 import peewee as pw
@@ -109,7 +111,7 @@ class EMLYUserActionsTable:
         message_id: Optional[int] = None,
         action_payload: Optional[dict] = None,
     ) -> Optional[dict]:
-        now = datetime.now()
+        now = utc_now()
         row = EMLYUserActions.create(
             id=str(uuid.uuid4()),
             bot=bot_id,

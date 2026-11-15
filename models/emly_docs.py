@@ -8,6 +8,8 @@ import logging
 import traceback
 import uuid
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 import peewee as pw
@@ -64,7 +66,7 @@ class EMLYDocsTable:
         name: str,
         content_hash: Optional[str] = None,
     ) -> Optional[EMLYDocsModel]:
-        now = datetime.now()
+        now = utc_now()
         row = EMLYDocs.create(
             id=str(uuid.uuid4()),
             bot=bot_id,
@@ -119,7 +121,7 @@ class EMLYDocsTable:
                     row.name = value
                 elif lower == "content_hash":
                     row.content_hash = value
-            row.updated_at = datetime.now()
+            row.updated_at = utc_now()
             row.save()
             return _row_to_model(row)
         except pw.DoesNotExist:

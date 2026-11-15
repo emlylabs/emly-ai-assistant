@@ -352,13 +352,14 @@ def list_bots_summary(admin: AdminUserModel = Depends(get_admin)):
 
     from datetime import timedelta
 
+    from utils.clock import utc_now
     from models.bot_channels import BotChannels
     from models.emly_files import Emly_Files
     from models.emly_messages import EMLYMessages
     from models.emly_sessions import EMLYSessions
 
     summaries: List[WorkspaceBotSummary] = []
-    now = datetime.now()
+    now = utc_now()
     since = now - timedelta(hours=24)
     # ``live_ids`` is already this admin's non-deleted bots; reuse it rather
     # than re-reading the memberships.

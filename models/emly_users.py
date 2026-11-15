@@ -1,6 +1,8 @@
 import logging
 import time
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 from peewee import (
@@ -139,7 +141,7 @@ class EMLYUsersTable:
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
     ) -> Optional[EMLYUserModel]:
-        now = datetime.now()
+        now = utc_now()
         EMLYUser.create(
             id=id,
             bot=bot_id,
@@ -194,7 +196,7 @@ class EMLYUsersTable:
                     last_name=emly_user.last_name,
                     email=emly_user.email,
                     phone=emly_user.phone,
-                    updated_at=datetime.now(),
+                    updated_at=utc_now(),
                     meta=emly_user.meta,
                     country=emly_user.country,
                     city=emly_user.city,

@@ -22,6 +22,8 @@ import json
 import re
 import uuid
 from datetime import datetime, timedelta
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 import peewee as pw
@@ -121,7 +123,7 @@ class CrawlSchedulesTable:
     ) -> dict:
         # Validate cadence up-front so a bad value never lands in the DB.
         interval = parse_cadence(cadence)
-        now = datetime.now()
+        now = utc_now()
         # Default behaviour: first run kicks off right away so admins
         # don't have to wait a day to see whether the schedule works.
         # ``run_immediately=False`` defers to one cadence interval out.
@@ -193,7 +195,7 @@ class CrawlSchedulesTable:
 
     def set_enabled(self, bot_id: str, schedule_id: str, enabled: bool) -> bool:
         rows = (
-            CrawlSchedule.update(enabled=enabled, updated_at=datetime.now())
+            CrawlSchedule.update(enabled=enabled, updated_at=utc_now())
             .where(
                 (CrawlSchedule.id == schedule_id) & (CrawlSchedule.bot_id == bot_id)
             )
