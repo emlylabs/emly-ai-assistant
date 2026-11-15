@@ -2032,9 +2032,10 @@ function LLMSection({
           Analyse conversations for sentiment and intent
         </label>
         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Classifies each visitor message with this bot&apos;s LLM: one extra model call per
-          message, sending that message only, not the conversation. Results appear on the
-          Analytics page.
+          Classifies each conversation with this bot&apos;s LLM once it has been quiet for 30
+          minutes: one extra model call per conversation, sending the visitor&apos;s messages in
+          it (not the bot&apos;s answers or form details). A conversation that picks up again is
+          classified again later. Results appear on the Analytics page.
         </div>
       </div>
       <div className="field">

@@ -103,17 +103,14 @@ def test_next_alert_summary_leaves_out_the_earlier_submission(scene, monkeypatch
     assert all(m.expanded_query != "call_back" for m in seen[1])
 
 
-def test_submission_is_not_sent_to_enrichment(scene, monkeypatch):
+def test_submission_is_not_sent_to_enrichment(scene):
+    from models.emly_messages import EMLYMessages
     from services import enrichment
 
     bot, session = scene
-    queued = []
-    monkeypatch.setattr(enrichment, "enqueue", lambda **kw: queued.append(kw["user_text"]) or True)
-
     _submit_form(bot, session)
-    assert queued == []
-
-    from models.emly_messages import EMLYMessages
     EMLYMessages.insert_new_message(bot_id=bot.id, user_id="v1", session_id=session, role="user",
                                     message="thanks", not_useful=False, expanded_query=None, page="p")
-    assert queued == ["thanks"]
+    text = enrichment.conversation_text(bot.id, session)
+    assert "thanks" in text
+    assert SECRET not in text

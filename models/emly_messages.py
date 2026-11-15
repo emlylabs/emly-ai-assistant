@@ -229,20 +229,8 @@ class EMLYMessagesTable:
                 "EMLYSessions.upsert_on_message failed (non-fatal) for session=%s",
                 session_id,
             )
-        # Phase 8 backend-backfill: enqueue enrichment for user turns
-        # only. The worker is opt-in per bot and short-circuits when
-        # disabled. Failures here are silent — enrichment is best-effort.
-        if role == "user" and row is not None and not is_form_submission(expanded_query):
-            try:
-                from services.enrichment import enqueue as _enqueue_enrichment
-                _enqueue_enrichment(
-                    bot_id=bot_id,
-                    session_id=session_id,
-                    message_id=row.id,
-                    user_text=message,
-                )
-            except Exception:
-                logging.debug("enrichment enqueue failed (non-fatal)", exc_info=True)
+        # Enrichment classifies whole conversations once they go quiet
+        # (services/enrichment.sweep_finished, Q-G1), not each message.
         return row
 
     def set_deflection(

@@ -848,7 +848,7 @@ Questions that ask for a missing detail come from templates and make no call.
 **Other calls:**
 
 - **Form-alert summary**, only when the bot's alerts are set to the full alert (new bots default to link-only, which makes no call): this conversation's messages and the summary instructions. The submitted form's field values are left out.
-- **Sentiment and intent**, only when *Analyse conversations* is on: one call per visitor message, containing that message (its first 2,000 characters) and the classifier instructions.
+- **Sentiment and intent**, only when *Analyse conversations* is on: one call per conversation, once it has been quiet for 30 minutes (again if it later resumes), containing the visitor's messages in that conversation (the last 4,000 characters; not the bot's answers, not form values) and the classifier instructions.
 - **Embeddings** run inside the deployment by default. With `EMBEDDING_PROVIDER=openai`, every document chunk and every search query is sent to `OPENAI_BASE_URL`. The re-ranker always runs locally.
 
 **Never sent:** the visitor's name, email, phone, IP address or location; the values of submitted forms; files visitors attach; other conversations; other bots' documents; API keys. LangSmith tracing stays off unless `ALLOW_LANGSMITH_TRACING=true`.
