@@ -29,6 +29,7 @@ from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
 from services.bot_config import (
+    BotConfigInvalid,
     discard_draft_for_bot,
     get_config_for_bot,
     get_draft_for_bot,
@@ -36,6 +37,7 @@ from services.bot_config import (
     save_draft_for_bot,
     set_api_key,
 )
+from services.config_gate import invalid_config_error, raise_on_format_errors
 from services.config_validation import (
     FIELD_FORMAT_RULE_PREFIXES,
     blocking_format_issues,
@@ -137,43 +139,6 @@ def _issues_to_response(issues: List[Issue]) -> ValidationResponse:
     return ValidationResponse(
         issues=[ValidationIssue(**i.to_dict()) for i in issues],
         counts=count_by_severity(issues),
-    )
-
-
-def _raise_on_format_errors(config: Dict[str, Any], before: Optional[Dict[str, Any]]) -> None:
-    """422 on malformed field values (bad email / URL / colour,
-    out-of-range numbers) that this save introduces or changes. These are
-    never a deliberate choice, so they block regardless of the workspace
-    save gate and of ``force``. A value already in ``before`` (the live
-    config) doesn't block, so one stored before a rule existed can't stop
-    every unrelated save."""
-    format_issues = blocking_format_issues(validate_config(config), config, before)
-    if format_issues:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_failed",
-                "message": (
-                    f"Save blocked — {len(format_issues)} invalid value"
-                    f"{'s' if len(format_issues) != 1 else ''}: "
-                    + " ".join(i.message for i in format_issues)
-                ),
-                "issues": [i.to_dict() for i in format_issues],
-                "can_force": False,
-            },
-        )
-
-
-def _invalid_config_error(exc: PydanticValidationError) -> HTTPException:
-    """422 for a config the schema rejects (instead of a 500)."""
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail={
-            "error": "invalid_config",
-            "message": "; ".join(
-                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
-            ),
-        },
     )
 
 
@@ -1224,6 +1189,11 @@ class ConfigResponse(BaseModel):
     last_updated_by_admin_email: Optional[str] = None
     last_updated_at: Optional[datetime] = None
     draft: Optional["DraftBlock"] = None
+    # N4: set when the stored config doesn't load under the current
+    # schema. ``config`` is then the stored JSON as is, so the editor can
+    # open it and an admin can save a fixed version. Field paths and error
+    # types only, no values.
+    load_error: Optional[str] = None
 
 
 class DraftBlock(BaseModel):
@@ -1237,7 +1207,12 @@ ConfigResponse.model_rebuild()
 
 
 def _build_config_response(bot: BotModel) -> ConfigResponse:
-    cfg = get_config_for_bot(bot.id)
+    load_error: Optional[str] = None
+    try:
+        config = get_config_for_bot(bot.id).model_dump(mode="json")
+    except BotConfigInvalid as exc:
+        config = dict(bot.config_json or {})
+        load_error = exc.problems
     draft_block: Optional[DraftBlock] = None
     if bot.config_draft_json:
         draft_email: Optional[str] = None
@@ -1254,7 +1229,8 @@ def _build_config_response(bot: BotModel) -> ConfigResponse:
             updated_by_admin_email=draft_email,
         )
     return ConfigResponse(
-        config=cfg.model_dump(mode="json"),
+        config=config,
+        load_error=load_error,
         config_version=bot.config_version,
         last_updated_by_admin_id=bot.last_updated_by_admin_id,
         last_updated_by_admin_email=bot.last_updated_by_admin_email,
@@ -1321,7 +1297,7 @@ def bot_put_config(
 
     # Malformed values can't be forced, so check them before the save gate
     # (which offers ``force``) and before a forced save is audited.
-    _raise_on_format_errors(payload.config, bot.config_json or {})
+    raise_on_format_errors(payload.config, bot.config_json or {})
 
     # Optional save gate (§10 of improve-ux.md). Off by default — flipping
     # it on must not retroactively lock admins out of bots that are
@@ -1374,7 +1350,7 @@ def bot_put_config(
     try:
         save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
@@ -1428,7 +1404,7 @@ def bot_put_config_draft(
     try:
         save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.draft.saved", admin, bot, before_draft,
@@ -1658,12 +1634,12 @@ def bot_restore_config_history(
     row = BotConfigHistories.get_by_id(entry_id)
     if row is None or row.bot_id != bot.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
-    _raise_on_format_errors(row.config_json or {}, bot.config_json or {})
+    raise_on_format_errors(row.config_json or {}, bot.config_json or {})
     before_config = dict(bot.config_json or {})
     try:
         save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.history.restored", admin, bot, before_config,
@@ -1744,6 +1720,7 @@ def bot_rag_search(
         query=query,
         top_k=top_k,
         embedding_threshold=threshold,
+        hybrid=rag_cfg.enable_hybrid_search if rag_cfg else None,
     )
     hits = [
         RAGSearchHit(

@@ -45,7 +45,7 @@ from starlette.concurrency import run_in_threadpool
 
 from services.audit import audit
 from services.auth.base import AuthError, AuthProvider, InvalidTokenError
-from services.auth.dependencies import get_auth_provider
+from services.auth.dependencies import audit_actor_id, get_auth_provider
 from services.auth.factory import get_state_store
 from services.auth.oidc import generate_nonce, generate_pkce_verifier, generate_state
 from services.auth.ratelimit import limit_for, limiter
@@ -188,10 +188,13 @@ async def _perform_refresh(request: Request, provider: AuthProvider, refresh_tok
         token_set = await run_in_threadpool(provider.refresh_tokens, refresh_token)
     except (InvalidTokenError, AuthError) as e:
         log.info("BFF refresh: IdP rejected refresh_token (%s) — clearing session", e)
-        audit("auth.refresh_failed", request=request, success=False, payload={"err": str(e)})
+        audit("auth.refresh_failed", admin_id=audit_actor_id(request, provider), request=request,
+              success=False, payload={"err": str(e)})
         return None
 
-    audit("auth.refresh", request=request, success=True)
+    actor_id = (audit_actor_id(request, provider, token=token_set.id_token)
+                or audit_actor_id(request, provider))
+    audit("auth.refresh", admin_id=actor_id, request=request, success=True)
     return token_set
 
 
@@ -219,7 +222,8 @@ async def _refresh_response(
         from services.auth.factory import offline_access_requested
 
         if offline_access_requested():
-            audit("auth.refresh_missing", request=request, success=False)
+            audit("auth.refresh_missing", admin_id=audit_actor_id(request, provider), request=request,
+                  success=False)
         return JSONResponse(
             {"detail": {"code": "missing_refresh_token"}},
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -266,7 +270,7 @@ async def _refresh_response(
         )
         try:
             principal = provider.verify_token(id_token)
-            admin = resolve_or_create_admin(principal)
+            admin = resolve_or_create_admin(principal, record_login=False)  # a refresh, not a sign-in
             memberships = AdminBotMemberships.list_for_admin(admin.id)
             payload["admin"] = {
                 "id": admin.id,

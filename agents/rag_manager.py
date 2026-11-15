@@ -255,13 +255,24 @@ class RAGManager:
         query: str,
         top_k: int = TOP_K,
         embedding_threshold: float = 0.0,
+        hybrid: Optional[bool] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Filtered semantic search scoped to ``bot_id``.
 
         Returns ``(joined_context, citations)`` where ``citations`` is a
         list of ``{"metadata": dict, "chunk": str}`` mirroring the shape
         the agent code consumes.
+
+        ``hybrid`` asks for the cross-encoder re-rank (the bot's
+        ``rag.enable_hybrid_search``); ``None`` means the deployment
+        default. It only runs when the re-ranker is loaded
+        (``ENABLE_RAG_HYBRID_SEARCH=true``); otherwise results keep vector
+        order.
         """
+        wanted = ENABLE_RAG_HYBRID_SEARCH if hybrid is None else hybrid
+        rerank = bool(wanted) and RE_RANKING_MODEL is not None and not isinstance(RE_RANKING_MODEL, str)
+        if wanted and not rerank:
+            log.debug("bot=%s asked for re-ranking but the re-ranker isn't loaded", bot_id)
         try:
             hits = self.client.query_points(
                 collection_name=self.collection,
@@ -269,7 +280,7 @@ class RAGManager:
                 query_filter=qm.Filter(
                     must=[qm.FieldCondition(key="bot_id", match=qm.MatchValue(value=bot_id))]
                 ),
-                limit=max(top_k * 4, top_k) if ENABLE_RAG_HYBRID_SEARCH else top_k,
+                limit=max(top_k * 4, top_k) if rerank else top_k,
                 with_payload=True,
             ).points
         except Exception:
@@ -283,7 +294,7 @@ class RAGManager:
         # we keep the cross-encoder's score alongside the cosine score so the
         # admin debug surfaces can show how aggressively the rerank reorders.
         rerank_by_id: Dict[Any, float] = {}
-        if ENABLE_RAG_HYBRID_SEARCH and RE_RANKING_MODEL is not None and not isinstance(RE_RANKING_MODEL, str):
+        if rerank:
             pairs = [(query, (h.payload or {}).get("chunk_text", "")) for h in hits]
             try:
                 scores = RE_RANKING_MODEL.predict(pairs)

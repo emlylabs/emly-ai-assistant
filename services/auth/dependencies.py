@@ -82,7 +82,8 @@ def get_admin(
         ) from e
 
     try:
-        admin = resolve_or_create_admin(principal)
+        # Not a sign-in: don't write last_login_at on every request (G13f).
+        admin = resolve_or_create_admin(principal, record_login=False)
     except AdminNotProvisioned as e:
         # 401 + structured body so the UI can route to the "Request access" page.
         raise HTTPException(
@@ -107,6 +108,27 @@ def get_admin(
         )
 
     return admin
+
+
+def audit_actor_id(request: Request, provider: AuthProvider, token: str | None = None) -> str | None:
+    """Admin id to attribute an audit event to, on routes that run without
+    a live session (logout, refresh). Uses ``token``, else the request's
+    session token. The token must verify (signature, issuer, audience), but
+    may be expired: that is why these routes run. The admin is looked up
+    by issuer and subject, never created. ``None`` when there is no usable
+    token; never raises."""
+    try:
+        token = token or _extract_token(request)
+        if not token:
+            return None
+        principal = provider.verify_token(token, allow_expired=True)
+        from models.admin_users import AdminUsers
+
+        row = AdminUsers.get_by_issuer_subject(principal.issuer, principal.subject)
+        return row.id if row else None
+    except Exception:
+        log.debug("audit actor not resolvable", exc_info=True)
+        return None
 
 
 # -------- 401 body shape helpers (used by routes/auth.py for callback errors) --------

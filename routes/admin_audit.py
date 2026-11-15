@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 from models.admin_audit_log import AdminAuditLogModel, AdminAuditLogs
-from services.authz import require_member, require_owner, require_superadmin
+from services.authz import deny, require_owner, require_superadmin, require_writer
 from models.admin_users import AdminUserModel
 from models.bots import Bots
 from services.auth.dependencies import get_admin
@@ -44,14 +44,12 @@ def list_audit_logs(
     limit: int = Query(50, ge=1, le=500),
     admin: AdminUserModel = Depends(get_admin),
 ):
-    """Workspace-wide audit feed. Superadmin-only when bot_id is omitted."""
+    """Workspace-wide audit feed. Superadmin-only when bot_id is omitted;
+    with bot_id, owners and admins of that bot (G4b)."""
     if not admin.is_superadmin:
         if not bot_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="bot_id required for non-superadmin reads",
-            )
-        require_member(admin, bot_id)
+            raise deny(admin, "not_superadmin", detail="bot_id required for non-superadmin reads")
+        require_writer(admin, bot_id)
     items = AdminAuditLogs.list_filtered(
         admin_id=admin_id,
         bot_id=bot_id,
@@ -72,11 +70,12 @@ def list_bot_audit_logs(
     limit: int = Query(50, ge=1, le=500),
     admin: AdminUserModel = Depends(get_admin),
 ):
-    """Bot-scoped audit feed. Any role on the bot can read."""
+    """Bot-scoped audit feed. Owners and admins of the bot (G4b): it
+    names who did what, which viewers don't need."""
     bot = Bots.get_by_slug(slug)
     if bot is None or bot.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found")
-    require_member(admin, bot.id)
+    require_writer(admin, bot.id)
     items = AdminAuditLogs.list_filtered(
         bot_id=bot.id,
         action=action,

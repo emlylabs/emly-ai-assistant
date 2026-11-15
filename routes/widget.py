@@ -415,11 +415,10 @@ def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
         mime_allowlist = [m.lower() for m in (limits.mime_allowlist or [])]
 
     for f in files:
-        # Starlette/FastAPI exposes ``size`` only when the client sent
-        # a Content-Length per part. When absent we still cap during
-        # ``handle_file_uploads`` (it reads ``await file.read()`` once
-        # and the byte length is checked there), but rejecting
-        # known-too-large uploads here is cheaper for the client.
+        # Starlette's multipart parser sets ``size`` to the bytes it
+        # actually received for this part (not a client-supplied value),
+        # so this is the per-file cap. The whole request body is capped
+        # earlier, as it arrives, by WidgetBodyLimitMiddleware (G13c).
         size = getattr(f, "size", None)
         if size is not None and size > max_bytes:
             raise HTTPException(
@@ -445,7 +444,9 @@ class WidgetRatePayload(BaseModel):
     rating: int  # -1, 0, +1
     session_id: str
     user_id: Optional[str] = None
-    free_text: Optional[str] = None  # captured by the audit log only for v1
+    # G13f: a free-text comment used to be accepted and copied into the
+    # audit log, where every bot viewer could read it. Unknown keys are
+    # ignored, so older clients that still send it keep working.
 
 
 class WidgetRateResponse(BaseModel):
@@ -503,7 +504,6 @@ def widget_rate_message(
                 "rating": payload.rating,
                 "session_id": payload.session_id,
                 "user_id": payload.user_id,
-                "free_text": payload.free_text,
             },
         )
     except Exception:

@@ -491,7 +491,7 @@ def _run_config_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[Is
 # Field-format rules (R16–R23). Malformed single values; the save route
 # always blocks on these, independent of the workspace save gate.
 # ---------------------------------------------------------------------------
-FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_")
+FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_", "R24_")
 
 _EMAIL_RE = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
@@ -658,6 +658,18 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
             message="API endpoint must be a full http:// or https:// address.",
             field="llm.api_endpoint",
         ))
+    elif _present(endpoint):
+        from services.llm_settings import ALLOWLIST_ENV, endpoint_host, is_endpoint_allowed
+
+        if not is_endpoint_allowed(str(endpoint)):
+            issues.append(Issue(
+                severity="error",
+                key="R24_endpoint_not_allowed",
+                section="llm",
+                message=f"{endpoint_host(str(endpoint))} isn't an approved model endpoint for this "
+                        f"deployment ({ALLOWLIST_ENV}). Ask your administrator, or use an approved one.",
+                field="llm.api_endpoint",
+            ))
 
     def _range(value: Any, lo: float, hi: float) -> bool:
         n = _as_num(value)

@@ -2,7 +2,13 @@ import logging
 import os
 import time
 from pathlib import Path
-from langchain_openai import OpenAIEmbeddings
+
+# G2c: before LangChain is imported. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing
+
+disable_unapproved_tracing()
+
+from langchain_openai import OpenAIEmbeddings  # noqa: E402
 from sentence_transformers import CrossEncoder
 from sentence_transformers import SentenceTransformer
 from datetime import timedelta
@@ -39,17 +45,19 @@ EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "huggingface")
 # Model names, pinned revisions and cache folders: utils/model_pins.py (D2).
 SENTENCE_TRANSFORMERS_HOME = model_pins.embedding_cache_dir()
 RE_RANKING_MODEL_CACHE_FOLDER = model_pins.rerank_cache_dir()
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
 
 EMBEDDING_MODEL_INSTANCE = None
 EMBEDDING_MODEL_NAME = model_pins.embedding_model_name()
 if EMBEDDING_PROVIDER == "openai":
+    from services.llm_settings import embedding_endpoint
+
     OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL")
     EMBEDDING_MODEL_NAME = OPENAI_EMBEDDING_MODEL or EMBEDDING_MODEL_NAME
     EMBEDDING_MODEL_INSTANCE = OpenAIEmbeddings(
         api_key=OPENAI_API_KEY,
         model=OPENAI_EMBEDDING_MODEL,
-        base_url=OPENAI_BASE_URL,
+        # Required, never api.openai.com by default (G2b).
+        base_url=embedding_endpoint(),
     )
 elif EMBEDDING_PROVIDER == "huggingface":
     try:

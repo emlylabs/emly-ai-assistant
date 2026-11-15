@@ -32,6 +32,7 @@ from services.audit import audit
 from services.auth.dependencies import get_admin
 from services.authz import require_bot_creator, require_member, require_owner, require_writer
 from services.bot_templates import get_template_config, list_templates
+from services.config_gate import check_new_config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -157,6 +158,18 @@ def get_bot_templates(_admin: AdminUserModel = Depends(get_admin)):
     ]
 
 
+def _without_legacy_agent_config(config: dict) -> dict:
+    """Copy ``config`` without the legacy ``agent_config`` block.
+
+    Copies used to stamp the new slug/name into ``agent_config``, but
+    ``BotConfig`` forbids that key and nothing reads it from a stored
+    config: the stamped bot failed to load at runtime and blocked the
+    next boot. The bot's slug and name live on its ``bots`` row."""
+    out = dict(config)
+    out.pop("agent_config", None)
+    return out
+
+
 @router.post("/bots", response_model=BotResponse, status_code=status.HTTP_201_CREATED)
 def create_bot(
     payload: BotCreate,
@@ -177,21 +190,15 @@ def create_bot(
     # used as a privilege escalation to read configs the admin couldn't
     # otherwise see.
     config_json: Optional[dict] = None
+    copied_from: Optional[dict] = None
     template_id = payload.template_id or "blank"
     if payload.source_bot_id:
         source = Bots.get_by_id(payload.source_bot_id)
         if source is None or source.is_deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source bot not found")
         require_member(admin, source.id)
-        # Stamp the duplicate with its own slug/name so prompt templates
-        # referencing the original don't leak the source's identity.
-        config_json = dict(source.config_json or {})
-        agent_cfg = config_json.get("agent_config") or {}
-        if isinstance(agent_cfg, dict):
-            agent_cfg = dict(agent_cfg)
-            agent_cfg["bot_slug"] = payload.slug
-            agent_cfg["bot_name"] = payload.name
-            config_json["agent_config"] = agent_cfg
+        copied_from = source.config_json or {}
+        config_json = _without_legacy_agent_config(copied_from)
     elif template_id.startswith("workspace:"):
         # Admin-saved workspace template. The id format is
         # ``workspace:<workspace_bot_templates.id>``.
@@ -203,13 +210,7 @@ def create_bot(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unknown workspace template id: {wt_id}",
             )
-        config_json = dict(tpl.config_json or {})
-        agent_cfg = config_json.get("agent_config") or {}
-        if isinstance(agent_cfg, dict):
-            agent_cfg = dict(agent_cfg)
-            agent_cfg["bot_slug"] = payload.slug
-            agent_cfg["bot_name"] = payload.name
-            config_json["agent_config"] = agent_cfg
+        config_json = _without_legacy_agent_config(tpl.config_json or {})
     else:
         try:
             config_json = get_template_config(template_id, payload.slug, payload.name)
@@ -218,6 +219,10 @@ def create_bot(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unknown template id: {template_id}",
             )
+
+    # Whatever the source, the stored config must load at boot: a key
+    # BotConfig forbids would stop the app starting (G1d/N4).
+    check_new_config(config_json, copied_from=copied_from)
 
     bot_id = f"bot-{uuid.uuid4()}"
     bot = Bots.insert(

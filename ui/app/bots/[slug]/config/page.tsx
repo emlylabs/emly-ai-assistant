@@ -70,6 +70,8 @@ export default function BotConfigPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ current: number; expected: number } | null>(null);
+  // N4: the stored config doesn't load; the bot isn't answering.
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 422 from save/publish: the server validator found errors. Holds the
   // issue list (so we can render it inline with tab-jump links) plus the
   // gate type — "save" allows a force-override, "publish" does not.
@@ -101,6 +103,7 @@ export default function BotConfigPage() {
 
   const applyResponse = useCallback((res: BotConfigResponse) => {
     const live = (res.config ?? {}) as Cfg;
+    setLoadError(res.load_error ?? null);
     setSavedConfig(live);
     setVersion(res.config_version);
     setLastSavedBy(
@@ -549,6 +552,14 @@ export default function BotConfigPage() {
           <button className="ghost" onClick={load} style={{ marginLeft: 8 }}>
             Reload to see latest
           </button>
+        </div>
+      )}
+
+      {loadError && (
+        <div className="banner warning" role="alert">
+          <strong>This assistant isn&apos;t answering.</strong> Its saved config can&apos;t be
+          loaded ({loadError}). Fix these fields and save, or restore an earlier version from
+          History. Until then visitors are told it isn&apos;t available right now.
         </div>
       )}
 
@@ -2008,8 +2019,9 @@ function LLMSection({
           Analyse conversations for sentiment and intent
         </label>
         <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-          Classifies each finished conversation with this bot&apos;s LLM (one extra call per
-          conversation). Results appear on the Analytics page.
+          Classifies each visitor message with this bot&apos;s LLM: one extra model call per
+          message, sending that message only, not the conversation. Results appear on the
+          Analytics page.
         </div>
       </div>
       <div className="field">
@@ -2233,7 +2245,7 @@ function LimitsSection({
       <h2 style={{ marginTop: 0 }}>Cost &amp; usage</h2>
       <NumberField
         label="Daily token cap"
-        hint="Reject chat once this many LLM tokens are spent in 24h. Empty = no cap. (Enforcement ships when the cost ledger lands; advisory until then.)"
+        hint="Visitors get a short 'limit reached' reply once answers have used this many tokens in the last 24 hours. Counts answer tokens only. Empty or 0 = no cap."
         value={limits.daily_token_cap}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "daily_token_cap"], v)}
@@ -2242,7 +2254,7 @@ function LimitsSection({
       />
       <NumberField
         label="Messages per minute, per user"
-        hint="Rate limit for a single end user."
+        hint="Messages one visitor can send per minute before getting a 'try again' reply. Empty or 0 = no limit."
         value={limits.messages_per_minute_per_user}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "messages_per_minute_per_user"], v)}
@@ -2251,7 +2263,7 @@ function LimitsSection({
       />
       <NumberField
         label="Messages per minute, bot-wide"
-        hint="Aggregate cap across all end users."
+        hint="Messages all visitors together can send per minute. Empty or 0 = no limit."
         value={limits.messages_per_minute_per_bot}
         defaultValue={undefined}
         onChange={(v) => patchPath(["limits", "messages_per_minute_per_bot"], v)}

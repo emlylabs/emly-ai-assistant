@@ -26,6 +26,7 @@ Conventions for ``action``:
 from __future__ import annotations
 
 import logging
+import threading
 from contextvars import ContextVar
 from typing import Any, Optional
 
@@ -40,6 +41,26 @@ log = logging.getLogger(__name__)
 _request_meta: ContextVar[Optional[tuple[Optional[str], Optional[str]]]] = ContextVar(
     "audit_request_meta", default=None
 )
+
+
+# The ASGI scope of that request, so audit rows can name the route. Read
+# lazily: routing fills in ``scope["route"]`` after this middleware runs.
+_request_scope: ContextVar[Optional[dict]] = ContextVar("audit_request_scope", default=None)
+
+
+def current_request_route() -> tuple[Optional[str], Optional[str]]:
+    """``(method, route)`` of the request being handled, e.g.
+    ``("GET", "/api/admin/bots/{slug}/sessions")``. The route is the
+    matched path template when routing has run, else the raw path.
+    ``(None, None)`` outside a request."""
+    scope = _request_scope.get()
+    if not scope:
+        return None, None
+    route = scope.get("route")
+    template = getattr(route, "path", None)
+    if template:
+        template = (scope.get("root_path") or "") + template
+    return scope.get("method"), template or scope.get("path")
 
 
 class AuditRequestContextMiddleware:
@@ -62,9 +83,11 @@ class AuditRequestContextMiddleware:
                 ua = value.decode("latin-1")[:512]
                 break
         token = _request_meta.set((ip, ua))
+        scope_token = _request_scope.set(scope)
         try:
             await self.app(scope, receive, send)
         finally:
+            _request_scope.reset(scope_token)
             _request_meta.reset(token)
 
 
@@ -112,9 +135,57 @@ def audit(
             ua=ua,
             success=success,
         )
-    except Exception:
-        # Never block the live request on an audit write failure.
-        log.exception("audit() failed for action=%s admin=%s bot=%s", action, admin_id, bot_id)
+    except Exception as exc:
+        # Never block the live request on an audit write failure, but make
+        # it loud: ERROR log (event name and error type only; the exception
+        # text can echo the payload through SQL parameters), a counter, and
+        # a warning on /api/readyz (G5c).
+        global _WRITE_FAILURES
+        with _FAILURE_LOCK:
+            _WRITE_FAILURES += 1
+        log.error("AUDIT WRITE FAILED: action=%s admin=%s bot=%s error=%s",
+                  action, admin_id, bot_id, type(exc).__name__)
+        if fails_closed(action):
+            raise AuditUnavailable(action) from None
+
+
+# -------- fail closed (Q-G5a) --------
+
+# Sign-ins, permission and configuration changes: the events the product
+# promises are audited. Content events (messages, files, sessions, crawls)
+# only log loudly when their audit write fails.
+SECURITY_ACTION_PREFIXES = (
+    "auth.", "authz.", "csrf.", "admin.", "membership.", "pending.", "invite.", "local.",
+    "keystore.", "bot.", "bots.", "config.", "channel.", "workspace.", "audit.",
+)
+FAIL_CLOSED_ENV = "AUDIT_FAIL_CLOSED"
+
+
+class AuditUnavailable(RuntimeError):
+    """A security event's audit row couldn't be written while serving a
+    request with fail-closed on. main.py turns it into a 503."""
+
+
+def fails_closed(action: str) -> bool:
+    """Whether a failed write of ``action`` must fail the request: a
+    security event, during an HTTP request (background jobs only log), with
+    ``AUDIT_FAIL_CLOSED`` on (the default when ``MODE`` is production-like)."""
+    from utils.runtime import env_flag, is_prod_mode
+
+    return (
+        action.startswith(SECURITY_ACTION_PREFIXES)
+        and _request_scope.get() is not None
+        and env_flag(FAIL_CLOSED_ENV, default=is_prod_mode())
+    )
+
+
+_WRITE_FAILURES = 0
+_FAILURE_LOCK = threading.Lock()
+
+
+def audit_write_failures() -> int:
+    """Audit writes that failed since this process started."""
+    return _WRITE_FAILURES
 
 
 # -------- retention (C7) --------

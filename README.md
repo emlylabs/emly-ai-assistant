@@ -120,6 +120,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
 | `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
+| `ALLOW_LANGSMITH_TRACING` | Leave unset | A `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` left in `.env` stops the app starting, so it can't silently send conversations to LangSmith |
 
 **Widget and visitors**
 
@@ -127,9 +128,10 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): review them |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
+| `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |
 | `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
 | Each bot's *Data retention* | Your retention period | Conversations, submissions and attachments older than this are deleted nightly |
-| Each bot's *Alert emails contain* | *Only a link* if alerts shouldn't carry visitor data | Keeps transcripts, visitor details and files out of mailboxes |
+| Each bot's *Alert emails contain* | *Only a link* (the default for new bots) | Keeps transcripts, visitor details and files out of mailboxes. Bots that existed before were migrated to the full alert: review them |
 | Workspace *OTP expiry* | 5 minutes (default) | One-time codes are single-use, hashed, and locked after 5 wrong attempts |
 
 **Email, models and data**
@@ -138,10 +140,13 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
 | `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
+| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning on `/api/readyz` |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
 | `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
 | `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION`, `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Only when using non-default models | Pin a commit; allow remote code only for a model you have reviewed |
 | `AUDIT_RETENTION_DAYS`, `WEBHOOK_DEDUPE_RETENTION_HOURS` | `365` and `24` (defaults), or your policy | Nightly cleanup |
+| `AUDIT_FAIL_CLOSED` | Leave unset (on in prod) | Security actions fail with 503 rather than happen unaudited when the audit log can't be written |
+| Backups | Database, search index, `DATA_DIR` and the secrets key | See [Backup and restore](#backup-and-restore) |
 
 **Network and channels**
 
@@ -172,6 +177,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `MODEL` | Default model name, e.g. `gpt-4o-mini` | unset |
 | `OPENAI_BASE_URL` | Default OpenAI-compatible endpoint, including the version path, e.g. `https://api.openai.com/v1` or `https://openrouter.ai/api/v1` | unset |
 | `OPENAI_API_KEY` | Default API key (also the embedding key when `EMBEDDING_PROVIDER=openai`) | unset |
+| `LLM_ENDPOINT_ALLOWLIST` | Model endpoints any bot may use, comma-separated: base URLs (`https://llm.example.com/v1`), hosts with an optional port (`llm.internal:8443`) or `*.example.com`. A bot whose endpoint isn't listed can't save it and refuses to answer; it never falls back to another endpoint. `OPENAI_BASE_URL` must be listed too | unset (any endpoint) |
 
 ### Runtime and Security
 
@@ -179,12 +185,15 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 |----------|-------------|---------|
 | `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
+| `ALLOW_LANGSMITH_TRACING` | Allow LangSmith tracing, which sends every prompt and reply (conversation text included) to LangSmith's cloud. Unless this is `true`, a `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` (or alias) set to `true` stops the app starting when `MODE=prod`; in development it is removed with a warning | `false` |
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys, channel credentials and the admin refresh cookie, and signs widget tokens. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
+| `AUDIT_FAIL_CLOSED` | When an audit row for a sign-in, permission, configuration or other security event can't be written, fail the request with 503 instead of carrying on. Changes made before the audit write may already be saved. Background jobs only log | `true` when `MODE=prod`, else `false` |
 | `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
 | `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
 | `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
+| `WIDGET_MAX_REQUEST_MB` | Largest widget request body (a form submission with all its files), counted as it arrives; bigger requests get 413 before they are stored. Each file is also checked against the bot's *Max file size*. Raise it if a bot's forms take more or larger files | `110` (two 50 MB files plus the form) |
 | `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | After a bot's widget signing secret is rotated, how long tokens signed with the previous secret are still accepted | `86400` (24 h) |
 | `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
 | `FORWARDED_ALLOW_IPS` | Proxy addresses (comma-separated IPs or CIDRs) trusted to set `X-Forwarded-For` / `X-Forwarded-Proto`. Client IPs from these headers feed rate limits and the audit log, so never use `*`. Exposed directly (the default compose stack): leave the default. Behind a reverse-proxy container in compose: the proxy container's IP or the compose network's subnet, e.g. `172.18.0.0/16` (see `docker network inspect`). Kubernetes: the range your ingress controller connects from, usually the pod CIDR, e.g. `10.244.0.0/16` | `127.0.0.1` |
@@ -207,12 +216,12 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 
 | Variable | What it does | Default |
 |----------|-------------|---------|
-| `EMBEDDING_PROVIDER` | `huggingface` or `openai` | `huggingface` |
+| `EMBEDDING_PROVIDER` | `huggingface` (embeds inside this deployment) or `openai` (every document chunk and search query is sent to `OPENAI_BASE_URL`, which is then required and must be on `LLM_ENDPOINT_ALLOWLIST` if that is set; the app won't start otherwise) | `huggingface` |
 | `RAG_EMBEDDING_MODEL` | Embedding model name | `Alibaba-NLP/gte-base-en-v1.5` |
-| `RAG_TOP_K` | Number of chunks to retrieve | `5` |
+| `RAG_TOP_K` | Fallback passage count for searches made without a bot. Answers use each bot's *Top K* setting | `5` |
 | `CHUNK_SIZE` | Text chunk size for splitting | `2048` |
 | `CHUNK_OVERLAP` | Overlap between chunks | `256` |
-| `ENABLE_RAG_HYBRID_SEARCH` | Enable CrossEncoder re-ranking | `false` |
+| `ENABLE_RAG_HYBRID_SEARCH` | Load the CrossEncoder re-ranker so bots can use it. Each bot's *Hybrid search* setting decides whether its answers are re-ranked; without this the setting has no effect | `false` |
 | `RE_RANKING_MODEL` | Cross-encoder for re-ranking (a name under `cross-encoder/`, or a full repo id) | `ms-marco-TinyBERT-L2-v2` |
 | `RE_RANKING_MODEL_HOME` | Re-ranking model cache directory. Leave unset in Docker | `./data/models/re_ranking` (local) / `/opt/models/re_ranking` (Docker) |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | Load models from the local cache only, never from Hugging Face. Set to `1` in the Docker image | unset (local) / `1` (Docker) |
@@ -713,6 +722,58 @@ curl -X POST https://emly.yourdomain.com/api/admin/admins/pending \
 ```
 
 ---
+
+## Backup and restore
+
+Back these up together, from the same moment where possible:
+
+| What | Where (compose defaults) | How |
+|------|--------------------------|-----|
+| Database: bots, configs, conversations, admins, audit log | Postgres (`./data/postgres`) | `docker compose exec -T postgres pg_dump -U emly -Fc emly > emly-$(date +%F).dump`, or your managed database's snapshots |
+| Search index (document vectors) | Qdrant (`./data/qdrant`) | Stop Qdrant and copy the directory, or use Qdrant's snapshot API. It can also be rebuilt by re-indexing each bot's files, which costs time (and embedding calls with `EMBEDDING_PROVIDER=openai`) |
+| Uploaded documents | `DATA_DIR/bots/*/uploads/` (`./data/bots`) | File copy. Needed to re-index |
+| Visitor attachments | `DATA_DIR/attachments/` | File copy |
+| Scheduled jobs (pending alert emails, crawls) | `DATA_DIR/actions.db` | File copy (SQLite) |
+| Built-in sign-in keys | `AUTH_LOCAL_KEYS_DIR` (default `DATA_DIR/auth_keys/`) | File copy. Without them, every admin signs in again |
+| `BOT_SECRETS_KEY` (and any `BOT_SECRETS_KEY_PREVIOUS`) | Your secret store or `.env` | Keep it **separately** from the database backup. Without it, stored bot API keys and channel credentials can't be decrypted |
+
+**Restore order:**
+
+1. Put `.env` (with the same `BOT_SECRETS_KEY`) in place. Don't start the app yet.
+2. Start Postgres and restore: `docker compose exec -T postgres pg_restore -U emly -d emly --clean --if-exists < emly.dump`.
+3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
+4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
+5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and on `/api/readyz`, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
+
+Test the restore on a separate host before you rely on it.
+
+## What the model sees
+
+Every model call goes to the bot's own endpoint (its LLM settings, or the `OPENAI_BASE_URL` default), which must be on `LLM_ENDPOINT_ALLOWLIST` when that is set. For each visitor message there are at most three calls. The same pipeline serves the widget and every chat channel.
+
+| Call | When | What it contains |
+|------|------|------------------|
+| Topic routing | The bot has two or more topics, and isn't partway through collecting details for one | Routing instructions; each topic's name and description; the current topic's name; the last `LATEST_N_MESSAGES` (default 3) exchanges of this conversation; the visitor's message |
+| Detail extraction | The topic collects details (slots) | The visitor's message, and the name, description and type of each detail to extract |
+| Answer | Always, except when a knowledge topic finds no passage above the threshold (then a fixed reply, no call) | The answer template (the topic's, else the bot's) filled with: the visitor's message; the details collected so far; the last `LATEST_N_MESSAGES` exchanges in this topic; for knowledge topics, up to the bot's *Top K* (default 5) passages from its documents that score at least its *Embedding threshold* |
+
+Questions that ask for a missing detail come from templates and make no call.
+
+**Other calls:**
+
+- **Form-alert summary**, only when the bot's alerts are set to the full alert (new bots default to link-only, which makes no call): this conversation's messages and the summary instructions. The submitted form's field values are left out.
+- **Sentiment and intent**, only when *Analyse conversations* is on: one call per visitor message, containing that message (its first 2,000 characters) and the classifier instructions.
+- **Embeddings** run inside the deployment by default. With `EMBEDDING_PROVIDER=openai`, every document chunk and every search query is sent to `OPENAI_BASE_URL`. The re-ranker always runs locally.
+
+**Never sent:** the visitor's name, email, phone, IP address or location; the values of submitted forms; files visitors attach; other conversations; other bots' documents; API keys. LangSmith tracing stays off unless `ALLOW_LANGSMITH_TRACING=true`.
+
+## What the logs contain
+
+- **Never:** message text, form values, passwords, tokens, cookies or API keys.
+- **Email addresses** are masked in every log line as `<email:1a2b3c4d at corp.example>`. That's a short SHA-256 hash of the lower-cased address plus its domain, so lines about the same person still match. To find someone, hash their address the same way.
+- **Admins and invites** are named by id (`adm-…`, `pend-…`). Failed sign-ins name the sign-in provider and the user's subject id there.
+- **The audit log** records who did what, with ids. A visitor's rating is recorded as the score only.
+- **`last_login_at`** is updated at sign-in only, not on every request.
 
 ## Architecture
 

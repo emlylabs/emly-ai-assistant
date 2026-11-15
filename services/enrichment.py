@@ -28,6 +28,7 @@ config/model decisions per-bot rather than per-call.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -35,7 +36,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -124,18 +125,26 @@ User message:
 """
 
 
-_LLM_CACHE: Dict[str, Any] = {}
+# bot_id -> (settings fingerprint, client). N9: the fingerprint covers the
+# model, endpoint and API key, so a change to any of them (config save,
+# key rotation, allowlist or env change) builds a fresh client.
+_LLM_CACHE: Dict[str, Tuple[str, Any]] = {}
+
+
+def _fingerprint(settings) -> str:
+    key_hash = hashlib.sha256((settings.api_key or "").encode()).hexdigest()
+    return "\x1f".join((settings.model or "", settings.endpoint or "", key_hash))
 
 
 def _build_llm_for_bot(bot_id: str):
-    """Construct (and cache) a ChatOpenAI client for the bot's config.
+    """A ChatOpenAI client for the bot's current LLM settings.
 
     We don't reuse the agent's per-bot runtime because that's keyed by
     `(bot, user, session)` and may TTL out under conversation load. The
-    enrichment worker holds its own simple cache keyed by bot_id.
+    settings are resolved on every call (one row read and a decrypt,
+    small next to the model call); the client is reused while they stay
+    the same.
     """
-    if bot_id in _LLM_CACHE:
-        return _LLM_CACHE[bot_id]
     try:
         from langchain_openai import ChatOpenAI
 
@@ -144,19 +153,22 @@ def _build_llm_for_bot(bot_id: str):
 
         bot = Bots.get_by_id(bot_id)
         if bot is None:
+            _LLM_CACHE.pop(bot_id, None)
             return None
-        cfg = dict(bot.config_json or {})
-        # Allow opting into a cheaper enrichment model than the chat model.
-        settings = llm_settings.resolve(
-            bot_id, cfg.get("llm") or {}, model_override=cfg.get("enrichment_model")
-        )
+        llm_cfg = (bot.config_json or {}).get("llm")
+        settings = llm_settings.resolve(bot_id, llm_cfg if isinstance(llm_cfg, dict) else {})
         if settings.missing:
             # Not cached: the admin may finish setting the bot up later.
+            _LLM_CACHE.pop(bot_id, None)
             log.debug("enrichment: LLM not configured for bot=%s (missing %s)", bot_id, settings.missing)
             return None
+        fp = _fingerprint(settings)
+        cached = _LLM_CACHE.get(bot_id)
+        if cached is not None and cached[0] == fp:
+            return cached[1]
         kwargs: Dict[str, Any] = {**settings.chat_kwargs(), "temperature": 0.0, "timeout": 20, "max_retries": 1}
         llm = ChatOpenAI(**kwargs)
-        _LLM_CACHE[bot_id] = llm
+        _LLM_CACHE[bot_id] = (fp, llm)
         return llm
     except Exception:
         log.debug("enrichment: failed to construct LLM for bot=%s", bot_id, exc_info=True)

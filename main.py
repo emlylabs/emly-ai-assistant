@@ -7,7 +7,12 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+# G2c: before anything imports LangChain. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing
+
+disable_unapproved_tracing()
+
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from routes import (
@@ -168,6 +173,18 @@ def _init_embedded_issuer() -> None:
         )
 
 
+def _log_llm_endpoint_policy() -> None:
+    """G2a: say at boot whether model traffic is restricted, and flag a
+    deployment default endpoint that the allowlist itself blocks."""
+    from services.llm_settings import ALLOWLIST_ENV, endpoint_allowlist, endpoint_policy_warnings
+
+    entries = endpoint_allowlist()
+    if entries is not None:
+        log.info("%s: model traffic limited to %d approved endpoint(s)", ALLOWLIST_ENV, len(entries))
+    for w in endpoint_policy_warnings():
+        log.warning(w["message"])
+
+
 def _bootstrap_pending_superadmin() -> None:
     """Pre-stage the first admin from ``AUTH_BOOTSTRAP_SUPERADMIN_EMAIL``.
     See ``services.auth.bootstrap`` — a generated temporary password is
@@ -182,6 +199,7 @@ _assert_runtime_topology()
 from services.secrets import validate_configuration as _validate_secrets_key  # noqa: E402
 _validate_secrets_key()
 _init_embedded_issuer()
+_log_llm_endpoint_policy()
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
@@ -208,9 +226,10 @@ def _register_channel_adapters() -> None:
 _register_channel_adapters()
 
 
-# Validate every bot's config_json against the current Pydantic schema
-# at boot. A bot whose config is unparseable is a deploy bug, not a
-# runtime fallback — fail fast in CI/CD.
+# Load every bot's config_json under the current schema at boot. N4: a
+# bot whose config doesn't load is logged and listed on /api/readyz, and
+# answers "not configured" until fixed; it no longer stops the other
+# bots. Only a failure to list the bots at all stops start-up.
 try:
     from services.bot_config import boot_validate_all_configs
     boot_validate_all_configs()
@@ -367,9 +386,19 @@ if is_local_issuer_enabled():
 # like ``GET /widget/{bot_id}/config`` and ``POST /widget/{bot_id}/action``.
 app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=False)
 app.add_middleware(CustomMiddleware)
+# G13c: hard cap on widget request bodies, counted as bytes arrive. Inside
+# the CORS layers so the widget can read the 413.
+from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
+app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
-from services.audit import AuditRequestContextMiddleware  # noqa: E402
+from services.audit import AuditRequestContextMiddleware, AuditUnavailable  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)
+
+
+@app.exception_handler(AuditUnavailable)
+async def _audit_unavailable(request: Request, exc: AuditUnavailable):
+    # Q-G5a: a security event couldn't be audited, so the request fails.
+    return JSONResponse(status_code=503, content={"detail": {"code": "audit_unavailable"}})
 # CSRF: cookie-authenticated mutating requests must carry an Origin from the
 # trusted-list. Bearer-only callers (no cookie) bypass — without ambient
 # credentials there's no CSRF surface. Mounted before CORS so the response
@@ -618,6 +647,29 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
             "message": "Multi-worker deploy with SQLite — expect write contention. Use Postgres for production.",
         })
 
+    from services.llm_settings import endpoint_policy_warnings
+
+    out.extend(endpoint_policy_warnings())
+
+    from services.audit import audit_write_failures
+
+    failures = audit_write_failures()
+    if failures:
+        out.append({
+            "code": "audit_write_failures",
+            "message": f"{failures} audit log write(s) failed since start-up. Check the database and "
+                       "the AUDIT WRITE FAILED lines in the logs.",
+        })
+
+    from services.bot_config import invalid_bot_configs
+
+    broken = invalid_bot_configs()
+    if broken:
+        out.append({
+            "code": "bot_config_invalid",
+            "message": f"{len(broken)} bot(s) have a config that can't be loaded and won't answer until an "
+                       f"admin saves a valid one: {', '.join(sorted(broken))}. See the start-up log.",
+        })
     return out
 
 
