@@ -153,6 +153,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUDIT_RETENTION_DAYS`, `WEBHOOK_DEDUPE_RETENTION_HOURS` | `365` and `24` (defaults), or your policy | Nightly cleanup |
 | `AUDIT_FAIL_CLOSED` | Leave unset (on in prod) | Security actions fail with 503 rather than happen unaudited when the audit log can't be written |
 | `AUDIT_DATA_ACCESS` | `true` if you must show who read which conversation | Records each admin's reads of conversations and visitor details |
+| `AUDIT_LOG_STDOUT` | `true`, and ship container stdout to your SIEM | The audit table can be edited by anyone with database access; the shipped copy can't |
 | Backups | Database, search index, `DATA_DIR` and the secrets key | See [Backup and restore](#backup-and-restore) |
 
 **Network and channels**
@@ -203,6 +204,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
 | `AUDIT_FAIL_CLOSED` | When an audit row for a sign-in, permission, configuration or other security event can't be written, fail the request with 503 instead of carrying on. Changes made before the audit write may already be saved. Background jobs only log | `true` when `MODE=prod`, else `false` |
 | `AUDIT_DATA_ACCESS` | Record a `data.read` audit row when an admin lists or opens conversations, messages or visitor details: who, which bot, which session, message or visitor, the route, and which filters a list used (`search` when the text search was used, never the search text or any content). One row per admin, bot and target per 10 minutes, per process. When on, these rows follow `AUDIT_FAIL_CLOSED` | `false` |
+| `AUDIT_LOG_STDOUT` | Also write every audit event as one JSON line on standard output: `{"type":"emly.audit","ts":…,"id":…,"stored":true,"action":…,"success":…,"admin_id":…,"bot_id":…,"target_type":…,"target_id":…,"ip":…,"ua":…,"payload":{…}}`. Collect container output with your log pipeline and keep these lines in your SIEM, where nobody with access to the app's database can change them. The line is written even when the database row couldn't be (`"stored":false`). Same content as the audit table, so it contains admin and invitee email addresses | `false` |
 | `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
 | `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
@@ -856,6 +858,7 @@ Questions that ask for a missing detail come from templates and make no call.
 - **Admins and invites** are named by id (`adm-…`, `pend-…`). Failed sign-ins name the sign-in provider and the user's subject id there.
 - **The audit log** records who did what, with ids. A visitor's rating is recorded as the score only.
 - **`last_login_at`** is updated at sign-in only, not on every request.
+- **Exception: `AUDIT_LOG_STDOUT`.** When on, audit events also go to standard output as JSON lines (`"type":"emly.audit"`) with the same content as the audit table, unmasked, including admin and invitee email addresses. Route them to your SIEM rather than a general log store.
 
 ## Outbound connections
 

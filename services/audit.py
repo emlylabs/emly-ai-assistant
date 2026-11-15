@@ -117,7 +117,9 @@ def audit(
     ua: Optional[str] = None,
     success: bool = True,
 ) -> None:
-    """Record a single audit event. Never raises — logs and returns on error."""
+    """Record a single audit event. Never raises — logs and returns on error
+    (except ``AuditUnavailable`` when fail-closed applies)."""
+    row_id = None
     try:
         from models.admin_audit_log import AdminAuditLogs
         ctx_ip, ctx_ua = _request_meta.get() or (None, None)
@@ -125,7 +127,7 @@ def audit(
             ip = _client_ip(request) if request is not None else ctx_ip
         if ua is None:
             ua = _client_ua(request) if request is not None else ctx_ua
-        AdminAuditLogs.insert(
+        row_id = AdminAuditLogs.insert(
             admin_id=admin_id,
             bot_id=bot_id,
             action=action,
@@ -146,8 +148,61 @@ def audit(
             _WRITE_FAILURES += 1
         log.error("AUDIT WRITE FAILED: action=%s admin=%s bot=%s error=%s",
                   action, admin_id, bot_id, type(exc).__name__)
+        _emit_stdout(None, action, admin_id, bot_id, target_type, target_id, payload, ip, ua, success)
         if fails_closed(action):
             raise AuditUnavailable(action) from None
+        return
+    _emit_stdout(row_id, action, admin_id, bot_id, target_type, target_id, payload, ip, ua, success)
+
+
+# -------- SIEM copy on stdout (Q-G5b) --------
+
+# The audit table is an ordinary table: anyone with database access can
+# change or delete rows. AUDIT_LOG_STDOUT=true also writes every event as
+# one JSON line on standard output, where the container platform's log
+# collector ships it to the customer's SIEM, out of the app's reach.
+STDOUT_ENV = "AUDIT_LOG_STDOUT"
+_STDOUT_LOCK = threading.Lock()
+
+
+def stdout_enabled() -> bool:
+    from utils.runtime import env_flag
+
+    return env_flag(STDOUT_ENV, default=False)
+
+
+def _emit_stdout(row_id, action, admin_id, bot_id, target_type, target_id, payload, ip, ua,
+                 success) -> None:
+    """One JSON line per event, written straight to stdout (not through
+    logging, whose filters would rewrite it). ``stored`` says whether the
+    database row was written. Never raises."""
+    if not stdout_enabled():
+        return
+    try:
+        import json
+        import sys
+        from datetime import datetime, timezone
+
+        line = json.dumps({
+            "type": "emly.audit",
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "id": row_id,
+            "stored": row_id is not None,
+            "action": action,
+            "success": success,
+            "admin_id": admin_id,
+            "bot_id": bot_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "ip": ip,
+            "ua": ua[:512] if ua else None,
+            "payload": payload,
+        }, default=str, separators=(",", ":"))
+        with _STDOUT_LOCK:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+    except Exception:
+        log.error("AUDIT STDOUT WRITE FAILED: action=%s", action)
 
 
 # -------- fail closed (Q-G5a) --------
