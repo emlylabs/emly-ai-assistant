@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useBot } from "@/components/BotShell";
 import Modal from "@/components/Modal";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, DataRecipientRow, api } from "@/lib/api";
 import { isValidSlug } from "@/lib/slugify";
 
 type SlugCheck =
@@ -14,6 +14,68 @@ type SlugCheck =
   | { status: "invalid" }
   | { status: "taken" }
   | { status: "error"; message: string };
+
+/** G2g: read-only list of where this bot's data goes. */
+function DataRecipientsCard({ slug }: { slug: string }) {
+  const [rows, setRows] = useState<DataRecipientRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getBotDataRecipients(slug)
+      .then((r) => !cancelled && setRows(r))
+      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load"));
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0 }}>Where this bot&rsquo;s data goes</h2>
+      <p className="muted" style={{ marginTop: 4, fontSize: 13 }}>
+        Every system outside this server that receives this bot&rsquo;s
+        questions, answers, documents or visitor details, from its current
+        settings. Hosts only.
+      </p>
+      {error && <div className="error">{error}</div>}
+      {!rows && !error && <p className="muted">Loading…</p>}
+      {rows && (
+        <table className="table" style={{ width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left" }}>What</th>
+              <th style={{ textAlign: "left" }}>Goes to</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.what}>
+                <td style={{ verticalAlign: "top" }}>
+                  <strong>{r.what}</strong>
+                  {r.detail && (
+                    <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                      {r.detail}
+                    </div>
+                  )}
+                </td>
+                <td style={{ verticalAlign: "top", wordBreak: "break-word" }}>
+                  <code>{r.destination}</code>
+                </td>
+                <td style={{ verticalAlign: "top", textAlign: "right" }}>
+                  {r.scope === "external" && <span className="pill pill-warn">Outside your network</span>}
+                  {r.scope === "internal" && <span className="pill pill-success">Your network</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 export default function BotSettingsPage() {
   const { bot, currentRole, refreshBot } = useBot();
@@ -298,6 +360,8 @@ export default function BotSettingsPage() {
           </div>
         </form>
       </div>
+
+      <DataRecipientsCard slug={bot.slug} />
 
       {canWrite && (
         <div className="card">

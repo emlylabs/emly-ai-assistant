@@ -35,6 +35,7 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
+from services.data_recipients import coerce_email_list
 from services.upload_types import UploadRejected, check_upload
 from services.widget_icons import is_icon_allowed
 from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
@@ -736,19 +737,10 @@ def _resolve_alert_trigger(
                 continue
             trigger = body.get("trigger") or {}
             return (
-                _coerce_email_list(trigger.get("alert_emails")),
+                coerce_email_list(trigger.get("alert_emails")),
                 str(trigger.get("analysis_prompt") or ""),
             )
     return [], ""
-
-
-def _coerce_email_list(value: Any) -> List[str]:
-    """Normalize ``alert_emails`` (list | comma-string | None) to a clean list."""
-    if isinstance(value, list):
-        return [s.strip() for s in value if isinstance(s, str) and s.strip()]
-    if isinstance(value, str):
-        return [s.strip() for s in value.split(",") if s.strip()]
-    return []
 
 
 async def _get_or_create_widget_user(

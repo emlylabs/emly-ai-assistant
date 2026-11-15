@@ -13,6 +13,15 @@
 // cookie either lands on return or the IdP routes the user to
 // "Request access" / "Email not verified" pages.
 
+/** G2g: one row of a bot's "Where this bot's data goes" panel. */
+export type DataRecipientRow = {
+  what: string;
+  destination: string;
+  detail: string;
+  /** "internal": inside your network; "external": outside it; null: nothing leaves. */
+  scope: "internal" | "external" | null;
+};
+
 export type AdminUser = {
   id: string;
   email: string;
@@ -1473,6 +1482,11 @@ export const api = {
     request<{ erased: Record<string, number> }>(
       "DELETE",
       `/bots/${encodeURIComponent(slug)}/end-users/${encodeURIComponent(userId)}`
+    ),
+  getBotDataRecipients: (slug: string) =>
+    request<DataRecipientRow[]>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/data-recipients`
     ),
   getBotConfig: (slug: string) =>
     request<BotConfigResponse>(

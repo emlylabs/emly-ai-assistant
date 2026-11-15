@@ -861,6 +861,8 @@ These are the only places the backend opens a connection to another system, besi
 
 At start-up the app logs an "Outbound destinations" block naming, by host only, what this deployment is configured to use: the default model endpoint and every endpoint a bot has set, embeddings, Qdrant, the mail server, the identity provider, connected chat platforms, Hugging Face downloads and LangSmith.
 
+For one bot, its *Settings* page shows the same as "Where this bot's data goes" (`GET /api/admin/bots/{slug}/data-recipients`, any member): the model endpoint its answers, alert summaries and classification use, embeddings, the search index, each connected chat platform, the form alert recipients with what alerts contain, and LangSmith when allowed. Each row is marked as inside or outside your network (by address or internal name; no DNS lookup).
+
 | Destination | When | Code |
 |-------------|------|------|
 | The bot's model endpoint (or `OPENAI_BASE_URL`) | Answers, routing and detail extraction; enrichment when *Analyse conversations* is on; alert summaries for full alerts. See [What the model sees](#what-the-model-sees). | `agents/conversation_agent.py`, `services/enrichment.py`, `services/widget_email.py` |

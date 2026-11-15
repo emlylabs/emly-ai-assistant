@@ -1890,3 +1890,24 @@ def export_bot_analytics(
             yield [u.model, u.turns, u.prompt_tokens, u.completion_tokens, u.cost_usd]
 
     return csv_download(csv_lines(rows()), f"analytics-{bot.slug}")
+
+
+# ---------------------------------------------------------------------------
+# G2g: where this bot's data goes
+# ---------------------------------------------------------------------------
+class DataRecipientRow(BaseModel):
+    what: str
+    destination: str
+    detail: str = ""
+    # "internal": inside your network; "external": outside it; None: nothing leaves.
+    scope: Optional[str] = None
+
+
+@router.get("/bots/{slug}/data-recipients", response_model=List[DataRecipientRow])
+def bot_data_recipients(slug: str, admin: AdminUserModel = Depends(get_admin)):
+    """Hosts that receive this bot's data, from its live config. Read-only."""
+    from services.data_recipients import for_bot
+
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    return [DataRecipientRow(**row) for row in for_bot(bot.id)]
