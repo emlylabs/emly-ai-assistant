@@ -13,6 +13,7 @@ import traceback
 from typing import Any, Optional
 
 from agents.conversation_agent import ConversationSessionManager, setup_agent
+from services.bot_config import BotConfigInvalid
 from services.llm_settings import NOT_CONFIGURED_REPLY, LLMNotConfigured
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,11 @@ class AgentService:
             # nothing about why; the admin UI shows what is missing.
             logger.warning("Bot %s can't answer: LLM not configured (missing %s)",
                            bot_id, ", ".join(exc.missing))
+            return self._canned_reply(NOT_CONFIGURED_REPLY, stream)
+        except BotConfigInvalid as exc:
+            # N4: the stored config doesn't load. Same reply; the admin
+            # sees the problem on /api/readyz and in the start-up log.
+            logger.warning("Bot %s can't answer: config can't be loaded (%s)", bot_id, exc.problems)
             return self._canned_reply(NOT_CONFIGURED_REPLY, stream)
 
         if not len(agent_handler.topics) >= 1:

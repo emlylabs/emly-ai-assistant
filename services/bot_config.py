@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from models.bots import Bots
 from services.secrets import decrypt, encrypt
@@ -193,11 +193,40 @@ def parse_raw_config(raw: Dict[str, Any], schema_version: int = CURRENT_CONFIG_S
     return BotConfig.model_validate(_upgrade(raw))
 
 
+class BotConfigInvalid(ValueError):
+    """N4: a stored config that no longer loads under the current schema.
+
+    The message names the failing fields and error types only, never the
+    stored values (prompts, emails and other config content)."""
+
+    def __init__(self, bot_id: str, problems: str):
+        self.bot_id = bot_id
+        self.problems = problems
+        super().__init__(f"config for bot {bot_id} can't be loaded: {problems}")
+
+
+def describe_config_error(exc: BaseException) -> str:
+    """Field paths and error types of a config parse failure, no values."""
+    if isinstance(exc, ValidationError):
+        parts = [
+            f"{'.'.join(str(p) for p in e.get('loc', ())) or '(root)'}: {e.get('type', 'invalid')}"
+            for e in exc.errors(include_input=False, include_url=False)
+        ]
+        more = f" (+{len(parts) - 5} more)" if len(parts) > 5 else ""
+        return "; ".join(parts[:5]) + more
+    return type(exc).__name__
+
+
 def get_config_for_bot(bot_id: str) -> BotConfig:
+    """The bot's live config. Raises ``LookupError`` for an unknown bot
+    and ``BotConfigInvalid`` when the stored config doesn't load."""
     bot = Bots.get_by_id(bot_id)
     if bot is None:
         raise LookupError(f"bot not found: {bot_id}")
-    return parse_raw_config(bot.config_json or {}, bot.config_schema_version or 1)
+    try:
+        return parse_raw_config(bot.config_json or {}, bot.config_schema_version or 1)
+    except ValidationError as exc:
+        raise BotConfigInvalid(bot_id, describe_config_error(exc)) from None
 
 
 def save_config_for_bot(
@@ -261,30 +290,66 @@ def set_api_key(bot_id: str, api_key: Optional[str]) -> bool:
     return Bots.update_api_key(bot_id, encrypt(api_key))
 
 
-def boot_validate_all_configs() -> None:
-    """Walk every active bot's config through the version chain at boot.
+# bot_id -> problem summary, for bots whose config failed to load at boot.
+_INVALID_AT_BOOT: Dict[str, str] = {}
 
-    Fail-fast: a bot whose config can't be loaded under the current schema
-    is a deploy-time bug, not a runtime fallback. Better to refuse to boot
-    than serve a stale or unparseable config silently.
+
+def boot_validate_all_configs() -> Dict[str, str]:
+    """Load every active bot's config at boot and report the ones that fail.
+
+    N4: this used to re-raise, so one bot with an unloadable config (a
+    bad template, a hand-edited row, a schema change without an upgrade
+    step) stopped the whole app, every other bot included. Now each
+    failure is logged at ERROR and listed on ``/api/readyz``; the bot
+    answers with the "not configured" reply until an admin saves a
+    valid config. Returns ``{bot_id: problems}``.
     """
+    _INVALID_AT_BOOT.clear()
     for bot in Bots.list_active():
         try:
             get_config_for_bot(bot.id)
+        except BotConfigInvalid as exc:
+            _INVALID_AT_BOOT[bot.id] = exc.problems
+        except LookupError:
+            continue
+        except Exception as exc:  # an upgrade step that crashed
+            _INVALID_AT_BOOT[bot.id] = type(exc).__name__
+    for bot_id, problems in _INVALID_AT_BOOT.items():
+        log.error("Bot %s config can't be loaded under schema v%s (%s); it won't answer until "
+                  "an admin saves a valid config", bot_id, CURRENT_CONFIG_SCHEMA_VERSION, problems)
+    return dict(_INVALID_AT_BOOT)
+
+
+def invalid_bot_configs() -> Dict[str, str]:
+    """Bots found unloadable at boot that still don't load (for readyz).
+    A bot drops off once its config is fixed or the bot is removed."""
+    still: Dict[str, str] = {}
+    for bot_id, problems in list(_INVALID_AT_BOOT.items()):
+        try:
+            get_config_for_bot(bot_id)
+        except BotConfigInvalid as exc:
+            still[bot_id] = exc.problems
+            continue
+        except LookupError:
+            pass
         except Exception:
-            log.exception("Bot %s has an unparseable config_json under schema v%s",
-                          bot.id, CURRENT_CONFIG_SCHEMA_VERSION)
-            raise
+            still[bot_id] = problems
+            continue
+        _INVALID_AT_BOOT.pop(bot_id, None)
+    return still
 
 
 __all__ = [
     "BotConfig",
+    "BotConfigInvalid",
     "CFormEntry",
     "LLMConfig",
     "LimitsConfig",
     "RAGConfig",
     "CURRENT_CONFIG_SCHEMA_VERSION",
     "boot_validate_all_configs",
+    "describe_config_error",
+    "invalid_bot_configs",
     "discard_draft_for_bot",
     "get_config_for_bot",
     "get_decrypted_api_key",

@@ -29,6 +29,7 @@ from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
 from services.bot_config import (
+    BotConfigInvalid,
     discard_draft_for_bot,
     get_config_for_bot,
     get_draft_for_bot,
@@ -1188,6 +1189,11 @@ class ConfigResponse(BaseModel):
     last_updated_by_admin_email: Optional[str] = None
     last_updated_at: Optional[datetime] = None
     draft: Optional["DraftBlock"] = None
+    # N4: set when the stored config doesn't load under the current
+    # schema. ``config`` is then the stored JSON as is, so the editor can
+    # open it and an admin can save a fixed version. Field paths and error
+    # types only, no values.
+    load_error: Optional[str] = None
 
 
 class DraftBlock(BaseModel):
@@ -1201,7 +1207,12 @@ ConfigResponse.model_rebuild()
 
 
 def _build_config_response(bot: BotModel) -> ConfigResponse:
-    cfg = get_config_for_bot(bot.id)
+    load_error: Optional[str] = None
+    try:
+        config = get_config_for_bot(bot.id).model_dump(mode="json")
+    except BotConfigInvalid as exc:
+        config = dict(bot.config_json or {})
+        load_error = exc.problems
     draft_block: Optional[DraftBlock] = None
     if bot.config_draft_json:
         draft_email: Optional[str] = None
@@ -1218,7 +1229,8 @@ def _build_config_response(bot: BotModel) -> ConfigResponse:
             updated_by_admin_email=draft_email,
         )
     return ConfigResponse(
-        config=cfg.model_dump(mode="json"),
+        config=config,
+        load_error=load_error,
         config_version=bot.config_version,
         last_updated_by_admin_id=bot.last_updated_by_admin_id,
         last_updated_by_admin_email=bot.last_updated_by_admin_email,

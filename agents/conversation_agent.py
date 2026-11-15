@@ -51,7 +51,7 @@ from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
 from agents.rag_manager import get_rag_manager
-from services.bot_config import get_config_for_bot
+from services.bot_config import BotConfigInvalid, get_config_for_bot
 from cachetools import TTLCache
 from utils.utils import clean_template_string, get_filtered_citations, filter_citations
 
@@ -1256,6 +1256,8 @@ def create_config(bot_id: str) -> Dict[str, Any]:
 
         return config
 
+    except BotConfigInvalid:
+        raise  # N4: handled by AgentService as "not configured"
     except Exception:
         log.exception("Error creating config")
         raise

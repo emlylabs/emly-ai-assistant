@@ -70,6 +70,8 @@ export default function BotConfigPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ current: number; expected: number } | null>(null);
+  // N4: the stored config doesn't load; the bot isn't answering.
+  const [loadError, setLoadError] = useState<string | null>(null);
   // 422 from save/publish: the server validator found errors. Holds the
   // issue list (so we can render it inline with tab-jump links) plus the
   // gate type — "save" allows a force-override, "publish" does not.
@@ -101,6 +103,7 @@ export default function BotConfigPage() {
 
   const applyResponse = useCallback((res: BotConfigResponse) => {
     const live = (res.config ?? {}) as Cfg;
+    setLoadError(res.load_error ?? null);
     setSavedConfig(live);
     setVersion(res.config_version);
     setLastSavedBy(
@@ -549,6 +552,14 @@ export default function BotConfigPage() {
           <button className="ghost" onClick={load} style={{ marginLeft: 8 }}>
             Reload to see latest
           </button>
+        </div>
+      )}
+
+      {loadError && (
+        <div className="banner warning" role="alert">
+          <strong>This assistant isn&apos;t answering.</strong> Its saved config can&apos;t be
+          loaded ({loadError}). Fix these fields and save, or restore an earlier version from
+          History. Until then visitors are told it isn&apos;t available right now.
         </div>
       )}
 

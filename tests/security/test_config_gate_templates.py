@@ -2,8 +2,8 @@
 
 Workspace templates, duplicates and built-in templates used to store
 ``config_json`` unvalidated. ``BotConfig`` forbids unknown keys and
-``boot_validate_all_configs`` re-raises, so one bad config stopped the
-app from starting. Duplicates and workspace-template bots always hit
+``boot_validate_all_configs`` re-raised, so one bad config stopped the
+app from starting (N4 now reports it instead). Duplicates and workspace-template bots always hit
 this: they were stamped with a legacy ``agent_config`` block.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ BAD_COLOUR = {"widget": {"theme": {"header_background": "nope"}}}
 def _drop_created_rows(isolated_db):
     """``isolated_db`` doesn't wipe bots or templates. The legacy rows
     these tests insert can't load, so a later test that boots ``main``
-    would fail boot validation on them."""
+    would report them as broken bots."""
     from models.bots import Bot
     from models.workspace_bot_templates import WorkspaceBotTemplate
 

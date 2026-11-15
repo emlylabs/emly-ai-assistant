@@ -226,9 +226,10 @@ def _register_channel_adapters() -> None:
 _register_channel_adapters()
 
 
-# Validate every bot's config_json against the current Pydantic schema
-# at boot. A bot whose config is unparseable is a deploy bug, not a
-# runtime fallback — fail fast in CI/CD.
+# Load every bot's config_json under the current schema at boot. N4: a
+# bot whose config doesn't load is logged and listed on /api/readyz, and
+# answers "not configured" until fixed; it no longer stops the other
+# bots. Only a failure to list the bots at all stops start-up.
 try:
     from services.bot_config import boot_validate_all_configs
     boot_validate_all_configs()
@@ -658,6 +659,16 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
             "code": "audit_write_failures",
             "message": f"{failures} audit log write(s) failed since start-up. Check the database and "
                        "the AUDIT WRITE FAILED lines in the logs.",
+        })
+
+    from services.bot_config import invalid_bot_configs
+
+    broken = invalid_bot_configs()
+    if broken:
+        out.append({
+            "code": "bot_config_invalid",
+            "message": f"{len(broken)} bot(s) have a config that can't be loaded and won't answer until an "
+                       f"admin saves a valid one: {', '.join(sorted(broken))}. See the start-up log.",
         })
     return out
 

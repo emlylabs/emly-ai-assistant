@@ -743,7 +743,7 @@ Back these up together, from the same moment where possible:
 2. Start Postgres and restore: `docker compose exec -T postgres pg_restore -U emly -d emly --clean --if-exists < emly.dump`.
 3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
 4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
-5. Start the app. Boot runs any pending migrations and checks every bot's config. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
+5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and on `/api/readyz`, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
 
 Test the restore on a separate host before you rely on it.
 

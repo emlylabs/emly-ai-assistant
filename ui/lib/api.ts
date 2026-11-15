@@ -381,6 +381,10 @@ export type BotConfigResponse = {
   last_updated_by_admin_email: string | null;
   last_updated_at: string | null;
   draft: ConfigDraft | null;
+  /** Set when the stored config doesn't load under the current schema:
+   * field paths and error types. The bot answers "not configured"
+   * until a valid config is saved. */
+  load_error?: string | null;
 };
 
 /** One row of `GET /api/admin/bots/summary` — Phase 5 workspace overview. */
