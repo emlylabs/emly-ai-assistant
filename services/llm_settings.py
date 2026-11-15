@@ -205,8 +205,6 @@ def _bot_llm_config(bot_id: str) -> Mapping[str, Any]:
 def resolve(
     bot_id: Optional[str],
     llm_cfg: Optional[Mapping[str, Any]] = None,
-    *,
-    model_override: Optional[str] = None,
 ) -> LLMSettings:
     """Settings for ``bot_id``. ``llm_cfg`` is the bot's ``llm`` config
     block; it is loaded from the live config when not given."""
@@ -223,7 +221,7 @@ def resolve(
                     endpoint_host(endpoint), bot_id, ALLOWLIST_ENV)
         endpoint = None
     return LLMSettings(
-        model=_clean(model_override) or _clean(llm_cfg.get("model")) or deployment_model(),
+        model=_clean(llm_cfg.get("model")) or deployment_model(),
         endpoint=endpoint,
         api_key=api_key or deployment_api_key(),
     )
@@ -232,11 +230,9 @@ def resolve(
 def require(
     bot_id: Optional[str],
     llm_cfg: Optional[Mapping[str, Any]] = None,
-    *,
-    model_override: Optional[str] = None,
 ) -> LLMSettings:
     """Like ``resolve`` but raises ``LLMNotConfigured`` if anything is missing."""
-    settings = resolve(bot_id, llm_cfg, model_override=model_override)
+    settings = resolve(bot_id, llm_cfg)
     if settings.missing:
         raise LLMNotConfigured(bot_id, settings.missing)
     return settings
