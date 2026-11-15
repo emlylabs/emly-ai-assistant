@@ -117,7 +117,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | `12` or more | Applies when built-in sign-in is used; the first sign-in must replace the bootstrap password |
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in |
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS`, `AUTH_OIDC_EMAIL_CLAIMS`, `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Per your IdP (see [SSO](#external-identity-provider-sso)) | Keep `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` `false`; for Entra ID set `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS=upn` instead |
-| `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | `mfa` for Entra ID and Okta | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
+| `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | The value your IdP sends after MFA, e.g. `mfa` ([check first](#identity-provider-setup)) | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
 | `AUTH_SESSION_MAX_AGE_SECONDS` | `43200` (12 h, the prod default) or your policy | Admin sessions end a fixed time after sign-in instead of refreshing for as long as a tab is open |
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
@@ -155,6 +155,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 **Network and channels**
 
+- **TLS:** the app serves plain HTTP on port 8080, and the compose file publishes it on every interface. In production put a TLS-terminating reverse proxy or load balancer in front (Caddy, nginx, Traefik, or your cloud's), publish only the proxy, and bind the app's port to the proxy's network (e.g. `"127.0.0.1:8080:8080"` when the proxy runs on the host). Set `APP_BASE_URL` and `PUBLIC_BASE_URL` to the `https://` URL, which turns on HSTS and `Secure` cookies, and set `FORWARDED_ALLOW_IPS` to the proxy's address. TLS to Postgres and Qdrant: see below.
 - Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
 - A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and on `/api/readyz`.
 - Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and on `/api/readyz`.
@@ -716,7 +717,7 @@ Provider-specific settings:
 |----------|-------------|---------|
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS` | Add `offline_access` to the requested scopes so the IdP issues a refresh token and sessions renew silently. **Google:** set `false`. Sessions then last until the ID token expires and admins sign in again (usually silently, through Google's own session) | `true` |
 | `AUTH_OIDC_EMAIL_CLAIMS` | Comma-separated token claims to read the admin's email from, first match wins. Only values containing `@` are used. **Entra ID** often omits `email`: use `email,upn` | `email` |
-| `AUTH_OIDC_REQUIRED_AMR` | Require multi-factor sign-in: comma-separated methods, at least one of which must be in the ID token's `amr` claim, e.g. `mfa`. A sign-in without one is refused with "Multi-factor sign-in required" and audited as `auth.login_failed` (`reason: mfa_required`). Checked at sign-in, not on every request. **Entra ID** and **Okta** put `mfa` in `amr` after a second factor. **Google** doesn't send a reliable `amr`: enforce 2-step verification in the Google Admin console instead | unset |
+| `AUTH_OIDC_REQUIRED_AMR` | Require multi-factor sign-in: comma-separated methods, at least one of which must be in the ID token's `amr` claim, e.g. `mfa`. A sign-in without one is refused with "Multi-factor sign-in required" and audited as `auth.login_failed` (`reason: mfa_required`). Checked at sign-in, not on every request. Before turning it on, sign in once with MFA and check what your IdP puts in the ID token's `amr` (Okta, for example, sends `mfa`; see [Identity provider setup](#identity-provider-setup)). **Google** doesn't send a reliable `amr`: enforce 2-step verification in the Google Admin console instead | unset |
 | `AUTH_OIDC_REQUIRED_ACR` | Accepted `acr` values (comma-separated), for IdPs that express the level that way. Also sent to the IdP as `acr_values` so it asks for the second factor up front | unset |
 | `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS` | Claims whose address counts as verified even without `email_verified`, comma-separated. Each must also be in `AUTH_OIDC_EMAIL_CLAIMS`. **Single-tenant Entra ID:** `upn`, since the tenant owns every UPN domain. Prefer this to trusting every claim | unset |
 | `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Treat every email the IdP sends as verified. An address taken from a fallback claim (`upn`, `preferred_username`) counts as **unverified** otherwise, and pending invites aren't activated for unverified addresses. Set `true` only for an IdP whose directory you control. `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS` is the narrower choice | `false` |
@@ -728,7 +729,6 @@ AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false
 # Microsoft Entra ID (single tenant)
 AUTH_OIDC_EMAIL_CLAIMS=email,upn
 AUTH_OIDC_TRUSTED_EMAIL_CLAIMS=upn
-AUTH_OIDC_REQUIRED_AMR=mfa
 ```
 
 `AUTH_OIDC_REQUIRED_ACR` and `AUTH_OIDC_REQUIRED_AMR` need an external IdP: with the built-in sign-in, which is password-only, the app refuses to start.
@@ -745,6 +745,33 @@ curl -X POST https://emly.yourdomain.com/api/admin/admins/pending \
   -H "Content-Type: application/json" \
   -d '{"email": "alice@example.com"}'
 ```
+
+### Identity provider setup
+
+For every IdP: register a web application (confidential client) with the redirect URI `https://<your APP_BASE_URL>/api/admin/auth/callback`, and request the scopes `openid email profile`. The app adds `offline_access` for refresh tokens unless `AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false`. Set `AUTH_OIDC_ISSUER` to the issuer exactly as the IdP's discovery document states it, `AUTH_OIDC_CLIENT_ID` and `AUTH_OIDC_CLIENT_SECRET` (or `AUTH_OIDC_CLIENT_SECRET_FILE`), and `AUTH_OIDC_AUDIENCE` to the client ID unless your IdP issues ID tokens for another audience. Then set `AUTH_LOCAL_ISSUER_ENABLED=false` so password sign-in is off.
+
+Access is by invitation: signing in at the IdP doesn't by itself give access. Invite admins from the Admins page (or pre-register them as above), with a role on each bot.
+
+**Microsoft Entra ID**
+- Issuer: `https://login.microsoftonline.com/<tenant-id>/v2.0`. Only single-tenant apps work: the issuer must match exactly, and the multi-tenant `common` endpoint issues tokens with per-tenant issuers.
+- Entra often leaves out the `email` claim. Set `AUTH_OIDC_EMAIL_CLAIMS=email,upn` and `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS=upn`, so the UPN counts as a verified address. Your tenant owns every UPN domain.
+- MFA: enforce it with a Conditional Access policy for this app. To have Emly refuse sign-ins without it as well, decode an ID token from an MFA sign-in, check that `amr` lists `mfa`, then set `AUTH_OIDC_REQUIRED_AMR=mfa`.
+
+**Okta**
+- Issuer: your authorization server, e.g. `https://<org>.okta.com/oauth2/default` (or `https://<org>.okta.com` for the org server).
+- MFA: require it in the app's authentication policy. Okta's ID tokens list the methods used in `amr` (for example `pwd`, `mfa`, `otp`); confirm on one sign-in, then set `AUTH_OIDC_REQUIRED_AMR=mfa`.
+
+**Google Workspace**
+- Issuer: `https://accounts.google.com`. Set `AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false`: Google doesn't issue refresh tokens for `offline_access`, so sessions end when the ID token expires (about an hour) and admins sign in again, usually without a prompt.
+- MFA: enforce 2-step verification in the Google Admin console. Google's ID tokens don't carry a reliable `amr`, so leave `AUTH_OIDC_REQUIRED_AMR` unset.
+
+### Removing an admin's access
+
+1. **Disable or remove them in Emly** (Admins page). This takes effect on their next request: every request re-reads the admin record.
+2. **Disable them at the IdP.** They can't sign in again. A session already open lasts until its ID token expires (usually up to an hour) or its next refresh, which the IdP normally refuses for a disabled user.
+3. Every session ends `AUTH_SESSION_MAX_AGE_SECONDS` after sign-in at the latest (12 hours by default in production).
+
+The ID token is also accepted as a `Bearer` header for API clients, with the same checks.
 
 ---
 
@@ -818,6 +845,8 @@ At start-up the app logs an "Outbound destinations" block naming, by host only, 
 | Slack, Teams, Google Chat, WhatsApp, Telegram | Only for connected channels: replies, the sender's profile (Slack), and the platforms' signing keys | `channels/dispatcher.py`, `channels/auth/_http.py`, `channels/auth/service_account_jwt.py`, `channels/telegram.py` |
 | Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused unless their range is in `CRAWL_ALLOWED_PRIVATE_CIDRS`, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
 | Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
+
+Teams and Google Chat check each incoming message's signature with keys fetched from Microsoft and Google, so those two channels need outbound access to them even when everything else runs inside your network. Slack, WhatsApp and Telegram also need to reach their platforms; only the web widget works with no outbound connection.
 
 The browser loads the widget from this app. Logo, avatar and launcher icons set by an admin load from wherever their URLs point, unless `WIDGET_ICON_HOSTS` limits them.
 
