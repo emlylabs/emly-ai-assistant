@@ -129,7 +129,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production `/api/readyz` lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only |
+| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production `/api/readyz` lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only (see [Who can use the widget](#who-can-use-the-widget)) |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
 | `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
 | `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |
@@ -714,6 +714,19 @@ Add this snippet to any website:
 ```
 
 Add your site to the bot's *Allowed widget origins* (Config → Limits) first; new bots only allow this app's own pages. See [`widget/README.md`](widget/README.md) for the build and the widget's public API.
+
+### Who can use the widget
+
+The widget has no sign-in. Anyone who can reach this app's address can open a conversation with any bot, by putting the widget on a page or by calling its API directly. *Allowed widget origins* stops other websites embedding it in a browser; it can't stop a script that sends requests itself.
+
+So a staff-only assistant (an HR or IT helpdesk) is protected by where the app is reachable:
+
+- Publish the app only on your internal network or VPN: an internal load balancer or ingress, no public DNS record, or a reverse proxy that allows only your office and VPN address ranges.
+- If the admin UI must be reachable from outside, put the widget paths (`/widget/` and `/emly-widget.js`) behind the internal-only route and the admin paths behind your identity provider.
+- Set *Allowed widget origins* on every bot to your intranet's address. In production `/api/readyz` lists bots still open to any site.
+- Visitors are told apart only by the token the widget stores in their browser. A form a visitor fills in records what they typed, not who they are.
+
+A public-facing assistant (customer support on your website) needs none of this: it is meant to be reachable by anyone.
 
 ---
 
