@@ -177,10 +177,35 @@ def qdrant_warnings() -> List[Dict[str, str]]:
     }]
 
 
+_TLS_SSLMODES = {"require", "verify-ca", "verify-full"}
+
+
+def postgres_tls_warnings() -> List[Dict[str, str]]:
+    """G13e: in production, a Postgres outside the private network should
+    be reached over TLS (``?sslmode=require`` or stricter)."""
+    from urllib.parse import parse_qs
+
+    from utils.runtime import is_prod_mode
+
+    url = _env("DATABASE_URL") or ""
+    if not is_prod_mode() or not url.lower().startswith(("postgres", "postgresql")):
+        return []
+    name = hostname_of(url)
+    sslmode = (parse_qs(urlsplit(url).query).get("sslmode") or [""])[0].lower()
+    if not name or is_internal_host(name) or sslmode in _TLS_SSLMODES:
+        return []
+    return [{
+        "code": "postgres_no_tls",
+        "message": f"DATABASE_URL points at {host_of(url)} without sslmode=require (or verify-full). "
+                   "Conversations and visitor details would cross the network unencrypted. Add "
+                   "?sslmode=verify-full&sslrootcert=<CA file> to the URL.",
+    }]
+
+
 def log_egress_summary() -> None:
     rows = egress_summary()
     width = max(len(k) for k, _ in rows)
     lines = "\n".join(f"  {k.ljust(width)}  {v}" for k, v in rows)
     log.info("Outbound destinations (hosts only; see README 'Outbound connections'):\n%s", lines)
-    for w in qdrant_warnings():
+    for w in qdrant_warnings() + postgres_tls_warnings():
         log.warning(w["message"])

@@ -670,6 +670,9 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
     from services.egress import qdrant_warnings
 
     out.extend(qdrant_warnings())
+    from services.egress import postgres_tls_warnings
+
+    out.extend(postgres_tls_warnings())
 
     from services.audit import audit_write_failures
 

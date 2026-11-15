@@ -156,6 +156,7 @@ Checklist for a production deployment. Each variable is described in full under 
 **Network and channels**
 
 - Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
+- A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and on `/api/readyz`.
 - Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and on `/api/readyz`.
 - Check the "Outbound destinations" block in the start-up log against the systems you expect (see [Outbound connections](#outbound-connections)).
 - Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.

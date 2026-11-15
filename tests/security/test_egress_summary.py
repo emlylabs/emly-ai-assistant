@@ -119,3 +119,36 @@ def test_remote_qdrant_is_flagged_on_boot_and_readyz(isolated_db, monkeypatch, c
     assert f"QDRANT_URL points at {host}" in caplog.text
     codes = [w["code"] for w in main._collect_runtime_warnings()]
     assert "qdrant_remote" in codes
+
+
+# ------------------------------------------------------------- G13e
+def test_sslmode_in_the_url_reaches_the_driver():
+    """DATABASE_URL query options are passed to psycopg2 unchanged, so
+    TLS to Postgres is configured in the URL."""
+    from playhouse.db_url import connect
+
+    db = connect("postgresql://u:p@db.example.com:5432/emly?sslmode=verify-full&sslrootcert=/run/ca.pem")
+    assert db.connect_params["sslmode"] == "verify-full"
+    assert db.connect_params["sslrootcert"] == "/run/ca.pem"
+
+
+@pytest.mark.parametrize("mode,url,warned", [
+    ("prod", "postgresql://u:p@db.example.com/emly", True),
+    ("prod", "postgresql://u:p@db.example.com/emly?sslmode=prefer", True),
+    ("prod", "postgresql://u:p@db.example.com/emly?sslmode=require", False),
+    ("prod", "postgresql://u:p@db.example.com/emly?sslmode=verify-full", False),
+    ("prod", "postgresql://u:p@postgres:5432/emly", False),      # compose service name
+    ("prod", "postgresql://u:p@10.0.3.4/emly", False),
+    ("prod", "sqlite:////data/app.db", False),
+    ("dev", "postgresql://u:p@db.example.com/emly", False),
+])
+def test_remote_postgres_without_tls_is_flagged_in_prod(monkeypatch, mode, url, warned):
+    from services.egress import postgres_tls_warnings
+
+    monkeypatch.setenv("MODE", mode)
+    monkeypatch.setenv("DATABASE_URL", url)
+    warnings = postgres_tls_warnings()
+    assert bool(warnings) is warned
+    if warnings:
+        assert warnings[0]["code"] == "postgres_no_tls"
+        assert "u:p" not in warnings[0]["message"] and "db.example.com" in warnings[0]["message"]
