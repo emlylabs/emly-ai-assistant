@@ -52,6 +52,7 @@ from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
 
 from agents.rag_manager import get_rag_manager
 from services.bot_config import BotConfigInvalid, get_config_for_bot
+from services.public_citations import citation_page
 from cachetools import TTLCache
 from utils.utils import clean_template_string, get_filtered_citations, filter_citations
 
@@ -61,7 +62,7 @@ def _serialize_citations(citations: List[Any]) -> Optional[str]:
 
     The runtime carries citations as ``{"metadata": {...}, "chunk": "..."}``
     dicts. We persist only the lightweight metadata needed for the UI's
-    citation chip (file_id, filename, source_url, score) and drop the chunk
+    citation chip (file_id, filename, page, source_url, score) and drop the chunk
     text — Qdrant is the source of truth for the chunk body, and storing it
     twice doubles row size on busy bots.
     """
@@ -76,6 +77,7 @@ def _serialize_citations(citations: List[Any]) -> Optional[str]:
             {
                 "file_id": meta.get("file_id"),
                 "filename": meta.get("filename") or meta.get("source"),
+                "page": citation_page(meta),
                 "source_url": meta.get("source_url"),
                 "score": meta.get("relevance_score") or c.get("score"),
             }

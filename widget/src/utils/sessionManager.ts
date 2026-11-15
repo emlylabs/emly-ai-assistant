@@ -39,7 +39,7 @@ export const startChatKey = (botId: string): string => `chatbot.startChat.${botI
 
 /** RAG citation as it arrives in the chat NDJSON `done` chunk. The
  * server (`services/public_citations.py`) sends only what the pill
- * shows: `{metadata: {title?, source_url?, image?}, og?: {title?,
+ * shows: `{metadata: {title?, source_url?, image?, page?}, og?: {title?,
  * description?, url?, image?}, chunk?: <short excerpt>,
  * relevance_score?}`, and an empty list when the bot's
  * `show_citations` is off. Every field is optional. */
@@ -49,6 +49,8 @@ export interface Citation {
         title?: string;
         og?: string | Record<string, unknown>;
         image?: string;
+        /** Page label for documents with pages, e.g. "12". */
+        page?: string;
         [key: string]: unknown;
     };
     chunk?: string;
