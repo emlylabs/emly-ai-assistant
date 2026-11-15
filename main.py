@@ -674,6 +674,20 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
 
     out.extend(postgres_tls_warnings())
 
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode():
+        from services.auth.widget_cors import bots_open_to_any_site
+
+        open_bots = bots_open_to_any_site()
+        if open_bots:
+            out.append({
+                "code": "widget_any_origin",
+                "message": f"{len(open_bots)} bot(s) let any website embed their widget (Allowed widget "
+                           f"origins is *): {', '.join(open_bots[:20])}"
+                           f"{' …' if len(open_bots) > 20 else ''}. Set each one's origins to your own sites.",
+            })
+
     from services.audit import audit_write_failures
 
     failures = audit_write_failures()

@@ -128,7 +128,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): review them |
+| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production `/api/readyz` lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
 | `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
 | `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |

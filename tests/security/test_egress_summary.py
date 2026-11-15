@@ -52,7 +52,8 @@ def test_boot_lists_every_destination_by_host(deployment, caplog):
     rows = dict(egress_summary())
 
     assert rows["Model endpoint (default)"] == "llm.corp.example:8443"
-    assert rows["Model endpoints set by bots"] == "api.other.example (2 bots)"
+    # Other tests' bots may share the database: check this test's entry.
+    assert "api.other.example (2 bots)" in rows["Model endpoints set by bots"].split(", ")
     assert rows["Embeddings"] == "llm.corp.example:8443 (remote)"
     assert rows["Vector database"] == "qdrant:6333"
     assert rows["Mail server"] == "smtp.corp.example:587"
