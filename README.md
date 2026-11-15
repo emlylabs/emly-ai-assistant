@@ -864,13 +864,23 @@ Back these up together, from the same moment where possible:
 
 **Restore order:**
 
-1. Put `.env` (with the same `BOT_SECRETS_KEY`) in place. Don't start the app yet.
-2. Start Postgres and restore: `docker compose exec -T postgres pg_restore -U emly -d emly --clean --if-exists < emly.dump`.
+1. Put `.env` (with the same `BOT_SECRETS_KEY`) in place. Don't start the app yet. Keep `APP_BASE_URL` the same if the address is the same; see the note below if it changes.
+2. Start Postgres, wait until the database accepts queries, then restore. On a fresh volume Postgres first runs a temporary server while it initialises, and `pg_isready` already answers before the `emly` database exists, so wait for a real query:
+
+   ```bash
+   docker compose up -d postgres
+   until docker compose exec -T postgres psql -U emly -d emly -c 'select 1' >/dev/null 2>&1; do sleep 2; done
+   docker compose exec -T postgres pg_restore -U emly -d emly --clean --if-exists < emly.dump
+   ```
 3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
 4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
 5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and on `/api/readyz`, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
 
+**Restoring at a different address** (a recovery site, a move, a test restore): set `APP_BASE_URL` to the new address. Admins who use the built-in sign-in are moved to it the first time they sign in (audited as `admin.relinked`, reason `built_in_issuer_moved`). With an external identity provider, add the new redirect URI (`<new address>/api/admin/auth/callback`) to the app registration first. Sessions from the old address end.
+
 Test the restore on a separate host before you rely on it.
+
+**Drill record.** 2026-11-15, compose, `claim-gaps-4`: a bot with one indexed document, a conversation and an admin with a changed password were backed up with the steps above, the stack was removed, and everything was restored into empty volumes. Row counts, file hashes and the signing key matched; the admin signed in with the same password; a search returned the same passage with the same score. The drill found the four problems fixed on `claim-gaps-5`: `PORT` in `.env` broke the container port, step 2's start-up race, sign-in after an address change, and unknown `/api/` paths answering 200. Not covered: stored bot API keys and channel credentials (none were set), and a scheduled job pending in `actions.db`.
 
 ## What the model sees
 
