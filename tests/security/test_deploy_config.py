@@ -249,3 +249,24 @@ def test_readme_internal_links_resolve():
         assert target in anchors, f"broken anchor #{target}"
     for target in re.findall(r"\]\((?!https?:|#|mailto:)([^)#]+)", text):
         assert (REPO_ROOT / target).exists(), f"broken link {target}"
+
+
+def _minor(version: str) -> tuple:
+    major, minor = version.lstrip("v").split("-")[0].split(".")[:2]
+    return int(major), int(minor)
+
+
+def test_qdrant_server_matches_the_client():
+    """qdrant-client 1.17 against server 1.12 logged an incompatibility
+    warning on every start (found in the G8a cluster trial). Qdrant
+    supports one minor version of difference."""
+    import re
+
+    lock = (REPO_ROOT / "uv.lock").read_text()
+    client = re.search(r'name = "qdrant-client"\nversion = "([^"]+)"', lock).group(1)
+    compose_tag = _compose()["services"]["qdrant"]["image"].split(":")[1]
+    k8s = yaml.safe_load((REPO_ROOT / "deploy/k8s/base/kustomization.yaml").read_text())
+    (k8s_tag,) = [i["newTag"] for i in k8s["images"] if i["name"] == "qdrant"]
+    assert compose_tag.split("-")[0] == k8s_tag.split("-")[0], "compose and Kubernetes run different Qdrant versions"
+    (c_major, c_minor), (s_major, s_minor) = _minor(client), _minor(compose_tag)
+    assert c_major == s_major and abs(c_minor - s_minor) <= 1, (client, compose_tag)

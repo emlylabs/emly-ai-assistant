@@ -111,7 +111,7 @@ kubectl apply -k deploy/k8s/overlays/<your-overlay>
 - **Secrets** are mounted from the `emly-secrets` Secret as files and read through `NAME_FILE` ([Secrets from files](#secrets-from-files)); none are in the manifests or the pod's environment. Add a `NAME_FILE` entry in your overlay for each optional secret you set.
 - **Network:** everything is denied by default. The app may reach DNS and Qdrant; Qdrant only accepts the app and reaches nothing. Your overlay lists, by address, the model endpoint, database, mail server and anything else in [Outbound connections](#outbound-connections) (`overlays/example/egress-external.yaml`), and names the ingress controller's namespace (`ingress-nginx` in the base).
 - **Pods** run as non-root with read-only root filesystems, no privilege escalation, all capabilities dropped and the default seccomp profile. Each writes only to its volumes and a `/tmp` emptyDir.
-- **Images:** the base pins `qdrant/qdrant:v1.12.4-unprivileged` and `postgres:16-alpine`. Your overlay sets the app image (your registry and the release tag).
+- **Images:** the base pins `qdrant/qdrant:v1.17.1-unprivileged` (the same version as compose; see [Upgrading Qdrant](#upgrading-qdrant)) and `postgres:16-alpine`. Your overlay sets the app image (your registry and the release tag).
 - CI renders every overlay and validates it with kubeconform; the tests also check that every object stays in the `emly` namespace.
 
 **Trial record.** 2026-11-15, kind (Kubernetes 1.36, 3 nodes, kindnet), `overlays/in-cluster-postgres` with `MODE=prod`, app image built from `claim-gaps-5`. Confirmed:
@@ -892,6 +892,18 @@ Back these up together, from the same moment where possible:
 Test the restore on a separate host before you rely on it.
 
 **Drill record.** 2026-11-15, compose, `claim-gaps-4`: a bot with one indexed document, a conversation and an admin with a changed password were backed up with the steps above, the stack was removed, and everything was restored into empty volumes. Row counts, file hashes and the signing key matched; the admin signed in with the same password; a search returned the same passage with the same score. The drill found the four problems fixed on `claim-gaps-5`: `PORT` in `.env` broke the container port, step 2's start-up race, sign-in after an address change, and unknown `/api/` paths answering 200. Not covered: stored bot API keys and channel credentials (none were set), and a scheduled job pending in `actions.db`.
+
+### Upgrading Qdrant
+
+Compose and the Kubernetes manifests run Qdrant server 1.17.1, matching the `qdrant-client` the app uses (a test keeps them within one minor version). Deployments set up with an earlier release ran 1.12.4, and the app logs a "client version is incompatible with server version" warning against it.
+
+Qdrant only guarantees that its storage carries over between consecutive minor versions, so upgrade an existing search index one minor version at a time:
+
+1. Back up the index first (see the table above: stop Qdrant and copy `./data/qdrant`, or take a snapshot).
+2. For each of `v1.13.6`, `v1.14.1`, `v1.15.5`, `v1.16.3` and then `v1.17.1`: set that version as Qdrant's image (`docker-compose.yml`, or `newTag` with `-unprivileged` in your kustomize overlay), start Qdrant alone (`docker compose up -d qdrant`), wait until `curl -fs http://<qdrant>:6333/readyz` succeeds (compose: `docker compose exec app curl -fs http://qdrant:6333/readyz`), then go on to the next version.
+3. Start the app and check `/api/readyz` and a search on one bot's *Retrieval* page.
+
+Tested on 2026-11-15 with a 50-point collection with a payload index: the stepped path kept every point and returned the same search result at each version. Jumping straight from 1.12.4 to 1.17.1 also worked on that collection, but Qdrant doesn't guarantee it. If you'd rather not upgrade the store, re-index instead: start an empty 1.17.1 and re-embed each bot's files.
 
 ## What the model sees
 

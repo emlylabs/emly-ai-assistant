@@ -48,7 +48,10 @@ services:
     #   - "5432:5432"
 
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    # Keep within one minor version of qdrant-client in uv.lock (enforced by
+    # tests/security/test_deploy_config.py). Upgrading an existing store:
+    # README "Upgrading Qdrant".
+    image: qdrant/qdrant:v1.17.1
     restart: unless-stopped
     volumes:
       # Bind-mount under ./data so backups / inspection are easy.

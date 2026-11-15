@@ -28,6 +28,7 @@ images:
   - name: emly-ai-assistant
     newName: emly-ai-assistant
     newTag: dev
+  # Same version as docker-compose.yml; see README "Upgrading Qdrant".
   - name: qdrant
     newName: qdrant/qdrant
-    newTag: v1.12.4-unprivileged
+    newTag: v1.17.1-unprivileged
