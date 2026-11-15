@@ -779,6 +779,16 @@ def _app_base_url_from_request(request: Request) -> str:
     return "http://localhost:8080"
 
 
+def _ui_file(path: Path) -> FileResponse:
+    """Serve a file from the UI export. HTML pages carry the admin UI's
+    Content-Security-Policy, with hashes for their inline scripts (G13b)."""
+    if path.suffix == ".html":
+        from services.ui_csp import ui_policy_for_file
+
+        return FileResponse(path, headers={"Content-Security-Policy": ui_policy_for_file(path)})
+    return FileResponse(path)
+
+
 def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # With API docs disabled, their paths must 404 — not fall through to
     # the SPA shell below and look like they exist.
@@ -809,13 +819,13 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # Try the literal path first (handles /favicon.ico, /file.svg, etc.).
     candidate = (_UI_DIR / rel_path).resolve()
     if _UI_DIR.resolve() in candidate.parents and candidate.is_file():
-        return FileResponse(candidate)
+        return _ui_file(candidate)
 
     # Next.js static export emits a foo.html for the /foo route.
     if rel_path:
         html_candidate = (_UI_DIR / f"{rel_path}.html").resolve()
         if _UI_DIR.resolve() in html_candidate.parents and html_candidate.is_file():
-            return FileResponse(html_candidate)
+            return _ui_file(html_candidate)
 
     # Per-bot routes — `/bots/<slug>/<tab>` — are statically exported
     # under a placeholder slug `_` (Next.js requires `generateStaticParams`
@@ -840,15 +850,15 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     if rewritten is not None:
         literal = (_UI_DIR / rewritten).resolve()
         if _UI_DIR.resolve() in literal.parents and literal.is_file():
-            return FileResponse(literal)
+            return _ui_file(literal)
         scaffold = (_UI_DIR / f"{rewritten}.html").resolve()
         if _UI_DIR.resolve() in scaffold.parents and scaffold.is_file():
-            return FileResponse(scaffold)
+            return _ui_file(scaffold)
 
     # SPA fallback.
     index = _UI_DIR / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        return _ui_file(index)
     return JSONResponse(status_code=404, content={"message": "Not found"})
 
 

@@ -160,6 +160,7 @@ Checklist for a production deployment. Each variable is described in full under 
 - Check the "Outbound destinations" block in the start-up log against the systems you expect (see [Outbound connections](#outbound-connections)).
 - Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.
 - The image runs as a non-root user and handles `SIGTERM` for clean shutdowns.
+- The admin UI is served with a Content-Security-Policy that runs only this app's scripts (inline scripts are allowed by hash, never `unsafe-inline`) and sends requests only to this origin. The sign-in and sign-in error pages allow no scripts at all. A reverse proxy that adds its own `Content-Security-Policy` header would combine with these (browsers enforce both), so don't add a looser one.
 
 ## Configuration Reference
 

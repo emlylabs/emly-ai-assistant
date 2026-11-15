@@ -338,7 +338,9 @@ def _render_authorize_form(
             else _SIGN_IN_FIELDS
         ),
     )
-    return HTMLResponse(html)
+    from services.ui_csp import STATIC_PAGE_POLICY
+
+    return HTMLResponse(html, headers={"Content-Security-Policy": STATIC_PAGE_POLICY})
 
 
 def _4xx(message: str, status_code: int = 400) -> JSONResponse:
