@@ -28,6 +28,7 @@ from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
+from services.data_access_audit import record_read, used_filters
 from services.bot_config import (
     BotConfigInvalid,
     discard_draft_for_bot,
@@ -982,6 +983,7 @@ def bot_list_messages(
 ):
     bot = _resolve_bot(slug)
     _require_member(admin, bot.id)
+    record_read(admin, bot.id, "message_list", filters=used_filters(user_id=user_id, session_id=session_id))
     return MessageListResponse(
         items=EMLYMessages.list_all(bot.id, user_id=user_id, session_id=session_id, skip=skip, limit=limit),
         total=EMLYMessages.count_all(bot.id, user_id=user_id, session_id=session_id),
@@ -1001,6 +1003,7 @@ def bot_get_message(
     msg = EMLYMessages.get_message_by_id(bot.id, message_id)
     if msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    record_read(admin, bot.id, "message", str(message_id))
     return msg
 
 
@@ -1133,6 +1136,7 @@ def bot_list_end_users(
 ):
     bot = _resolve_bot(slug)
     _require_member(admin, bot.id)
+    record_read(admin, bot.id, "visitor_list")
     return UserListResponse(
         items=EMLYUsers.get_users(bot.id, skip=skip, limit=limit),
         total=EMLYUsers.count(bot.id),
@@ -1152,6 +1156,7 @@ def bot_get_end_user(
     u = EMLYUsers.get_user_by_id(bot.id, user_id)
     if u is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    record_read(admin, bot.id, "visitor", user_id)
     return u
 
 

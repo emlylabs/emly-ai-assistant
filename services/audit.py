@@ -21,6 +21,7 @@ Conventions for ``action``:
     local.*          — embedded-issuer events (password change, lockout, reset)
     widget.*         — widget-token events
     keystore.*       — keypair rotation
+    data.*           — reads of conversations and visitor details (opt-in, G5e)
 """
 
 from __future__ import annotations
@@ -157,6 +158,9 @@ def audit(
 SECURITY_ACTION_PREFIXES = (
     "auth.", "authz.", "csrf.", "admin.", "membership.", "pending.", "invite.", "local.",
     "keystore.", "bot.", "bots.", "config.", "channel.", "workspace.", "audit.",
+    # Written only when AUDIT_DATA_ACCESS is on (G5e): an operator who
+    # asked for reads to be audited doesn't want unaudited reads.
+    "data.",
 )
 FAIL_CLOSED_ENV = "AUDIT_FAIL_CLOSED"
 

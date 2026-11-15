@@ -151,6 +151,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `RAG_EMBEDDING_MODEL_REVISION`, `RE_RANKING_MODEL_REVISION`, `RAG_EMBEDDING_TRUST_REMOTE_CODE` | Only when using non-default models | Pin a commit; allow remote code only for a model you have reviewed |
 | `AUDIT_RETENTION_DAYS`, `WEBHOOK_DEDUPE_RETENTION_HOURS` | `365` and `24` (defaults), or your policy | Nightly cleanup |
 | `AUDIT_FAIL_CLOSED` | Leave unset (on in prod) | Security actions fail with 503 rather than happen unaudited when the audit log can't be written |
+| `AUDIT_DATA_ACCESS` | `true` if you must show who read which conversation | Records each admin's reads of conversations and visitor details |
 | Backups | Database, search index, `DATA_DIR` and the secrets key | See [Backup and restore](#backup-and-restore) |
 
 **Network and channels**
@@ -200,6 +201,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys and channel credentials. Separate keys derived from it encrypt the admin refresh cookie, sign widget tokens and hash one-time passcodes, so none of these can be used in place of another. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
 | `BOT_SECRETS_KEY_PREVIOUS` | Retired keys (comma-separated) that still decrypt and verify during a rotation. See [Rotating the secrets key](#rotating-the-secrets-key) | — |
 | `AUDIT_FAIL_CLOSED` | When an audit row for a sign-in, permission, configuration or other security event can't be written, fail the request with 503 instead of carrying on. Changes made before the audit write may already be saved. Background jobs only log | `true` when `MODE=prod`, else `false` |
+| `AUDIT_DATA_ACCESS` | Record a `data.read` audit row when an admin lists or opens conversations, messages or visitor details: who, which bot, which session, message or visitor, the route, and which filters a list used (`search` when the text search was used, never the search text or any content). One row per admin, bot and target per 10 minutes, per process. When on, these rows follow `AUDIT_FAIL_CLOSED` | `false` |
 | `AUDIT_RETENTION_DAYS` | Days to keep audit log rows. A daily job (03:30 in the scheduler's time zone, Asia/Kolkata) deletes older rows and records the purge. `0` keeps them forever | `365` |
 | `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
