@@ -230,13 +230,15 @@ When someone messages a bot through a chat platform, Emly keeps a profile for th
 
 | Platform | What is stored |
 |---|---|
-| Slack | Name, from `users.info` (scope `users:read`). Email only if you also grant `users:read.email`; the setup guide doesn't ask for it |
+| Slack | Name, from `users.info` (scope `users:read`). Email only when the channel's *Store sender email addresses* is on **and** you granted `users:read.email` (the setup guide doesn't ask for it) |
 | Microsoft Teams | Display name |
-| Google Chat | Display name and email (Google sends both with every message) |
+| Google Chat | Display name. Email only when the channel's *Store sender email addresses* is on (Google sends it with every message; it is otherwise used only as a one-way hash to recognise the sender) |
 | WhatsApp | Profile name and phone number |
 | Telegram | First and last name, or username |
 
-Plus the platform's user id, to recognise the sender next time. A name or email taken from a form the person filled in is never overwritten.
+*Store sender email addresses* is per channel (*Channels* page), off by default. Turning it off stops new addresses being stored; addresses stored before are kept until retention or erasure removes them.
+
+Plus a one-way hash of the platform's user id, to recognise the sender next time. A name or email taken from a form the person filled in is never overwritten.
 
 #### Uploaded files
 

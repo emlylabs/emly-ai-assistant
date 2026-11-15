@@ -620,6 +620,23 @@ _KNOWN_END_USERS = _RecentKeys(max_size=10_000, ttl_s=3600.0)
 _PROFILE_LOOKUP_TIMEOUT_S = 3.0
 
 
+# Q-N6: a sender's email address is stored only when the channel's
+# "Store sender email addresses" setting is on (channel config
+# ``store_sender_email``). Off by default; names and WhatsApp numbers
+# (the sender's id there) are still kept.
+STORE_SENDER_EMAIL_KEY = "store_sender_email"
+
+
+def stores_sender_email(channel: BotChannelModel) -> bool:
+    return bool((channel.config_json or {}).get(STORE_SENDER_EMAIL_KEY))
+
+
+def _without_email(profile: UserProfile, keep: bool) -> UserProfile:
+    if keep or not profile.email:
+        return profile
+    return UserProfile(first_name=profile.first_name, last_name=profile.last_name, phone=profile.phone)
+
+
 async def _ensure_end_user(
     adapter: ChannelAdapter,
     bot_id: str,
@@ -650,7 +667,8 @@ async def _ensure_end_user(
             _KNOWN_END_USERS.add(key)
             return
 
-        profile = incoming.user_profile or UserProfile()
+        keep_email = stores_sender_email(channel)
+        profile = _without_email(incoming.user_profile or UserProfile(), keep_email)
         named = bool(profile.first_name or profile.email)
         if not named and lookup:
             try:
@@ -658,7 +676,7 @@ async def _ensure_end_user(
                     adapter.fetch_user_profile(channel, incoming.user_external_id),
                     timeout=_PROFILE_LOOKUP_TIMEOUT_S,
                 )
-                profile = profile.merged(fetched)
+                profile = _without_email(profile.merged(fetched), keep_email)
             except Exception:
                 log.info("Profile lookup failed type=%s channel=%s", channel.type, channel.id, exc_info=True)
 
