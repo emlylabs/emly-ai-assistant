@@ -117,6 +117,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | `12` or more | Applies when built-in sign-in is used; the first sign-in must replace the bootstrap password |
 | `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in |
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS`, `AUTH_OIDC_EMAIL_CLAIMS`, `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Per your IdP (see [SSO](#external-identity-provider-sso)) | Keep `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` `false` unless you control the IdP's directory |
+| `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | `mfa` for Entra ID and Okta | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
 | `AUTH_COOKIE_SECURE`, `AUTH_COOKIE_SAMESITE` | Leave unset | Defaults are `Secure` in prod and `SameSite=lax` |
 | `BOT_CREATION` | `writers` (default) or `superadmin` | Who may create bots |
 | `ENABLE_API_DOCS` | Leave unset | API docs stay off in prod |
@@ -711,6 +712,8 @@ Provider-specific settings:
 |----------|-------------|---------|
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS` | Add `offline_access` to the requested scopes so the IdP issues a refresh token and sessions renew silently. **Google:** set `false`. Sessions then last until the ID token expires and admins sign in again (usually silently, through Google's own session) | `true` |
 | `AUTH_OIDC_EMAIL_CLAIMS` | Comma-separated token claims to read the admin's email from, first match wins. Only values containing `@` are used. **Entra ID** often omits `email`: use `email,upn` | `email` |
+| `AUTH_OIDC_REQUIRED_AMR` | Require multi-factor sign-in: comma-separated methods, at least one of which must be in the ID token's `amr` claim, e.g. `mfa`. A sign-in without one is refused with "Multi-factor sign-in required" and audited as `auth.login_failed` (`reason: mfa_required`). Checked at sign-in, not on every request. **Entra ID** and **Okta** put `mfa` in `amr` after a second factor. **Google** doesn't send a reliable `amr`: enforce 2-step verification in the Google Admin console instead | unset |
+| `AUTH_OIDC_REQUIRED_ACR` | Accepted `acr` values (comma-separated), for IdPs that express the level that way. Also sent to the IdP as `acr_values` so it asks for the second factor up front | unset |
 | `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Treat every email the IdP sends as verified. An address taken from a fallback claim (`upn`, `preferred_username`) counts as **unverified** otherwise, and pending invites aren't activated for unverified addresses. Set `true` only for an IdP whose directory you control, e.g. a single-tenant Entra ID app with `upn` | `false` |
 
 ```env
@@ -720,7 +723,10 @@ AUTH_OIDC_REQUEST_OFFLINE_ACCESS=false
 # Microsoft Entra ID (single tenant)
 AUTH_OIDC_EMAIL_CLAIMS=email,upn
 AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY=true
+AUTH_OIDC_REQUIRED_AMR=mfa
 ```
+
+`AUTH_OIDC_REQUIRED_ACR` and `AUTH_OIDC_REQUIRED_AMR` need an external IdP: with the built-in sign-in, which is password-only, the app refuses to start.
 
 The OIDC callback URL to register with your IdP is:
 ```

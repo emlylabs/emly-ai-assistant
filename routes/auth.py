@@ -34,6 +34,7 @@ from services.auth.base import (
     AuthError,
     AuthProvider,
     InvalidTokenError,
+    MfaRequired,
     OAuthState,
 )
 from services.auth.dependencies import get_admin, get_auth_provider
@@ -281,6 +282,11 @@ _AUTH_ERROR_COPY = {
         "Email not verified",
         "Please verify your email address with the sign-in provider, then try again.",
     ),
+    "mfa_required": (
+        "Multi-factor sign-in required",
+        "This workspace requires multi-factor authentication. Sign in again with your second factor, "
+        "or ask your IT team to set it up for your account.",
+    ),
     "account_disabled": (
         "Account disabled",
         "Your admin account has been disabled. Ask a workspace admin to re-enable it.",
@@ -386,6 +392,12 @@ async def callback(
         token_set, principal = await run_in_threadpool(
             provider.exchange_code, code, oauth_state, _redirect_uri(request)
         )
+    except MfaRequired as e:
+        # G3b: the IdP signed the user in without the required strength.
+        log.warning("Sign-in refused: acr=%s amr=%s don't meet AUTH_OIDC_REQUIRED_ACR/AMR", e.acr, e.amr)
+        audit("auth.login_failed", request=request, success=False,
+              payload={"reason": "mfa_required", "acr": e.acr, "amr": e.amr})
+        return _auth_error(request, 401, {"code": "mfa_required"})
     except InvalidTokenError as e:
         log.warning("OIDC code exchange failed: %s", e)
         audit("auth.code_exchange_failed", request=request, success=False, payload={"err": str(e)})
