@@ -1593,7 +1593,8 @@ function SlackPanel({
           Open <em>OAuth &amp; Permissions</em> → <em>Bot Token Scopes</em> and add:{" "}
           <code>app_mentions:read</code>, <code>chat:write</code>, <code>im:history</code>,{" "}
           <code>im:read</code>, <code>im:write</code>, <code>channels:history</code>,{" "}
-          <code>users:read</code>.
+          <code>users:read</code>. <code>users:read</code> lets Emly show who asked by name.
+          Add <code>users:read.email</code> only if you want their email address stored as well.
         </li>
         <li>
           Click <em>Install to Workspace</em> at the top of the same page and authorize. Copy

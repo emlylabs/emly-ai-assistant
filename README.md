@@ -219,6 +219,20 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 - **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
 - **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
 
+#### Chat-platform users
+
+When someone messages a bot through a chat platform, Emly keeps a profile for them so admins can see who asked. Every member of the bot, viewers included, can see it. Retention and erasure (above) delete it like a website visitor's.
+
+| Platform | What is stored |
+|---|---|
+| Slack | Name, from `users.info` (scope `users:read`). Email only if you also grant `users:read.email`; the setup guide doesn't ask for it |
+| Microsoft Teams | Display name |
+| Google Chat | Display name and email (Google sends both with every message) |
+| WhatsApp | Profile name and phone number |
+| Telegram | First and last name, or username |
+
+Plus the platform's user id, to recognise the sender next time. A name or email taken from a form the person filled in is never overwritten.
+
 #### Uploaded files
 
 Admin documents and widget form attachments are checked by their bytes, not only by the type the browser declares. Refused with 415:
