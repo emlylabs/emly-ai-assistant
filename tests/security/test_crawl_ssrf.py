@@ -55,13 +55,14 @@ def web(monkeypatch):
             raise socket.gaierror(host)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
-    def fake_get(url, **kwargs):
-        assert kwargs.get("allow_redirects") is False, "redirects must be followed by hand"
+    def fake_get(url, ip, **kwargs):
+        # The connection goes to the address that was checked (G13i).
+        assert ip == fake_getaddrinfo(__import__("urllib.parse").parse.urlparse(url).hostname)[0][4][0]
         requested.append(url)
         return routes.get(url) or FakeResponse(url, status=404, body=b"")
 
     monkeypatch.setattr(crawl_fetch.socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(crawl_fetch.requests, "get", fake_get)
+    monkeypatch.setattr(crawl_fetch, "_pinned_get", fake_get)
     return routes, requested
 
 
