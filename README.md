@@ -784,6 +784,8 @@ Every model call goes to the bot's own endpoint (its LLM settings, or the `OPENA
 
 Questions that ask for a missing detail come from templates and make no call.
 
+**Retrieved passages are data, not instructions.** Wherever an answer template puts `{context}`, the passages arrive between `### Reference passages start ###` and `### Reference passages end ###`, after a line telling the model to use them as information and to ignore any instructions inside them. A passage can't close that fence early (the markers are removed from passage text). This lowers, but can't remove, the risk that a document someone uploaded or a crawled page steers an answer. The model has no tools to call: the worst it can do is answer wrongly. Admins control which documents and sites a bot uses.
+
 **Other calls:**
 
 - **Form-alert summary**, only when the bot's alerts are set to the full alert (new bots default to link-only, which makes no call): this conversation's messages and the summary instructions. The submitted form's field values are left out.
