@@ -20,7 +20,7 @@
 #   - app      : the FastAPI service + admin UI + embeddable widget bundle
 #
 # This stack is intentionally single-replica. Horizontal scale needs S3-backed
-# file storage and Redis-backed locks — see docs/multi-bot.md.
+# file storage and Redis-backed locks. Kubernetes manifests: deploy/k8s.
 # =============================================================================
 
 name: emly-ai-assistant

@@ -86,6 +86,34 @@ docker compose down -v
 rm -rf ./data
 ```
 
+### Kubernetes
+
+Kustomize manifests are in [`deploy/k8s`](deploy/k8s):
+
+| Path | What it is |
+|---|---|
+| `base/` | The app (one replica, `Recreate` upgrades), its data volume, Qdrant (a StatefulSet, telemetry off, reachable only from the app), Services, a TLS Ingress and NetworkPolicies that deny everything not listed |
+| `components/postgres/` | Optional Postgres StatefulSet, for when you don't use a managed database |
+| `overlays/example/` | What you copy and edit: namespace (with the `restricted` Pod Security level), image, host name, proxy range and the external addresses the app may reach |
+| `overlays/in-cluster-postgres/` | The example plus the Postgres component |
+
+```bash
+kubectl create namespace emly
+kubectl -n emly create secret generic emly-secrets \
+  --from-literal=BOT_SECRETS_KEY='<Fernet key>' \
+  --from-literal=DATABASE_URL='postgresql://emly:<password>@<host>:5432/emly?sslmode=verify-full' \
+  --from-literal=OPENAI_API_KEY='<key>'
+kubectl -n emly create secret tls emly-tls --cert=tls.crt --key=tls.key
+kubectl apply -k deploy/k8s/overlays/<your-overlay>
+```
+
+- **One replica only.** Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
+- **Secrets** are mounted from the `emly-secrets` Secret as files and read through `NAME_FILE` ([Secrets from files](#secrets-from-files)); none are in the manifests or the pod's environment. Add a `NAME_FILE` entry in your overlay for each optional secret you set.
+- **Network:** everything is denied by default. The app may reach DNS and Qdrant; Qdrant only accepts the app and reaches nothing. Your overlay lists, by address, the model endpoint, database, mail server and anything else in [Outbound connections](#outbound-connections) (`overlays/example/egress-external.yaml`), and names the ingress controller's namespace (`ingress-nginx` in the base).
+- **Pods** run as non-root with no privilege escalation, all capabilities dropped and the default seccomp profile. The app's root filesystem is still writable: a read-only one hasn't been tested with the model libraries yet.
+- CI renders every overlay and validates it with kubeconform.
+- **Not tested on a cluster yet** (no `kind` run in CI). Treat the first deployment as a trial on a test namespace.
+
 ---
 
 ## Local Development (Without Docker)

@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emly-app
+  labels:
+    app.kubernetes.io/name: emly-app
+spec:
+  # Exactly one replica. Sign-in state (OIDC state, built-in issuer codes and
+  # refresh tokens), rate limits and the live-conversation feed are held in
+  # memory, and the data volume is ReadWriteOnce. A second replica would sign
+  # people out at random and double the scheduled jobs.
+  replicas: 1
+  # Recreate, not RollingUpdate: two pods must never run at once, even for a
+  # moment during an upgrade (both would run the nightly jobs and migrations,
+  # and the RWO volume can't attach to both).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: emly-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: emly-app
+    spec:
+      serviceAccountName: emly
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: emly-ai-assistant
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: emly-config
+          env:
+            # Read from the mounted Secret (README "Secrets from files").
+            # Add more NAME_FILE entries in your overlay for the secrets you
+            # use (OPENAI_API_KEY, EMAIL_PASSWORD, AUTH_OIDC_CLIENT_SECRET,
+            # QDRANT_API_KEY, ...). A NAME_FILE pointing at a missing key
+            # stops start-up, by design.
+            - name: BOT_SECRETS_KEY_FILE
+              value: /run/secrets/emly/BOT_SECRETS_KEY
+            - name: DATABASE_URL_FILE
+              value: /run/secrets/emly/DATABASE_URL
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: secrets
+              mountPath: /run/secrets/emly
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Not yet verified with a read-only root filesystem: the app
+            # should write only to /app/data and /tmp, but the model
+            # libraries haven't been checked. Try true on a test cluster.
+            readOnlyRootFilesystem: false
+          # Loading the embedding and re-ranking models takes a while.
+          startupProbe:
+            httpGet:
+              path: /api/livez
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/livez
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          # Ready only when the models, Qdrant and the database are.
+          readinessProbe:
+            httpGet:
+              path: /api/readyz
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: emly-data
+        - name: secrets
+          secret:
+            secretName: emly-secrets
+        - name: tmp
+          emptyDir: {}

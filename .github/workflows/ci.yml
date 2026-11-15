@@ -1,4 +1,5 @@
-# Tests, dependency audit, image build + scan, and secret scan.
+# Tests, dependency audit, image build + scan, secret scan and Kubernetes
+# manifest validation.
 #
 # Supply-chain notes: third-party actions are pinned to commit SHAs and the
 # scanners run from digest-pinned images or checksum-verified binaries. To
@@ -23,6 +24,8 @@ env:
   TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  KUBECONFORM_VERSION: "0.6.7"
+  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
 
 jobs:
   test:
@@ -103,3 +106,23 @@ jobs:
       - name: Scan
         # Reviewed false positives are listed in .gitleaksignore.
         run: ./gitleaks git . --redact --no-banner
+
+  k8s-manifests:
+    name: kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install kubeconform (checksum-verified)
+        run: |
+          curl -sSfL -o kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
+      - name: Render and validate every overlay
+        # kubectl (preinstalled on the runner) includes kustomize.
+        run: |
+          for overlay in deploy/k8s/overlays/*/; do
+            echo "== ${overlay}"
+            kubectl kustomize "${overlay}" | ./kubeconform -strict -summary -kubernetes-version 1.30.0 -
+          done

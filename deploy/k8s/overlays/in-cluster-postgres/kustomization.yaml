@@ -1,0 +1,16 @@
+# The example overlay plus Postgres in the cluster. Create both Secrets
+# first; DATABASE_URL in "emly-secrets" points at the in-cluster service:
+#
+#   kubectl -n emly create secret generic emly-postgres --from-literal=POSTGRES_PASSWORD='...'
+#   kubectl -n emly create secret generic emly-secrets \
+#     --from-literal=BOT_SECRETS_KEY='...' \
+#     --from-literal=DATABASE_URL='postgresql://emly:...@emly-postgres:5432/emly' \
+#     --from-literal=OPENAI_API_KEY='...'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../example
+
+components:
+  - ../../components/postgres

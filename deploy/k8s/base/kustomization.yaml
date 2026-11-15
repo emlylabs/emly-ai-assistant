@@ -1,0 +1,33 @@
+# Emly on Kubernetes: kustomize base (G8a).
+#
+# Single replica by design: sign-in state, rate limits and the job queue
+# live in the app's memory and on its data volume. See README "Kubernetes".
+#
+# Postgres is external by default (a managed database is recommended); add
+# ../../components/postgres to run one in the cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: emly
+    includeSelectors: false
+
+resources:
+  - serviceaccount.yaml
+  - configmap.yaml
+  - app-pvc.yaml
+  - app-deployment.yaml
+  - app-service.yaml
+  - ingress.yaml
+  - qdrant-statefulset.yaml
+  - qdrant-service.yaml
+  - networkpolicy.yaml
+
+images:
+  - name: emly-ai-assistant
+    newName: emly-ai-assistant
+    newTag: dev
+  - name: qdrant
+    newName: qdrant/qdrant
+    newTag: v1.12.4-unprivileged

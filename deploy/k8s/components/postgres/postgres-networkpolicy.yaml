@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emly-postgres
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emly-app
+      ports:
+        - port: 5432
+  egress: []
+---
+# Lets the app reach the in-cluster Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-app-to-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emly-app
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emly-postgres
+      ports:
+        - port: 5432

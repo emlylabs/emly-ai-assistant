@@ -1,0 +1,32 @@
+# What the app may reach outside the cluster. List only what you use
+# (README "Outbound connections"); everything else stays blocked.
+# The addresses below are documentation placeholders (TEST-NET): replace them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-app-egress-external
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emly-app
+  policyTypes: ["Egress"]
+  egress:
+    # Model endpoint (OPENAI_BASE_URL or a bot's own endpoint).
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - port: 443
+    # Managed Postgres.
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.20/32
+      ports:
+        - port: 5432
+    # Mail server (465 implicit TLS or 587 STARTTLS).
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.30/32
+      ports:
+        - port: 465
+    # Identity provider, chat platforms, crawled sites: add as needed.
