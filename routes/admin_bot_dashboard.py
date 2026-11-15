@@ -242,16 +242,17 @@ class BotReport(BaseModel):
 
 
 class MessageUsageByModel(BaseModel):
-    """Per-`model_used` token tally over a window. Pricing lives client-side
-    (see ``ModelUsageCard``'s ``PRICE_TABLE_PER_1K``); the backend just
-    returns observable counts. Models with no `model_used` (legacy rows
-    from before Phase 2) are dropped — counting them under "unknown"
-    would invent attribution we don't have."""
+    """Per-`model_used` token tally over a window, with its cost from the
+    workspace price table (G7a, ``services/model_prices.py``). ``cost_usd``
+    is null when the model has no price: unknown, not free. Models with no
+    `model_used` (legacy rows from before Phase 2) are dropped — counting
+    them under "unknown" would invent attribution we don't have."""
 
     model: str
     turns: int
     prompt_tokens: int
     completion_tokens: int
+    cost_usd: Optional[float] = None
 
 
 @router.get(
@@ -303,15 +304,20 @@ def bot_messages_by_model(
         .group_by(EMLYMessage.model_used)
     )
 
-    return [
-        MessageUsageByModel(
+    from services.model_prices import PriceTable
+
+    prices = PriceTable()
+    out = []
+    for r in rows.dicts():
+        prompt, completion = int(r["prompt_tokens"] or 0), int(r["completion_tokens"] or 0)
+        out.append(MessageUsageByModel(
             model=r["model_used"],
             turns=int(r["turns"] or 0),
-            prompt_tokens=int(r["prompt_tokens"] or 0),
-            completion_tokens=int(r["completion_tokens"] or 0),
-        )
-        for r in rows.dicts()
-    ]
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cost_usd=prices.cost_usd(r["model_used"], prompt, completion),
+        ))
+    return out
 
 
 class FunnelResponse(BaseModel):

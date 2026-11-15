@@ -16,55 +16,24 @@ type ModelUsageCardProps = {
 /**
  * Per-`model_used` breakdown of token usage and dollar cost. Reads
  * server-aggregated rows so the count is exact (not a sample of the
- * recently-loaded message list). Honest by design:
- *  - if a model isn't in the local price table we still surface its
- *    tokens but show `—` for cost so the gap reads as a missing
- *    pricing entry rather than a free model.
- *  - if no assistant turns landed with token telemetry, the card
- *    shows an empty-state hint rather than `$0.00`.
+ * recently-loaded message list). Costs come from the workspace price
+ * table on the server (`cost_usd`, G7a). Honest by design:
+ *  - a model with no price still shows its tokens, with `—` for cost, so
+ *    the gap reads as a missing price rather than a free model;
+ *  - if no assistant turns landed with token telemetry, the card shows
+ *    an empty-state hint rather than `$0.00`.
  */
 
-// Per-1K-token list prices in USD. Owned by this component since the
-// analytics page also reads the same table for the LLM-spend KPI; the
-// page imports it from here so the two stay in lockstep.
-export const PRICE_TABLE_PER_1K: Record<string, { prompt: number; completion: number }> = {
-  "openai/gpt-4o": { prompt: 0.005, completion: 0.015 },
-  "openai/gpt-4o-mini": { prompt: 0.00015, completion: 0.0006 },
-  "openai/gpt-4-turbo": { prompt: 0.01, completion: 0.03 },
-  "openai/gpt-4": { prompt: 0.03, completion: 0.06 },
-  "openai/gpt-3.5-turbo": { prompt: 0.0005, completion: 0.0015 },
-  // Fallbacks for cases where the runtime persists the bare model name
-  // without the `<provider>/` prefix.
-  "gpt-4o": { prompt: 0.005, completion: 0.015 },
-  "gpt-4o-mini": { prompt: 0.00015, completion: 0.0006 },
-  "gpt-4-turbo": { prompt: 0.01, completion: 0.03 },
-  "gpt-4": { prompt: 0.03, completion: 0.06 },
-  "gpt-3.5-turbo": { prompt: 0.0005, completion: 0.0015 },
-};
-
-/** Apply pricing to a usage row. Returns `null` when the model is
- * absent from the price table — caller distinguishes "no price" from
- * "$0". */
-export function priceUsageRow(row: MessageUsageByModel): number | null {
-  const price = PRICE_TABLE_PER_1K[row.model];
-  if (!price) return null;
-  return (
-    (row.prompt_tokens / 1000) * price.prompt +
-    (row.completion_tokens / 1000) * price.completion
-  );
-}
-
 /** Aggregate spend across rows. Returns the total of priced rows plus
- * a `priced` flag so the caller knows whether at least one row matched
- * the table. */
+ * a `priced` flag so the caller knows whether at least one row had a
+ * price. */
 export function totalSpend(rows: MessageUsageByModel[]): { total: number; priced: boolean } {
   let total = 0;
   let priced = false;
   for (const row of rows) {
-    const cost = priceUsageRow(row);
-    if (cost !== null) {
+    if (typeof row.cost_usd === "number") {
       priced = true;
-      total += cost;
+      total += row.cost_usd;
     }
   }
   return { total, priced };
@@ -94,7 +63,10 @@ export default function ModelUsageCard({ rows, rangeDays, priorRows }: ModelUsag
   }
 
   // Sort by cost desc (priced first), then by turn count.
-  const enriched = rows.map((row) => ({ ...row, costUsd: priceUsageRow(row) }));
+  const enriched = rows.map((row) => ({
+    ...row,
+    costUsd: typeof row.cost_usd === "number" ? row.cost_usd : null,
+  }));
   enriched.sort((a, b) => (b.costUsd ?? 0) - (a.costUsd ?? 0) || b.turns - a.turns);
 
   const totalPrompt = enriched.reduce((a, r) => a + r.prompt_tokens, 0);
@@ -174,7 +146,7 @@ export default function ModelUsageCard({ rows, rangeDays, priorRows }: ModelUsag
                       fontFamily: "var(--font-mono)",
                       color: r.costUsd === null ? "var(--muted)" : undefined,
                     }}
-                    title={r.costUsd === null ? "No price entry for this model" : undefined}
+                    title={r.costUsd === null ? "No price set for this model in Workspace settings" : undefined}
                   >
                     {r.costUsd === null ? "— no price" : formatUsd(r.costUsd)}
                   </td>
@@ -190,8 +162,9 @@ export default function ModelUsageCard({ rows, rangeDays, priorRows }: ModelUsag
           className="muted"
           style={{ padding: "10px 16px", fontSize: 11.5, borderTop: "1px solid var(--border)" }}
         >
-          Price not available for some models. Their tokens are counted but
-          not included in the total cost.
+          Some models have no price. Their tokens are counted but not
+          included in the total cost. A superadmin can set prices in
+          Workspace settings → Model prices.
         </div>
       )}
     </div>

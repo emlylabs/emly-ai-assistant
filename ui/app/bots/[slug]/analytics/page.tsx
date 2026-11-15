@@ -6,10 +6,7 @@ import { useBot } from "@/components/BotShell";
 import KpiCard from "@/components/KpiCard";
 import VolumeChart from "@/components/charts/VolumeChart";
 import TopIntentsCard from "@/components/analytics/TopIntentsCard";
-import ModelUsageCard, {
-  PRICE_TABLE_PER_1K,
-  totalSpend,
-} from "@/components/analytics/ModelUsageCard";
+import ModelUsageCard, { totalSpend } from "@/components/analytics/ModelUsageCard";
 import SessionFlowCard from "@/components/analytics/SessionFlowCard";
 import ResolutionFunnelCard from "@/components/analytics/ResolutionFunnelCard";
 import ChannelFilter from "@/components/analytics/ChannelFilter";
@@ -595,11 +592,7 @@ export default function BotAnalyticsPage() {
     append(csvLine(["model", "turns", "prompt_tokens", "completion_tokens", "cost_usd"]));
     if (usageByModel) {
       for (const row of usageByModel) {
-        const price = PRICE_TABLE_PER_1K[row.model];
-        const cost = price
-          ? (row.prompt_tokens / 1000) * price.prompt +
-            (row.completion_tokens / 1000) * price.completion
-          : null;
+        const cost = typeof row.cost_usd === "number" ? row.cost_usd : null;
         append(
           csvLine([
             row.model,
