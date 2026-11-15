@@ -35,6 +35,7 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
+from services.widget_icons import is_icon_allowed
 from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
 from services.auth.ratelimit import client_ip, hit, rate_limit
 from services.auth.widget_hmac import WidgetPrincipal
@@ -92,10 +93,15 @@ def _safe_url(value: Optional[str]) -> Optional[str]:
 
     Admins paste the logo/avatar URL via the structured config editor;
     a malicious admin could put ``javascript:...`` or ``data:text/html...``
-    there. Force ``http(s)://`` or root-relative ``/foo``."""
+    there. Force ``http(s)://`` or root-relative ``/foo``. G10b: when
+    WIDGET_ICON_HOSTS is set, a URL on another host is dropped too, so
+    visitors' browsers never fetch from it (stored before the list was
+    set, say); the widget then shows its default icon."""
     if not value:
         return None
-    return value if _SAFE_URL_RE.match(value) else None
+    if not _SAFE_URL_RE.match(value) or not is_icon_allowed(value):
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------

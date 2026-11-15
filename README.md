@@ -128,6 +128,7 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): review them |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
+| `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
 | `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |
 | `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
 | Each bot's *Data retention* | Your retention period | Conversations, submissions and attachments older than this are deleted nightly |
@@ -197,6 +198,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
 | `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
 | `WIDGET_MAX_REQUEST_MB` | Largest widget request body (a form submission with all its files), counted as it arrives; bigger requests get 413 before they are stored. Each file is also checked against the bot's *Max file size*. Raise it if a bot's forms take more or larger files | `110` (two 50 MB files plus the form) |
+| `WIDGET_ICON_HOSTS` | Hosts the widget's logo, avatar and launcher icons may load from, comma-separated: `cdn.example.com`, `assets.internal:8443` or `*.example.com`. Visitors' browsers fetch these images, which tells the host their IP address and the page they're on. When set, an icon on any other host can't be saved, and one stored earlier isn't served (the widget shows its default). This app's own host, paths on the embedding site (`/logo.png`) and inline `data:image/` icons are always allowed | unset (any host) |
 | `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | After a bot's widget signing secret is rotated, how long tokens signed with the previous secret are still accepted | `86400` (24 h) |
 | `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
 | `FORWARDED_ALLOW_IPS` | Proxy addresses (comma-separated IPs or CIDRs) trusted to set `X-Forwarded-For` / `X-Forwarded-Proto`. Client IPs from these headers feed rate limits and the audit log, so never use `*`. Exposed directly (the default compose stack): leave the default. Behind a reverse-proxy container in compose: the proxy container's IP or the compose network's subnet, e.g. `172.18.0.0/16` (see `docker network inspect`). Kubernetes: the range your ingress controller connects from, usually the pod CIDR, e.g. `10.244.0.0/16` | `127.0.0.1` |
@@ -796,7 +798,7 @@ At start-up the app logs an "Outbound destinations" block naming, by host only, 
 | Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused unless their range is in `CRAWL_ALLOWED_PRIVATE_CIDRS`, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
 | Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
 
-The browser loads the widget from this app. Launcher and avatar icons set by an admin load from wherever their URLs point.
+The browser loads the widget from this app. Logo, avatar and launcher icons set by an admin load from wherever their URLs point, unless `WIDGET_ICON_HOSTS` limits them.
 
 ## Architecture
 
