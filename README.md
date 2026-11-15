@@ -775,6 +775,23 @@ Questions that ask for a missing detail come from templates and make no call.
 - **The audit log** records who did what, with ids. A visitor's rating is recorded as the score only.
 - **`last_login_at`** is updated at sign-in only, not on every request.
 
+## Outbound connections
+
+These are the only places the backend opens a connection to another system, besides Postgres. `tests/security/test_network_clients.py` fails if a module starts importing a network client that isn't listed here.
+
+| Destination | When | Code |
+|-------------|------|------|
+| The bot's model endpoint (or `OPENAI_BASE_URL`) | Answers, routing and detail extraction; enrichment when *Analyse conversations* is on; alert summaries for full alerts. See [What the model sees](#what-the-model-sees). | `agents/conversation_agent.py`, `services/enrichment.py`, `services/widget_email.py` |
+| `OPENAI_BASE_URL` for embeddings | Only with `EMBEDDING_PROVIDER=openai` | `config.py` |
+| Qdrant (`QDRANT_URL`) | Indexing and search | `agents/rag_manager.py` |
+| Mail server (`EMAIL_SERVER`) | Form alerts, invites, sign-in codes | `services/email_service.py` |
+| External identity provider | Sign-in, when `AUTH_PROVIDER=oidc`: discovery, keys, token exchange | `services/auth/oidc.py` |
+| Slack, Teams, Google Chat, WhatsApp, Telegram | Only for connected channels: replies, the sender's profile (Slack), and the platforms' signing keys | `channels/dispatcher.py`, `channels/auth/_http.py`, `channels/auth/service_account_jwt.py`, `channels/telegram.py` |
+| Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
+| Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
+
+The browser loads the widget from this app. Launcher and avatar icons set by an admin load from wherever their URLs point.
+
 ## Architecture
 
 ```
