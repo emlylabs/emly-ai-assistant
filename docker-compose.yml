@@ -81,6 +81,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-emly}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-emly}
       QDRANT_URL: http://qdrant:6333
       DATA_DIR: /app/data
+      # PORT in .env picks the host port (below); inside the container the
+      # app always listens on 8080, which the mapping and healthcheck use.
+      PORT: "8080"
     ports:
       - "${PORT:-8080}:8080"
     volumes:

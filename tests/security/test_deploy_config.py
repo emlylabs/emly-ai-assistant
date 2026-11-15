@@ -26,6 +26,17 @@ def test_qdrant_ports_not_published():
     assert not qdrant.get("ports"), "Qdrant must stay on the internal compose network"
 
 
+def test_container_port_is_pinned_whatever_port_env_says():
+    """PORT in .env chooses the host port of the compose mapping, but
+    ``env_file: .env`` also passed it into the container, where start.sh
+    listened on it: with PORT=18080 the app listened on 18080 while the
+    mapping and healthcheck used 8080, so it was unreachable (found in the
+    G8b restore drill)."""
+    app = _compose()["services"]["app"]
+    assert app["environment"]["PORT"] == "8080"
+    assert any(str(p).endswith(":8080") for p in app["ports"])
+
+
 def test_qdrant_telemetry_disabled():
     env = _compose()["services"]["qdrant"].get("environment") or {}
     assert str(env.get("QDRANT__TELEMETRY_DISABLED")).lower() == "true"
