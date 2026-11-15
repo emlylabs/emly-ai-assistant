@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode, urlparse
 
@@ -34,13 +35,14 @@ from services.auth.base import (
     AuthError,
     AuthProvider,
     InvalidTokenError,
+    MfaRequired,
     OAuthState,
 )
 from services.auth.dependencies import get_admin, get_auth_provider
 from services.auth.factory import get_state_store
 from services.auth.oidc import generate_nonce, generate_pkce_verifier, generate_state
 from services.auth.ratelimit import limit_for, limiter
-from services.secrets import encrypt_session_cookie
+from services.secrets import encrypt_refresh_cookie
 
 log = logging.getLogger(__name__)
 
@@ -181,10 +183,18 @@ def _max_age_seconds(expires_at: datetime) -> int:
     return max(delta, 60)
 
 
-def _set_session_cookies(response, request: Request, *, id_token: str, refresh_token: str | None, expires_at: datetime) -> None:
+def _set_session_cookies(response, request: Request, *, id_token: str, refresh_token: str | None,
+                         expires_at: datetime, auth_time: float) -> None:
     """Set the trio of session cookies. Mirrors the inverse
-    ``_clear_session_cookies`` so the browser attributes match."""
+    ``_clear_session_cookies`` so the browser attributes match.
+    ``auth_time`` is when the admin signed in (G3a): it rides in the
+    refresh cookie, and no cookie outlives the session's maximum age."""
+    from services.auth.session_limits import remaining_seconds
+
     max_age = _max_age_seconds(expires_at)
+    left = remaining_seconds(auth_time)
+    if left is not None:
+        max_age = max(min(max_age, left), 1)
     response.set_cookie(
         key=_cookie_name(),
         value=id_token,
@@ -198,7 +208,7 @@ def _set_session_cookies(response, request: Request, *, id_token: str, refresh_t
     if refresh_token:
         response.set_cookie(
             key=_refresh_cookie_name(),
-            value=encrypt_session_cookie(refresh_token) or "",
+            value=encrypt_refresh_cookie(refresh_token, auth_time) or "",
             max_age=max_age,
             path="/",
             secure=_cookie_secure(request),
@@ -280,6 +290,11 @@ _AUTH_ERROR_COPY = {
     "email_not_verified": (
         "Email not verified",
         "Please verify your email address with the sign-in provider, then try again.",
+    ),
+    "mfa_required": (
+        "Multi-factor sign-in required",
+        "This workspace requires multi-factor authentication. Sign in again with your second factor, "
+        "or ask your IT team to set it up for your account.",
     ),
     "account_disabled": (
         "Account disabled",
@@ -386,6 +401,12 @@ async def callback(
         token_set, principal = await run_in_threadpool(
             provider.exchange_code, code, oauth_state, _redirect_uri(request)
         )
+    except MfaRequired as e:
+        # G3b: the IdP signed the user in without the required strength.
+        log.warning("Sign-in refused: acr=%s amr=%s don't meet AUTH_OIDC_REQUIRED_ACR/AMR", e.acr, e.amr)
+        audit("auth.login_failed", request=request, success=False,
+              payload={"reason": "mfa_required", "acr": e.acr, "amr": e.amr})
+        return _auth_error(request, 401, {"code": "mfa_required"})
     except InvalidTokenError as e:
         log.warning("OIDC code exchange failed: %s", e)
         audit("auth.code_exchange_failed", request=request, success=False, payload={"err": str(e)})
@@ -462,6 +483,7 @@ async def callback(
         id_token=session_token,
         refresh_token=token_set.refresh_token,
         expires_at=token_set.expires_at,
+        auth_time=time.time(),  # G3a: the session's clock starts at sign-in
     )
     log.info(
         "Admin %s signed in via %s (max_age=%ds, refresh_token=%s)",
@@ -504,13 +526,12 @@ async def logout(
     # External IdPs treat logout as "stop using it"; the cookie clear is
     # what blocks replay from this browser.
     try:
-        from services.secrets import decrypt_session_cookie
+        from services.secrets import decrypt_refresh_cookie
         from services.auth.issuer.factory import get_refresh_store, is_local_issuer_enabled
         if is_local_issuer_enabled():
-            raw = request.cookies.get(_refresh_cookie_name())
-            rt = decrypt_session_cookie(raw) if raw else None
-            if rt:
-                get_refresh_store().revoke(rt)
+            cookie = decrypt_refresh_cookie(request.cookies.get(_refresh_cookie_name()))
+            if cookie:
+                get_refresh_store().revoke(cookie.refresh_token)
     except Exception:
         log.debug("BFF logout: refresh-token revoke skipped", exc_info=True)
 

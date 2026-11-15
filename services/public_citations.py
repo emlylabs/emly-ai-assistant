@@ -14,6 +14,7 @@ bot's *Show citations* setting was off and the widget displayed nothing.
 - a title (page title, document title, or the file's name; never a path);
 - a link, and an Open Graph description and image, only when they are
   ``http(s)`` URLs;
+- the page the passage is on, for documents that have pages (G12a);
 - a short excerpt of the passage (the length the widget displays);
 - the relevance score.
 """
@@ -60,6 +61,24 @@ def _excerpt(chunk: Any) -> Optional[str]:
     return text[: EXCERPT_CHARS - 1].rstrip() + "…"
 
 
+def citation_page(meta: Any) -> Optional[str]:
+    """The page a passage came from, as readers number it, or None.
+
+    The PDF loaders store ``page_label`` (the printed label, e.g. "iv" or
+    "12") and ``page`` (0-based) on every chunk. Prefer the label; else
+    count from 1. Other file types have no page.
+    """
+    if not isinstance(meta, dict):
+        return None
+    label = _text(meta.get("page_label"))
+    if label and len(label) <= 16:
+        return label
+    page = meta.get("page")
+    if isinstance(page, int) and not isinstance(page, bool) and page >= 0:
+        return str(page + 1)
+    return None
+
+
 def _score(c: Dict[str, Any], meta: Dict[str, Any]) -> Optional[float]:
     for v in (meta.get("relevance_score"), c.get("relevance_score"), c.get("score")):
         if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -88,6 +107,7 @@ def _one(c: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "source_url": url,
         "image": _http(meta.get("image")),
+        "page": citation_page(meta),
     }.items() if v}
     out: Dict[str, Any] = {"metadata": public_meta}
     if og:

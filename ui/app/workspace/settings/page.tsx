@@ -51,6 +51,133 @@ const KNOWN_FIELDS: { key: string; label: string; type: "text" | "number"; hint?
   },
 ];
 
+type PriceRow = { model: string; input: string; output: string };
+
+/** `model_prices` (services/model_prices.py): model -> USD per 1M tokens. */
+function priceRowsFrom(value: unknown): PriceRow[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).map(([model, p]) => {
+    const price = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
+    return {
+      model,
+      input: price.input_per_1m === undefined ? "" : String(price.input_per_1m),
+      output: price.output_per_1m === undefined ? "" : String(price.output_per_1m),
+    };
+  });
+}
+
+function pricesFromRows(rows: PriceRow[]): Record<string, { input_per_1m: number; output_per_1m: number }> | undefined {
+  const out: Record<string, { input_per_1m: number; output_per_1m: number }> = {};
+  for (const r of rows) {
+    const model = r.model.trim();
+    if (!model) continue;
+    out[model] = { input_per_1m: Number(r.input || 0), output_per_1m: Number(r.output || 0) };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function ModelPricesCard({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: unknown;
+  disabled: boolean;
+  onChange: (next: unknown) => void;
+}) {
+  const [rows, setRows] = useState<PriceRow[]>(() => priceRowsFrom(value));
+  const serialized = JSON.stringify(value ?? null);
+  useEffect(() => {
+    setRows(priceRowsFrom(value));
+    // Re-sync only when the stored value changes (reload, raw JSON edit),
+    // not on every parent render: `value` is a fresh object each time.
+  }, [serialized]);
+
+  function update(next: PriceRow[]) {
+    setRows(next);
+    onChange(pricesFromRows(next));
+  }
+
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0 }}>Model prices</h2>
+      <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+        USD per million tokens, used for the spend figures on every bot&rsquo;s
+        Analytics page. A name matches the model a bot records exactly, or by
+        its last part (<code>gpt-4o-mini</code> also prices{" "}
+        <code>openai/gpt-4o-mini</code>). Models without a price show
+        &ldquo;—&rdquo;, not $0: enter 0 for a free self-hosted model. Spend
+        counts the tokens of answers only.
+      </p>
+      {rows.length > 0 && (
+        <table className="table" style={{ width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left" }}>Model</th>
+              <th style={{ textAlign: "right" }}>Input $ / 1M</th>
+              <th style={{ textAlign: "right" }}>Output $ / 1M</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td>
+                  <input
+                    aria-label="Model name"
+                    value={r.model}
+                    disabled={disabled}
+                    onChange={(e) => update(rows.map((x, j) => (j === i ? { ...x, model: e.target.value } : x)))}
+                  />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <input
+                    aria-label={`Input price for ${r.model || "model"}`}
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={r.input}
+                    disabled={disabled}
+                    onChange={(e) => update(rows.map((x, j) => (j === i ? { ...x, input: e.target.value } : x)))}
+                  />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <input
+                    aria-label={`Output price for ${r.model || "model"}`}
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={r.output}
+                    disabled={disabled}
+                    onChange={(e) => update(rows.map((x, j) => (j === i ? { ...x, output: e.target.value } : x)))}
+                  />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <button
+                    className="ghost"
+                    disabled={disabled}
+                    onClick={() => update(rows.filter((_, j) => j !== i))}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <button
+        className="ghost"
+        disabled={disabled}
+        onClick={() => setRows([...rows, { model: "", input: "", output: "" }])}
+        style={{ marginTop: 8 }}
+      >
+        Add model
+      </button>
+    </div>
+  );
+}
+
 export default function WorkspaceSettingsPage() {
   const [me, setMe] = useState<AdminUser | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -198,6 +325,12 @@ export default function WorkspaceSettingsPage() {
               );
             })}
           </div>
+
+          <ModelPricesCard
+            value={settings?.model_prices}
+            disabled={!me?.is_superadmin}
+            onChange={(next) => setField("model_prices", next)}
+          />
 
           <div className="card">
             <h2 style={{ marginTop: 0 }}>Raw JSON</h2>

@@ -74,11 +74,7 @@ def _build_provider() -> AuthProvider:
     #   - no ``AUTH_OIDC_ISSUER`` set → defaulting to embedded by definition
     #   - it's explicitly set to the app's own base URL (operator wants
     #     the embedded issuer with a custom ``iss`` claim).
-    app_base = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
-    if explicit_issuer:
-        is_embedded = bool(app_base) and explicit_issuer.rstrip("/") == app_base
-    else:
-        is_embedded = True
+    is_embedded = issuer_is_embedded()
     # Trust the IdP's ``email_verified`` claim for external issuers
     # (where we don't own the password gate). For the embedded issuer
     # we always trust the gate (a successful password verify proves
@@ -238,6 +234,7 @@ def _build_provider() -> AuthProvider:
                 name=record.name,
                 scope=record.scope,
                 ttl=timedelta(seconds=refresh_token_ttl_seconds()),
+                auth_time=record.auth_time or record.issued_at,
             )
             return {
                 "access_token": access,
@@ -253,6 +250,17 @@ def _build_provider() -> AuthProvider:
     email_claims = tuple(
         c.strip() for c in os.environ.get("AUTH_OIDC_EMAIL_CLAIMS", "email").split(",") if c.strip()
     ) or ("email",)
+    trusted_email_claims = _list_env("AUTH_OIDC_TRUSTED_EMAIL_CLAIMS")
+    unread = [c for c in trusted_email_claims if c not in email_claims]
+    if unread:
+        log.warning("AUTH_OIDC_TRUSTED_EMAIL_CLAIMS lists %s, which AUTH_OIDC_EMAIL_CLAIMS doesn't read; "
+                    "add them there or they have no effect", ", ".join(unread))
+    required_acr, required_amr = required_authentication()
+    if is_embedded and (required_acr or required_amr):
+        # The built-in issuer is password-only and sets neither claim.
+        raise UnknownProviderError(
+            "AUTH_OIDC_REQUIRED_ACR / AUTH_OIDC_REQUIRED_AMR need an external identity provider that "
+            "enforces MFA; the built-in sign-in can't meet them.")
 
     return OidcProvider(
         issuer=issuer,
@@ -266,10 +274,47 @@ def _build_provider() -> AuthProvider:
         trust_email_unconditionally=trust_email_unconditionally,
         request_offline_access=offline_access_requested(),
         email_claims=email_claims,
+        trusted_email_claims=trusted_email_claims,
+        required_acr=required_acr,
+        required_amr=required_amr,
         discovery_override=discovery_override,
         jwks_provider=jwks_provider,
         token_exchanger=token_exchanger,
     )
+
+
+def issuer_is_embedded() -> bool:
+    """Whether sign-in goes to this app's own built-in issuer: no
+    ``AUTH_OIDC_ISSUER``, or one equal to ``APP_BASE_URL``."""
+    explicit_issuer = os.environ.get("AUTH_OIDC_ISSUER")
+    if not explicit_issuer:
+        return True
+    app_base = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
+    return bool(app_base) and explicit_issuer.rstrip("/") == app_base
+
+
+def check_required_authentication() -> None:
+    """Boot (G3b): refuse AUTH_OIDC_REQUIRED_ACR/AMR with the built-in
+    issuer, which is password-only and sets neither claim, rather than
+    lock every admin out at their next sign-in."""
+    acr, amr = required_authentication()
+    if not (acr or amr):
+        return
+    if issuer_is_embedded():
+        raise UnknownProviderError(
+            "AUTH_OIDC_REQUIRED_ACR / AUTH_OIDC_REQUIRED_AMR need an external identity provider that "
+            "enforces MFA; the built-in sign-in can't meet them.")
+    log.info("Sign-in requires acr in %s and amr containing one of %s", list(acr) or "any",
+             list(amr) or "any")
+
+
+def _list_env(name: str) -> tuple[str, ...]:
+    return tuple(v for v in (os.environ.get(name) or "").replace(",", " ").split() if v)
+
+
+def required_authentication() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """G3b: (AUTH_OIDC_REQUIRED_ACR, AUTH_OIDC_REQUIRED_AMR) values."""
+    return _list_env("AUTH_OIDC_REQUIRED_ACR"), _list_env("AUTH_OIDC_REQUIRED_AMR")
 
 
 def get_auth_provider() -> AuthProvider:

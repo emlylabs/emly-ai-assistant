@@ -42,6 +42,7 @@ from config import CHANNEL_SESSION_IDLE_HOURS
 from models.bot_channels import BotChannelModel, BotChannels
 from models.emly_sessions import EMLYSessions
 from models.webhook_event_dedupe import WebhookEventDedupes
+from services.public_citations import citation_page
 from services.secrets import decrypt as fernet_decrypt
 
 log = logging.getLogger(__name__)
@@ -181,6 +182,9 @@ def _citation_label(c: dict) -> Tuple[str, Optional[str]]:
     )
     if not url and source.startswith(("http://", "https://")):
         url = source
+    page = citation_page(metadata) or citation_page(c)
+    if page:
+        title = f"{title}, p. {page}"
     return title, url
 
 

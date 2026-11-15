@@ -242,12 +242,14 @@ export type HeatmapCell = {
 
 export type MessageUsageByModel = {
   /** The exact `model_used` string persisted on `emly_messages`, e.g.
-   * `openai/gpt-4o`. The frontend applies a local price table to turn
-   * these tallies into a USD figure. */
+   * `openai/gpt-4o`. */
   model: string;
   turns: number;
   prompt_tokens: number;
   completion_tokens: number;
+  /** USD from the workspace price table; null when the model has no
+   * price (unknown, not free). */
+  cost_usd?: number | null;
 };
 
 export type MessageCountByTopic = {

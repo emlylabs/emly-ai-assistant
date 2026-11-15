@@ -491,7 +491,7 @@ def _run_config_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[Is
 # Field-format rules (R16–R23). Malformed single values; the save route
 # always blocks on these, independent of the workspace save gate.
 # ---------------------------------------------------------------------------
-FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_", "R24_")
+FIELD_FORMAT_RULE_PREFIXES = ("R16_", "R17_", "R18_", "R19_", "R20_", "R21_", "R22_", "R23_", "R24_", "R25_")
 
 _EMAIL_RE = re.compile(r"^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$")
 _HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
@@ -628,15 +628,34 @@ def _field_format_issues(config: Dict[str, Any]) -> List[Issue]:
                 field="support_email",
             ))
 
-    logo = widget.get("logo")
-    if _present(logo) and not is_logo_url(str(logo)):
-        issues.append(Issue(
-            severity="error",
-            key="R17_invalid_logo_url",
-            section="identity",
-            message="Logo URL must be an http:// or https:// address, or a path starting with /.",
-            field="widget.logo",
-        ))
+    from services.widget_icons import ICON_FIELDS, ICON_HOSTS_ENV, icon_host, is_icon_allowed
+
+    for path, label in ICON_FIELDS:
+        value = _value_at(config, path)
+        if not _present(value):
+            continue
+        name = path.rsplit(".", 1)[-1]
+        section = "identity" if path.startswith("widget.") else "widget"
+        if not is_logo_url(str(value)):
+            issues.append(Issue(
+                severity="error",
+                # The logo keeps its original key (the editor and older clients match on it).
+                key="R17_invalid_logo_url" if name == "logo" else f"R17_invalid_icon_url_{name}",
+                section=section,
+                message=f"{label} URL must be an http:// or https:// address, or a path starting with /.",
+                field=path,
+            ))
+        elif not is_icon_allowed(str(value)):
+            # G10b: the visitor's browser would fetch it from an unapproved host.
+            issues.append(Issue(
+                severity="error",
+                key=f"R25_icon_host_not_allowed_{name}",
+                section=section,
+                message=f"{label}: {icon_host(str(value))} isn't an approved image host for this "
+                        f"deployment ({ICON_HOSTS_ENV}). Upload the image to your site and use its "
+                        "path, or use an approved host.",
+                field=path,
+            ))
 
     for field, label in _THEME_COLOR_FIELDS:
         color = theme.get(field)
@@ -723,11 +742,19 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
     # call us with neither set; that's an "unknown" not a "broken").
     if ctx.has_bot_api_key is not None and ctx.has_deployment_api_key is not None:
         if not ctx.has_bot_api_key and not ctx.has_deployment_api_key:
+            from services.llm_settings import REQUIRE_BOT_KEY_ENV, per_bot_key_required
+
+            message = (
+                "No LLM API key set for this bot. This deployment requires each bot to have its own "
+                f"key ({REQUIRE_BOT_KEY_ENV}), so the bot won't answer until you add one."
+                if per_bot_key_required() else
+                "No LLM API key set for this bot and no deployment-wide fallback configured. Chat will "
+                "fail with a 4xx the moment a visitor sends a message.")
             issues.append(Issue(
                 severity="error",
                 key="RT1_missing_api_key",  # gitleaks:allow (rule name, not a secret)
                 section="llm",
-                message="No LLM API key set for this bot and no deployment-wide fallback configured. Chat will fail with a 4xx the moment a visitor sends a message.",
+                message=message,
             ))
 
     # RT4 / RT5 — no model or endpoint for this bot and no deployment
@@ -780,10 +807,11 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
 # Probes — called by routes/admin_bot_dashboard.py when it knows the bot
 # ---------------------------------------------------------------------------
 def has_deployment_api_key() -> bool:
-    """True iff a deployment-wide LLM key (``OPENAI_API_KEY``) is set.
+    """True iff bots may fall back to a deployment-wide LLM key: one
+    (``OPENAI_API_KEY``) is set and ``REQUIRE_PER_BOT_LLM_KEY`` is off.
     See ``services/llm_settings.py`` for how fallbacks apply."""
-    from services.llm_settings import deployment_api_key
-    return deployment_api_key() is not None
+    from services.llm_settings import bot_fallback_api_key
+    return bot_fallback_api_key() is not None
 
 
 def has_deployment_model() -> bool:

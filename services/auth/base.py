@@ -36,6 +36,15 @@ class MissingClaimError(InvalidTokenError):
     """Token is missing a required claim (``sub``, ``email``, …)."""
 
 
+class MfaRequired(InvalidTokenError):
+    """G3b: the sign-in didn't meet AUTH_OIDC_REQUIRED_ACR / _AMR."""
+
+    def __init__(self, acr: Any, amr: Any):
+        self.acr = acr if isinstance(acr, str) else None
+        self.amr = [a for a in amr if isinstance(a, str)] if isinstance(amr, list) else []
+        super().__init__("sign-in did not meet the required authentication strength (acr/amr)")
+
+
 class UnknownProviderError(AuthError):
     """Provider config is missing or invalid."""
 

@@ -46,7 +46,8 @@ CRAWLED = {
 
 def test_upload_citation_keeps_name_not_path():
     (c,) = public_citations([UPLOAD], show=True)
-    assert c == {"metadata": {"title": "handbook.pdf"}, "chunk": c["chunk"], "relevance_score": 0.8123}
+    # The page number is public (G12a); the path, ids and PDF properties are not.
+    assert c == {"metadata": {"title": "handbook.pdf", "page": "4"}, "chunk": c["chunk"], "relevance_score": 0.8123}
     assert len(c["chunk"]) == EXCERPT_CHARS and c["chunk"].endswith("…")
     dumped = json.dumps(c)
     for leaked in ("/data/", "bot-1", "file-1", "J. Smith", "Internal PDF Tool"):

@@ -379,14 +379,21 @@ function fieldFormatIssues(config: Cfg): Issue[] {
     }
   }
 
-  if (present(widget.logo)) {
-    const logo = String(widget.logo);
-    if (!isLogoUrl(logo)) {
+  // Every admin-set image the widget loads (services/widget_icons.py
+  // ICON_FIELDS). The server also checks WIDGET_ICON_HOSTS (R25).
+  const iconFields: Array<[string, unknown, string, Issue["section"]]> = [
+    ["logo", widget.logo, "Logo", "identity"],
+    ["avatar", widget.avatar, "Avatar", "identity"],
+    ["open_icon", config.open_icon, "Launcher icon", "widget"],
+    ["close_icon", config.close_icon, "Launcher close icon", "widget"],
+  ];
+  for (const [name, value, label, section] of iconFields) {
+    if (present(value) && !isLogoUrl(String(value))) {
       issues.push({
         severity: "error",
-        key: "R17_invalid_logo_url",
-        section: "identity",
-        message: "Logo URL must be an http:// or https:// address, or a path starting with /.",
+        key: name === "logo" ? "R17_invalid_logo_url" : `R17_invalid_icon_url_${name}`,
+        section,
+        message: `${label} URL must be an http:// or https:// address, or a path starting with /.`,
       });
     }
   }

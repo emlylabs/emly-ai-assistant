@@ -90,6 +90,14 @@ def _validate_workspace_settings(settings: Dict[str, Any]) -> None:
                 ),
             },
         )
+    from services.model_prices import SETTINGS_KEY as PRICES_KEY, InvalidModelPrices, validate as validate_prices
+
+    if PRICES_KEY in settings:
+        try:
+            validate_prices(settings[PRICES_KEY])
+        except InvalidModelPrices as exc:
+            raise HTTPException(status_code=400,
+                                detail={"code": "invalid_value", "key": PRICES_KEY, "message": str(exc)})
     try:
         encoded = json.dumps(settings, ensure_ascii=False)
     except (TypeError, ValueError) as exc:

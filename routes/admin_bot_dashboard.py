@@ -242,16 +242,17 @@ class BotReport(BaseModel):
 
 
 class MessageUsageByModel(BaseModel):
-    """Per-`model_used` token tally over a window. Pricing lives client-side
-    (see ``ModelUsageCard``'s ``PRICE_TABLE_PER_1K``); the backend just
-    returns observable counts. Models with no `model_used` (legacy rows
-    from before Phase 2) are dropped — counting them under "unknown"
-    would invent attribution we don't have."""
+    """Per-`model_used` token tally over a window, with its cost from the
+    workspace price table (G7a, ``services/model_prices.py``). ``cost_usd``
+    is null when the model has no price: unknown, not free. Models with no
+    `model_used` (legacy rows from before Phase 2) are dropped — counting
+    them under "unknown" would invent attribution we don't have."""
 
     model: str
     turns: int
     prompt_tokens: int
     completion_tokens: int
+    cost_usd: Optional[float] = None
 
 
 @router.get(
@@ -303,15 +304,20 @@ def bot_messages_by_model(
         .group_by(EMLYMessage.model_used)
     )
 
-    return [
-        MessageUsageByModel(
+    from services.model_prices import PriceTable
+
+    prices = PriceTable()
+    out = []
+    for r in rows.dicts():
+        prompt, completion = int(r["prompt_tokens"] or 0), int(r["completion_tokens"] or 0)
+        out.append(MessageUsageByModel(
             model=r["model_used"],
             turns=int(r["turns"] or 0),
-            prompt_tokens=int(r["prompt_tokens"] or 0),
-            completion_tokens=int(r["completion_tokens"] or 0),
-        )
-        for r in rows.dicts()
-    ]
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cost_usd=prices.cost_usd(r["model_used"], prompt, completion),
+        ))
+    return out
 
 
 class FunnelResponse(BaseModel):
@@ -1731,3 +1737,151 @@ def bot_rag_search(
         for c in citations
     ]
     return RAGSearchResponse(query=query, top_k=top_k, threshold=threshold, hits=hits)
+
+
+# ---------------------------------------------------------------------------
+# G7b: analytics CSV export, built on the server and audited
+# ---------------------------------------------------------------------------
+@router.get("/bots/{slug}/analytics/export")
+def export_bot_analytics(
+    slug: str,
+    from_ts: Optional[int] = Query(None, alias="from"),
+    to_ts: Optional[int] = Query(None, alias="to"),
+    channel_id: Optional[str] = Query(None),
+    compare: bool = Query(False, description="Add the same-length period just before the window."),
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """The analytics page's figures for a window as CSV: KPIs, latency,
+    citations, the resolution funnel, daily messages and sessions, channel
+    and topic mix, enrichment and model usage with cost.
+
+    Built from the same aggregates as the page, so the numbers match it.
+    Cells that a spreadsheet would read as formulas are neutralised
+    (``utils/csv_export.py``), and every export is audited as
+    ``analytics.exported``. Bot members (and superadmins) may export, as
+    they may view the page; it holds aggregates only, no conversation text."""
+    from datetime import timezone as _tz
+
+    from routes.admin_bot_sessions import list_sessions_daily
+    from services.audit import audit
+    from utils.csv_export import csv_download, csv_lines
+
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    start, end = _resolve_window(from_ts, to_ts)
+    import math
+
+    f = math.floor(start.replace(tzinfo=_tz.utc).timestamp())
+    t = math.ceil(end.replace(tzinfo=_tz.utc).timestamp())  # whole seconds, covering the window
+
+    def window(ff: int, tt: int) -> Dict[str, Any]:
+        kw = dict(slug=slug, from_ts=ff, to_ts=tt, admin=admin)
+        usage = bot_messages_by_model(channel_id=channel_id, **kw)
+        priced = [u.cost_usd for u in usage if u.cost_usd is not None]
+        return {
+            "report": bot_get_report(channel_id=channel_id, **kw),
+            "usage": usage,
+            "spend": round(sum(priced), 6) if priced else None,
+            "daily": bot_messages_daily(channel_id=channel_id, **kw),
+        }
+
+    cur = window(f, t)
+    prior = window(f - (t - f) - 1, f - 1) if compare else None
+    kw = dict(slug=slug, from_ts=f, to_ts=t, admin=admin)
+    latency = bot_latency_quantiles(channel_id=channel_id, **kw)
+    citations = bot_citation_stats(channel_id=channel_id, **kw)
+    funnel = bot_funnel(channel_id=channel_id, **kw)
+    sessions = list_sessions_daily(channel_id_q=channel_id, **kw)
+    channels = bot_messages_by_channel(**kw)
+    topics = bot_messages_by_topic(channel_id=channel_id, **kw)
+    enrichment = bot_enrichment_summary(channel_id=channel_id, **kw)
+
+    audit("analytics.exported", admin_id=admin.id, bot_id=bot.id, target_type="analytics",
+          payload={"from": f, "to": t, "channel_id": channel_id, "compare": compare})
+
+    def kpis(w):
+        r = w["report"] if w else None
+        return [
+            ("total_messages", r and r.messages), ("sessions", r and r.conversations),
+            ("resolution_rate", r and r.resolution_rate), ("deflection_rate", r and r.deflection_rate),
+            ("csat_avg", r and r.csat_avg), ("csat_count", r and r.csat_count),
+            ("p95_latency_ms", r and r.p95_latency_ms), ("llm_spend_usd", w and w["spend"]),
+            ("widget_views_short", r and r.short_impressions), ("widget_views_long", r and r.impressions),
+        ]
+
+    def rows():
+        yield [f"# Analytics export: {bot.name} ({bot.slug})"]
+        yield [f"# Window (UTC): {start.isoformat()} to {end.isoformat()}"]
+        if channel_id:
+            yield [f"# Channel filter: {channel_id}"]
+        yield [f"# Generated {datetime.now(_tz.utc).isoformat()} by {admin.id}"]
+        yield []
+        yield ["# KPIs"]
+        yield ["metric", "value"] + (["prior"] if prior else [])
+        for (name, value), (_, before) in zip(kpis(cur), kpis(prior)):
+            yield [name, value] + ([before] if prior else [])
+        yield []
+        yield ["# Latency quantiles"]
+        yield ["quantile", "ms", "samples"]
+        for q in ("p50", "p95", "p99"):
+            yield [q, getattr(latency, q), latency.count]
+        yield []
+        yield ["# Citations"]
+        yield ["metric", "value"]
+        yield ["assistant_turns", citations.assistant_turns]
+        yield ["with_citations", citations.with_citations]
+        yield ["citation_rate", citations.citation_rate]
+        if citations.top_files:
+            yield []
+            yield ["# Top cited files"]
+            yield ["file_id", "filename", "citations"]
+            for c in citations.top_files:
+                yield [c.file_id, c.filename, c.citation_count]
+        yield []
+        yield ["# Resolution funnel"]
+        yield ["stage", "count", "rate"]
+        yield ["started", funnel.started, 1 if funnel.started else None]
+        yield ["understood", funnel.understood, funnel.understood_rate]
+        yield ["resolved", funnel.resolved, funnel.resolved_rate]
+        yield []
+        yield ["# Daily messages"]
+        yield ["date", "messages", "user", "assistant"] + (["prior_messages"] if prior else [])
+        prior_counts = [d.count for d in prior["daily"]] if prior else []
+        for i, d in enumerate(cur["daily"]):
+            extra = [prior_counts[i] if i < len(prior_counts) else None] if prior else []
+            yield [d.day, d.count, d.user_count, d.assistant_count] + extra
+        yield []
+        yield ["# Daily sessions"]
+        yield ["date", "started", "resolved"]
+        for d in sessions:
+            yield [d.day, d.started, d.resolved]
+        yield []
+        yield ["# Channel mix"]
+        yield ["channel_id", "channel_type", "display_name", "count"]
+        for c in channels:
+            yield [c.channel_id, c.channel_type, c.display_name, c.count]
+        yield []
+        yield ["# Topics"]
+        yield ["topic", "count"]
+        for tp in topics:
+            yield [tp.topic, tp.count]
+        yield []
+        yield ["# Enrichment"]
+        yield ["metric", "value"]
+        yield ["cohort_size", enrichment.cohort_size]
+        yield ["enriched_count", enrichment.enriched_count]
+        for k in ("positive", "neutral", "negative", "unrated"):
+            yield [f"sentiment_{k}", getattr(enrichment.sentiment, k)]
+        if enrichment.intents:
+            yield []
+            yield ["# Top enrichment intents"]
+            yield ["intent", "count"]
+            for i in enrichment.intents:
+                yield [i.intent, i.count]
+        yield []
+        yield ["# Model usage (answer tokens; cost from Workspace settings, Model prices)"]
+        yield ["model", "turns", "prompt_tokens", "completion_tokens", "cost_usd"]
+        for u in cur["usage"]:
+            yield [u.model, u.turns, u.prompt_tokens, u.completion_tokens, u.cost_usd]
+
+    return csv_download(csv_lines(rows()), f"analytics-{bot.slug}")

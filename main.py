@@ -7,8 +7,13 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
+# G6c: NAME_FILE secrets, before anything reads NAME. See utils/secret_files.py.
+from utils.secret_files import load_secret_files
+
+load_secret_files()
+
 # G2c: before anything imports LangChain. See utils/tracing_guard.py.
-from utils.tracing_guard import disable_unapproved_tracing
+from utils.tracing_guard import disable_unapproved_tracing  # noqa: E402
 
 disable_unapproved_tracing()
 
@@ -199,7 +204,13 @@ _assert_runtime_topology()
 from services.secrets import validate_configuration as _validate_secrets_key  # noqa: E402
 _validate_secrets_key()
 _init_embedded_issuer()
+from services.auth.factory import check_required_authentication as _check_mfa  # noqa: E402
+_check_mfa()  # G3b: required acr/amr need an external IdP
+from services.auth.session_limits import check_settings as _check_session_limits  # noqa: E402
+_check_session_limits()  # G3a: a malformed AUTH_SESSION_MAX_AGE_SECONDS stops start-up
 _log_llm_endpoint_policy()
+from services.crawl_fetch import log_crawl_settings as _log_crawl_settings  # noqa: E402
+_log_crawl_settings()  # G10a: a malformed CRAWL_ALLOWED_PRIVATE_CIDRS stops start-up
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
@@ -236,6 +247,11 @@ try:
 except Exception:
     log.exception("Bot config schema validation failed at boot")
     raise
+
+# G2d: one INFO block naming every outbound destination, by host only.
+from services.egress import log_egress_summary  # noqa: E402
+
+log_egress_summary()
 
 
 class CustomMiddleware(BaseHTTPMiddleware):
@@ -651,6 +667,27 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
 
     out.extend(endpoint_policy_warnings())
 
+    from services.egress import qdrant_warnings
+
+    out.extend(qdrant_warnings())
+    from services.egress import postgres_tls_warnings
+
+    out.extend(postgres_tls_warnings())
+
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode():
+        from services.auth.widget_cors import bots_open_to_any_site
+
+        open_bots = bots_open_to_any_site()
+        if open_bots:
+            out.append({
+                "code": "widget_any_origin",
+                "message": f"{len(open_bots)} bot(s) let any website embed their widget (Allowed widget "
+                           f"origins is *): {', '.join(open_bots[:20])}"
+                           f"{' …' if len(open_bots) > 20 else ''}. Set each one's origins to your own sites.",
+            })
+
     from services.audit import audit_write_failures
 
     failures = audit_write_failures()
@@ -759,6 +796,16 @@ def _app_base_url_from_request(request: Request) -> str:
     return "http://localhost:8080"
 
 
+def _ui_file(path: Path) -> FileResponse:
+    """Serve a file from the UI export. HTML pages carry the admin UI's
+    Content-Security-Policy, with hashes for their inline scripts (G13b)."""
+    if path.suffix == ".html":
+        from services.ui_csp import ui_policy_for_file
+
+        return FileResponse(path, headers={"Content-Security-Policy": ui_policy_for_file(path)})
+    return FileResponse(path)
+
+
 def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # With API docs disabled, their paths must 404 — not fall through to
     # the SPA shell below and look like they exist.
@@ -789,13 +836,13 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # Try the literal path first (handles /favicon.ico, /file.svg, etc.).
     candidate = (_UI_DIR / rel_path).resolve()
     if _UI_DIR.resolve() in candidate.parents and candidate.is_file():
-        return FileResponse(candidate)
+        return _ui_file(candidate)
 
     # Next.js static export emits a foo.html for the /foo route.
     if rel_path:
         html_candidate = (_UI_DIR / f"{rel_path}.html").resolve()
         if _UI_DIR.resolve() in html_candidate.parents and html_candidate.is_file():
-            return FileResponse(html_candidate)
+            return _ui_file(html_candidate)
 
     # Per-bot routes — `/bots/<slug>/<tab>` — are statically exported
     # under a placeholder slug `_` (Next.js requires `generateStaticParams`
@@ -820,15 +867,15 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     if rewritten is not None:
         literal = (_UI_DIR / rewritten).resolve()
         if _UI_DIR.resolve() in literal.parents and literal.is_file():
-            return FileResponse(literal)
+            return _ui_file(literal)
         scaffold = (_UI_DIR / f"{rewritten}.html").resolve()
         if _UI_DIR.resolve() in scaffold.parents and scaffold.is_file():
-            return FileResponse(scaffold)
+            return _ui_file(scaffold)
 
     # SPA fallback.
     index = _UI_DIR / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        return _ui_file(index)
     return JSONResponse(status_code=404, content={"message": "Not found"})
 
 

@@ -89,69 +89,39 @@ def list_bot_audit_logs(
 # ---------------------------------------------------------------------------
 # CSV export (C7)
 # ---------------------------------------------------------------------------
-import csv  # noqa: E402
-import io  # noqa: E402
-import json  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
+from datetime import datetime  # noqa: E402
 from typing import Iterable, Iterator  # noqa: E402
 
 from fastapi.responses import StreamingResponse  # noqa: E402
+
+from utils.csv_export import csv_download, csv_lines  # noqa: E402
 
 CSV_COLUMNS = (
     "created_at", "action", "success", "admin_id", "admin_email", "bot_id",
     "target_type", "target_id", "ip", "user_agent", "payload",
 )
-# Cells starting with these are treated as formulas by spreadsheet apps.
-# Audit rows hold attacker-influenced text (user agents, emails), so neutralise
-# them with a leading apostrophe (OWASP "CSV injection").
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _csv_cell(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, datetime):
-        value = value.isoformat()
-    elif isinstance(value, (dict, list)):
-        value = json.dumps(value, sort_keys=True, default=str)
-    text = str(value)
-    if text.startswith(_FORMULA_PREFIXES):
-        text = "'" + text
-    return text
-
-
 def _csv_stream(rows: Iterable[AdminAuditLogModel]) -> Iterator[str]:
     from models.admin_users import AdminUsers
 
     emails: dict[str, Optional[str]] = {}
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(CSV_COLUMNS)
-    for row in rows:
-        if row.admin_id and row.admin_id not in emails:
-            user = AdminUsers.get_by_id_including_deleted(row.admin_id)
-            emails[row.admin_id] = user.email if user else None
-        writer.writerow([_csv_cell(v) for v in (
-            row.created_at, row.action, row.success, row.admin_id, emails.get(row.admin_id or ""),
-            row.bot_id, row.target_type, row.target_id, row.ip, row.ua, row.payload,
-        )])
-        if buf.tell() > 64 * 1024:
-            yield buf.getvalue()
-            buf.seek(0)
-            buf.truncate(0)
-    yield buf.getvalue()
+
+    def lines():
+        yield CSV_COLUMNS
+        for row in rows:
+            if row.admin_id and row.admin_id not in emails:
+                user = AdminUsers.get_by_id_including_deleted(row.admin_id)
+                emails[row.admin_id] = user.email if user else None
+            # Every cell as text: audit rows hold attacker-influenced values.
+            yield [str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v for v in (
+                row.created_at, row.action, row.success, row.admin_id, emails.get(row.admin_id or ""),
+                row.bot_id, row.target_type, row.target_id, row.ip, row.ua, row.payload,
+            )]
+
+    return csv_lines(lines())
 
 
 def _csv_response(rows: Iterable[AdminAuditLogModel], scope: str) -> StreamingResponse:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return StreamingResponse(
-        _csv_stream(rows),
-        media_type="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="audit-{scope}-{stamp}.csv"',
-            "Cache-Control": "no-store",
-        },
-    )
+    return csv_download(_csv_stream(rows), f"audit-{scope}")
 
 
 @router.get("/audit/export")

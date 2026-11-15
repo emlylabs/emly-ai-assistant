@@ -47,9 +47,9 @@ def _support_faq_config(slug: str, name: str) -> Dict[str, Any]:
                     "llm_response": (
                         "You are a helpful support assistant for "
                         f"{name}. Answer the user's question using only the "
-                        "context below. If the answer isn't there, say you "
+                        "reference passages below. If the answer isn't there, say you "
                         "don't know rather than guessing.\n\n"
-                        "### Context starts ###\n{context}\n### Context ends ###\n\n"
+                        "{context}\n\n"
                         "### User Question ###\n{user_input}\n\n"
                         "### History ###\n{history}\n"
                     ),
@@ -125,10 +125,10 @@ def _internal_kb_config(slug: str, name: str) -> Dict[str, Any]:
                     "llm_response": (
                         f"You are an internal knowledge assistant for {name}. "
                         "Answer the team member's question using only the "
-                        "context below. **Internal use only — do not share "
-                        "answers outside the organization.** If the answer "
-                        "isn't in the context, say so rather than guessing.\n\n"
-                        "### Context starts ###\n{context}\n### Context ends ###\n\n"
+                        "reference passages below. **Internal use only — do not "
+                        "share answers outside the organization.** If the answer "
+                        "isn't in the passages, say so rather than guessing.\n\n"
+                        "{context}\n\n"
                         "### Question ###\n{user_input}\n\n"
                         "### History ###\n{history}\n"
                     ),
