@@ -237,6 +237,11 @@ except Exception:
     log.exception("Bot config schema validation failed at boot")
     raise
 
+# G2d: one INFO block naming every outbound destination, by host only.
+from services.egress import log_egress_summary  # noqa: E402
+
+log_egress_summary()
+
 
 class CustomMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -650,6 +655,10 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
     from services.llm_settings import endpoint_policy_warnings
 
     out.extend(endpoint_policy_warnings())
+
+    from services.egress import qdrant_warnings
+
+    out.extend(qdrant_warnings())
 
     from services.audit import audit_write_failures
 

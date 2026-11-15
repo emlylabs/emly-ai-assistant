@@ -151,6 +151,8 @@ Checklist for a production deployment. Each variable is described in full under 
 **Network and channels**
 
 - Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
+- Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and on `/api/readyz`.
+- Check the "Outbound destinations" block in the start-up log against the systems you expect (see [Outbound connections](#outbound-connections)).
 - Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.
 - The image runs as a non-root user and handles `SIGTERM` for clean shutdowns.
 
@@ -778,6 +780,8 @@ Questions that ask for a missing detail come from templates and make no call.
 ## Outbound connections
 
 These are the only places the backend opens a connection to another system, besides Postgres. `tests/security/test_network_clients.py` fails if a module starts importing a network client that isn't listed here.
+
+At start-up the app logs an "Outbound destinations" block naming, by host only, what this deployment is configured to use: the default model endpoint and every endpoint a bot has set, embeddings, Qdrant, the mail server, the identity provider, connected chat platforms, Hugging Face downloads and LangSmith.
 
 | Destination | When | Code |
 |-------------|------|------|
