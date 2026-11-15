@@ -813,6 +813,12 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # the SPA shell below and look like they exist.
     if rel_path.strip("/") in API_DOC_PATHS and not api_docs_enabled():
         return JSONResponse(status_code=404, content={"message": "Not found"})
+    # Unknown API and widget paths are 404s, not the admin UI's HTML with a
+    # 200: a client calling a wrong or retired endpoint must see the error
+    # (found in the G8b restore drill). The UI has no pages under these.
+    first = rel_path.strip("/").split("/", 1)[0]
+    if first in ("api", "widget"):
+        return JSONResponse(status_code=404, content={"message": "Not found"})
 
     if not _UI_DIR.exists():
         return JSONResponse(
