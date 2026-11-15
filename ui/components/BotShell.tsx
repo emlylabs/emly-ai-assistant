@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { signOut } from "@/lib/signOut";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -235,16 +236,8 @@ export default function BotShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   async function logout() {
-    try {
-      const res = await api.logout();
-      if (res?.provider_logout_url) {
-        window.location.href = res.provider_logout_url;
-        return;
-      }
-    } catch {
-      // fall through to login
-    }
-    router.replace("/login");
+    const problem = await signOut(router);
+    if (problem) window.alert(problem);
   }
 
   async function refreshPermissions() {
