@@ -53,6 +53,7 @@ spec:
               mountPath: /var/run/postgresql
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           readinessProbe:

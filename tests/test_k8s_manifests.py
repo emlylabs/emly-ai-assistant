@@ -7,6 +7,8 @@ deny-by-default networking, and no secret values in the manifests.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -58,6 +60,7 @@ def test_every_pod_is_locked_down(path, doc):
         sc = c["securityContext"]
         assert sc["allowPrivilegeEscalation"] is False
         assert sc["capabilities"]["drop"] == ["ALL"]
+        assert sc["readOnlyRootFilesystem"] is True  # verified on a kind cluster
         assert "readinessProbe" in c and "livenessProbe" in c
         assert c["resources"]["limits"]["memory"]
 
@@ -102,3 +105,21 @@ def test_config_is_production_and_single_worker():
 def test_readme_documents_the_manifests():
     readme = (K8S.parents[1] / "README.md").read_text()
     assert "deploy/k8s" in readme and "### Kubernetes" in readme
+
+
+CLUSTER_SCOPED = {"Namespace"}
+
+
+@pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl not installed (CI runners have it)")
+@pytest.mark.parametrize("overlay", sorted(p.name for p in (K8S / "overlays").iterdir() if p.is_dir()))
+def test_every_overlay_keeps_its_objects_in_the_emly_namespace(overlay):
+    """in-cluster-postgres used to leave the Postgres component's objects
+    without a namespace, so they were created in "default" (found on the
+    kind trial)."""
+    out = subprocess.run(["kubectl", "kustomize", str(K8S / "overlays" / overlay)],
+                         capture_output=True, text=True, check=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    assert docs
+    for d in docs:
+        if d["kind"] not in CLUSTER_SCOPED:
+            assert d["metadata"].get("namespace") == "emly", f'{overlay}: {d["kind"]}/{d["metadata"]["name"]}'

@@ -9,6 +9,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Needed here too: the example's namespace applies only to its own
+# resources, so without it the component's objects land in "default".
+namespace: emly
+
 resources:
   - ../example
 

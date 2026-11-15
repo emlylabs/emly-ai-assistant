@@ -110,9 +110,20 @@ kubectl apply -k deploy/k8s/overlays/<your-overlay>
 - **One replica only.** Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
 - **Secrets** are mounted from the `emly-secrets` Secret as files and read through `NAME_FILE` ([Secrets from files](#secrets-from-files)); none are in the manifests or the pod's environment. Add a `NAME_FILE` entry in your overlay for each optional secret you set.
 - **Network:** everything is denied by default. The app may reach DNS and Qdrant; Qdrant only accepts the app and reaches nothing. Your overlay lists, by address, the model endpoint, database, mail server and anything else in [Outbound connections](#outbound-connections) (`overlays/example/egress-external.yaml`), and names the ingress controller's namespace (`ingress-nginx` in the base).
-- **Pods** run as non-root with no privilege escalation, all capabilities dropped and the default seccomp profile. The app's root filesystem is still writable: a read-only one hasn't been tested with the model libraries yet.
-- CI renders every overlay and validates it with kubeconform.
-- **Not tested on a cluster yet** (no `kind` run in CI). Treat the first deployment as a trial on a test namespace.
+- **Pods** run as non-root with read-only root filesystems, no privilege escalation, all capabilities dropped and the default seccomp profile. Each writes only to its volumes and a `/tmp` emptyDir.
+- **Images:** the base pins `qdrant/qdrant:v1.12.4-unprivileged` and `postgres:16-alpine`. Your overlay sets the app image (your registry and the release tag).
+- CI renders every overlay and validates it with kubeconform; the tests also check that every object stays in the `emly` namespace.
+
+**Trial record.** 2026-11-15, kind (Kubernetes 1.36, 3 nodes, kindnet), `overlays/in-cluster-postgres` with `MODE=prod`, app image built from `claim-gaps-5`. Confirmed:
+
+- the `restricted` Pod Security level admits all three pods and rejects a non-compliant one;
+- read-only root filesystems on all three pods;
+- sign-in (with the forced password change), creating a bot, upload, indexing and search through the in-cluster Qdrant and Postgres; a disguised upload refused;
+- data and the admin's session survive the app pod being replaced;
+- `Recreate`: the old pod is gone before the new one starts;
+- NetworkPolicies are enforced: a pod outside the namespace can't reach the app, Qdrant or Postgres; the app reaches Qdrant and Postgres but not the internet.
+
+The trial found two problems, both fixed: the in-cluster Postgres objects landed in the `default` namespace, and Qdrant couldn't write its start-up marker with a read-only filesystem. Not exercised: an ingress controller and TLS (the trial used `kubectl port-forward`, which bypasses NetworkPolicies), egress to real external services, and a managed database.
 
 ---
 

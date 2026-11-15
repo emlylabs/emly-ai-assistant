@@ -64,10 +64,10 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-            # Not yet verified with a read-only root filesystem: the app
-            # should write only to /app/data and /tmp, but the model
-            # libraries haven't been checked. Try true on a test cluster.
-            readOnlyRootFilesystem: false
+            # The app writes only to /app/data (volume) and /tmp (emptyDir).
+            # Verified on a kind cluster: boot, sign-in, upload, indexing
+            # and search with a read-only root filesystem.
+            readOnlyRootFilesystem: true
           # Loading the embedding and re-ranking models takes a while.
           startupProbe:
             httpGet:
