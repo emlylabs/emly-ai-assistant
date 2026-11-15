@@ -240,6 +240,9 @@ class BotReport(BaseModel):
     csat_count: int = 0
     p95_latency_ms: Optional[int] = None
     resolution_rate: Optional[float] = None
+    # G7d: automatic estimate (services/auto_resolution.py), not staff-marked.
+    likely_resolved_rate: Optional[float] = None
+    likely_resolved_count: int = 0
 
 
 class MessageUsageByModel(BaseModel):
@@ -1808,7 +1811,9 @@ def export_bot_analytics(
         r = w["report"] if w else None
         return [
             ("total_messages", r and r.messages), ("sessions", r and r.conversations),
-            ("resolution_rate", r and r.resolution_rate), ("deflection_rate", r and r.deflection_rate),
+            ("resolution_rate", r and r.resolution_rate),
+            ("likely_resolved_rate_automatic", r and r.likely_resolved_rate),
+            ("deflection_rate", r and r.deflection_rate),
             ("csat_avg", r and r.csat_avg), ("csat_count", r and r.csat_count),
             ("p95_latency_ms", r and r.p95_latency_ms), ("llm_spend_usd", w and w["spend"]),
             ("widget_views_short", r and r.short_impressions), ("widget_views_long", r and r.impressions),

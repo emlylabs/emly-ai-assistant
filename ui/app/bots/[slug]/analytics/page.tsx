@@ -393,6 +393,7 @@ export default function BotAnalyticsPage() {
         messages: deltaPct(messagesCount, priorMessagesCount),
         sessions: deltaPct(sessionsCount, priorSessionsCount),
         resolution: deltaPctPoint(report?.resolution_rate, priorReport?.resolution_rate),
+        likelyResolved: deltaPctPoint(report?.likely_resolved_rate, priorReport?.likely_resolved_rate),
         csat: deltaCsat(report?.csat_avg, priorReport?.csat_avg),
         deflection: deltaPctPoint(report?.deflection_rate, priorReport?.deflection_rate),
         latency: deltaLatency(report?.p95_latency_ms, priorReport?.p95_latency_ms),
@@ -611,7 +612,17 @@ export default function BotAnalyticsPage() {
               footnote={
                 report?.resolution_rate === null
                   ? "no resolved sessions in window"
-                  : "sessions marked resolved in window"
+                  : "sessions staff marked resolved"
+              }
+            />
+            <KpiCard
+              label="Likely resolved"
+              value={formatPct(report?.likely_resolved_rate)}
+              delta={deltas?.likelyResolved ?? undefined}
+              footnote={
+                report?.likely_resolved_rate === null || report?.likely_resolved_rate === undefined
+                  ? "no sessions in window"
+                  : "automatic: answered, no thumbs-down or handover, then thumbs-up or 30 min quiet"
               }
             />
             <KpiCard

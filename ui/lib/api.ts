@@ -301,6 +301,9 @@ export type BotReport = {
   csat_count: number;
   p95_latency_ms: number | null;
   resolution_rate: number | null;
+  /** G7d: automatic estimate, not staff-marked (services/auto_resolution.py). */
+  likely_resolved_rate: number | null;
+  likely_resolved_count: number;
 };
 
 export type EndUser = {

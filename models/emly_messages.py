@@ -599,6 +599,8 @@ class EMLYMessagesTable:
         # file doesn't import the sibling at load time. Returns None when
         # the table is empty for the bot in the window.
         resolution_rate: Optional[float] = None
+        likely_resolved_rate: Optional[float] = None
+        likely_resolved_count = 0
         try:
             from models.emly_sessions import EMLYSession
 
@@ -613,6 +615,11 @@ class EMLYMessagesTable:
             if sess_total > 0:
                 sess_resolved = sess.where(EMLYSession.is_resolved == True).count()  # noqa: E712
                 resolution_rate = round(sess_resolved / sess_total, 4)
+                # G7d: automatic estimate, reported separately.
+                from services.auto_resolution import count_likely_resolved
+
+                likely_resolved_count = count_likely_resolved(sess, bot_id)
+                likely_resolved_rate = round(likely_resolved_count / sess_total, 4)
         except Exception:
             logging.debug("get_report: resolution_rate lookup skipped", exc_info=True)
 
@@ -635,6 +642,8 @@ class EMLYMessagesTable:
             "csat_count": csat_count,
             "p95_latency_ms": p95_latency_ms,
             "resolution_rate": resolution_rate,
+            "likely_resolved_rate": likely_resolved_rate,
+            "likely_resolved_count": likely_resolved_count,
         }
 
     def get_messages_from_to(
