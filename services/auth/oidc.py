@@ -79,6 +79,7 @@ class OidcProvider:
         trust_email_unconditionally: bool = False,
         request_offline_access: bool = True,
         email_claims: tuple[str, ...] = ("email",),
+        trusted_email_claims: tuple[str, ...] = (),
         required_acr: tuple[str, ...] = (),
         required_amr: tuple[str, ...] = (),
         http_client: httpx.Client | None = None,
@@ -111,6 +112,11 @@ class OidcProvider:
         # Ordered claim names to read the admin's email from. Entra ID often
         # omits ``email``; e.g. ("email", "upn") falls back to the UPN.
         self._email_claims = tuple(email_claims) or ("email",)
+        # G3d: claims whose address this IdP vouches for even without
+        # ``email_verified`` (e.g. ``upn`` on a single-tenant Entra app,
+        # where the tenant owns every UPN domain). Narrower than
+        # trust_email_unconditionally, which trusts every claim.
+        self._trusted_email_claims = frozenset(trusted_email_claims)
         # G3b: checked at sign-in only (exchange_code), not on every token
         # verification: refreshed tokens don't always repeat acr/amr.
         self._required_acr = tuple(required_acr)
@@ -266,7 +272,7 @@ class OidcProvider:
         # refuse activation if verification didn't happen at the IdP.
         # ``email_verified`` describes the ``email`` claim only, so an
         # address read from a fallback claim counts as unverified.
-        if self._trust_email_unconditionally:
+        if self._trust_email_unconditionally or source in self._trusted_email_claims:
             email_verified = True
         elif source == "email":
             email_verified = _coerce_email_verified(claims.get("email_verified"))

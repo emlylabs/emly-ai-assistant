@@ -249,6 +249,11 @@ def _build_provider() -> AuthProvider:
     email_claims = tuple(
         c.strip() for c in os.environ.get("AUTH_OIDC_EMAIL_CLAIMS", "email").split(",") if c.strip()
     ) or ("email",)
+    trusted_email_claims = _list_env("AUTH_OIDC_TRUSTED_EMAIL_CLAIMS")
+    unread = [c for c in trusted_email_claims if c not in email_claims]
+    if unread:
+        log.warning("AUTH_OIDC_TRUSTED_EMAIL_CLAIMS lists %s, which AUTH_OIDC_EMAIL_CLAIMS doesn't read; "
+                    "add them there or they have no effect", ", ".join(unread))
     required_acr, required_amr = required_authentication()
     if is_embedded and (required_acr or required_amr):
         # The built-in issuer is password-only and sets neither claim.
@@ -268,6 +273,7 @@ def _build_provider() -> AuthProvider:
         trust_email_unconditionally=trust_email_unconditionally,
         request_offline_access=offline_access_requested(),
         email_claims=email_claims,
+        trusted_email_claims=trusted_email_claims,
         required_acr=required_acr,
         required_amr=required_amr,
         discovery_override=discovery_override,
