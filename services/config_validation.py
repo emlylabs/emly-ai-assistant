@@ -742,11 +742,19 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
     # call us with neither set; that's an "unknown" not a "broken").
     if ctx.has_bot_api_key is not None and ctx.has_deployment_api_key is not None:
         if not ctx.has_bot_api_key and not ctx.has_deployment_api_key:
+            from services.llm_settings import REQUIRE_BOT_KEY_ENV, per_bot_key_required
+
+            message = (
+                "No LLM API key set for this bot. This deployment requires each bot to have its own "
+                f"key ({REQUIRE_BOT_KEY_ENV}), so the bot won't answer until you add one."
+                if per_bot_key_required() else
+                "No LLM API key set for this bot and no deployment-wide fallback configured. Chat will "
+                "fail with a 4xx the moment a visitor sends a message.")
             issues.append(Issue(
                 severity="error",
                 key="RT1_missing_api_key",  # gitleaks:allow (rule name, not a secret)
                 section="llm",
-                message="No LLM API key set for this bot and no deployment-wide fallback configured. Chat will fail with a 4xx the moment a visitor sends a message.",
+                message=message,
             ))
 
     # RT4 / RT5 — no model or endpoint for this bot and no deployment
@@ -799,10 +807,11 @@ def _run_runtime_rules(config: Dict[str, Any], ctx: ValidationContext) -> List[I
 # Probes — called by routes/admin_bot_dashboard.py when it knows the bot
 # ---------------------------------------------------------------------------
 def has_deployment_api_key() -> bool:
-    """True iff a deployment-wide LLM key (``OPENAI_API_KEY``) is set.
+    """True iff bots may fall back to a deployment-wide LLM key: one
+    (``OPENAI_API_KEY``) is set and ``REQUIRE_PER_BOT_LLM_KEY`` is off.
     See ``services/llm_settings.py`` for how fallbacks apply."""
-    from services.llm_settings import deployment_api_key
-    return deployment_api_key() is not None
+    from services.llm_settings import bot_fallback_api_key
+    return bot_fallback_api_key() is not None
 
 
 def has_deployment_model() -> bool:

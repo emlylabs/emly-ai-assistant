@@ -15,6 +15,11 @@ traffic. When it is set, an endpoint that isn't on it resolves as no
 endpoint at all, so the bot refuses to answer exactly as if none were set.
 It doesn't fall back to the deployment endpoint: the bot's API key
 belongs to the endpoint its owner chose.
+
+``REQUIRE_PER_BOT_LLM_KEY=true`` (G6a) turns off the API-key fallback for
+bots: a bot without its own key refuses to answer instead of using
+``OPENAI_API_KEY``, so each department's spend and data path stay on its
+own key. ``OPENAI_API_KEY`` is then used only for remote embeddings.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ MODEL_ENV = "MODEL"
 ENDPOINT_ENV = "OPENAI_BASE_URL"
 API_KEY_ENV = "OPENAI_API_KEY"
 ALLOWLIST_ENV = "LLM_ENDPOINT_ALLOWLIST"
+REQUIRE_BOT_KEY_ENV = "REQUIRE_PER_BOT_LLM_KEY"
 
 # What a visitor sees when the bot can't answer because it isn't set up.
 # Deliberately says nothing about why: that is for the admin UI.
@@ -54,6 +60,18 @@ def deployment_endpoint() -> Optional[str]:
 
 def deployment_api_key() -> Optional[str]:
     return _clean(os.environ.get(API_KEY_ENV))
+
+
+def per_bot_key_required() -> bool:
+    """G6a: bots may not fall back to ``OPENAI_API_KEY``."""
+    from utils.runtime import env_flag
+
+    return env_flag(REQUIRE_BOT_KEY_ENV, default=False)
+
+
+def bot_fallback_api_key() -> Optional[str]:
+    """The deployment key a bot without its own may use, if any."""
+    return None if per_bot_key_required() else deployment_api_key()
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +241,7 @@ def resolve(
     return LLMSettings(
         model=_clean(llm_cfg.get("model")) or deployment_model(),
         endpoint=endpoint,
-        api_key=api_key or deployment_api_key(),
+        api_key=api_key or (bot_fallback_api_key() if bot_id else deployment_api_key()),
     )
 
 

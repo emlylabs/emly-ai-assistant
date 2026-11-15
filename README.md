@@ -141,6 +141,7 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
 | `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
+| `REQUIRE_PER_BOT_LLM_KEY` | `true` | Each bot must have its own API key, so departments don't share one key's spend and data path. A bot without one refuses to answer and its config page says why |
 | `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning on `/api/readyz` |
 | `CRAWL_ALLOWED_PRIVATE_CIDRS` | Only the ranges that hold intranet sites you want indexed | Admins can then crawl those addresses, and only those. Leave unset if you crawl public sites only |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
@@ -181,6 +182,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `MODEL` | Default model name, e.g. `gpt-4o-mini` | unset |
 | `OPENAI_BASE_URL` | Default OpenAI-compatible endpoint, including the version path, e.g. `https://api.openai.com/v1` or `https://openrouter.ai/api/v1` | unset |
 | `OPENAI_API_KEY` | Default API key (also the embedding key when `EMBEDDING_PROVIDER=openai`) | unset |
+| `REQUIRE_PER_BOT_LLM_KEY` | `true`: bots don't fall back to `OPENAI_API_KEY`. A bot without its own key refuses to answer, and its config page says it needs one. `OPENAI_API_KEY` is then used only for remote embeddings | `false` |
 | `LLM_ENDPOINT_ALLOWLIST` | Model endpoints any bot may use, comma-separated: base URLs (`https://llm.example.com/v1`), hosts with an optional port (`llm.internal:8443`) or `*.example.com`. A bot whose endpoint isn't listed can't save it and refuses to answer; it never falls back to another endpoint. `OPENAI_BASE_URL` must be listed too | unset (any endpoint) |
 
 ### Runtime and Security
