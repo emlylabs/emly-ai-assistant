@@ -33,6 +33,7 @@ from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from config import DATA_DIR
+from utils.private_files import write_private
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +57,8 @@ def _load_or_create_key() -> bytes:
         "Set BOT_SECRETS_KEY in production so the key survives DATA_DIR rebuilds.",
         secret_path,
     )
-    os.makedirs(str(DATA_DIR), exist_ok=True)
     key = Fernet.generate_key()
-    with open(secret_path, "wb") as fh:
-        fh.write(key)
-    os.chmod(secret_path, 0o600)
+    write_private(secret_path, key)
     return key
 
 
