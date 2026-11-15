@@ -312,13 +312,10 @@ def _try_send_invite_email(
         from services.invite_email import schedule_invite_email
 
         schedule_invite_email(
-            token=pending.token,
-            email=pending.email,
-            inviter_name=inviter.name or inviter.email,
-            inviter_email=inviter.email,
+            pending_id=pending.id,
+            inviter_id=inviter.id,
             space_name=space_name,
             role=role,
-            expires_at=pending.expires_at,
         )
     except Exception:
         log.exception("schedule_invite_email failed for pending=%s", pending.id)
