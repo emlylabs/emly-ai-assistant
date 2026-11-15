@@ -17,12 +17,20 @@ never handed the hostname to resolve again, so a DNS server answering
 with a short TTL can't return a public address for the check and an
 internal one for the connection. The hostname is still used for the
 ``Host`` header, TLS SNI and certificate verification.
+
+Intranet sites (G10a): ``CRAWL_ALLOWED_PRIVATE_CIDRS`` lists private
+ranges an admin may crawl. Every hop is still resolved, checked and
+pinned. Loopback, link-local (which holds cloud metadata at
+169.254.169.254), multicast, unspecified and known metadata addresses
+stay blocked even when a listed range covers them.
 """
 from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import socket
+from functools import lru_cache
 from typing import List, Optional, Tuple, TypedDict
 from urllib.parse import ParseResult, unquote, urljoin, urlparse, urlunparse
 
@@ -50,15 +58,73 @@ class UnsafeUrlError(ValueError):
     """Raised when an SSRF-guard check rejects a URL."""
 
 
+ALLOWED_PRIVATE_ENV = "CRAWL_ALLOWED_PRIVATE_CIDRS"
+
+# Never crawled, whatever CRAWL_ALLOWED_PRIVATE_CIDRS says: this machine,
+# link-local (cloud metadata lives at 169.254.169.254), multicast and
+# broadcast, and metadata services outside link-local.
+_NEVER_ALLOWED = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32",
+    "100.100.100.200/32",  # Alibaba Cloud metadata
+    "::/128", "::1/128", "fe80::/10", "ff00::/8",
+    "fd00:ec2::254/128",  # AWS metadata over IPv6
+))
+
+
+class CrawlSettingsError(ValueError):
+    """CRAWL_ALLOWED_PRIVATE_CIDRS can't be parsed."""
+
+
+@lru_cache(maxsize=8)
+def _parse_allowed(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
+    nets = []
+    for part in raw.replace(";", ",").split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        try:
+            net = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            raise CrawlSettingsError(
+                f"{ALLOWED_PRIVATE_ENV}: {entry!r} isn't an address range such as 10.20.0.0/16") from None
+        if net.prefixlen == 0:
+            raise CrawlSettingsError(f"{ALLOWED_PRIVATE_ENV}: {entry} would allow every address")
+        nets.append(net)
+    return tuple(nets)
+
+
+def allowed_private_networks() -> Tuple[ipaddress._BaseNetwork, ...]:
+    """The ranges in CRAWL_ALLOWED_PRIVATE_CIDRS (empty when unset)."""
+    return _parse_allowed((os.environ.get(ALLOWED_PRIVATE_ENV) or "").strip())
+
+
+def _never_allowed(ip: ipaddress._BaseAddress) -> bool:
+    return (ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
+            or any(ip in n for n in _NEVER_ALLOWED if n.version == ip.version))
+
+
 def _is_blocked(ip: ipaddress._BaseAddress) -> bool:
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # ::ffff:10.0.0.1 is 10.0.0.1
+    if _never_allowed(ip):
+        return True
+    if ip.is_global:
+        return False
+    # Private, shared (100.64.0.0/10), reserved and other non-public
+    # addresses: only inside a range the operator listed.
+    return not any(ip in n for n in allowed_private_networks() if n.version == ip.version)
+
+
+def log_crawl_settings() -> None:
+    """Boot: refuse a malformed list, and say which ranges are open."""
+    nets = allowed_private_networks()
+    if not nets:
+        return
+    log.info("%s: admins may crawl %s", ALLOWED_PRIVATE_ENV, ", ".join(str(n) for n in nets))
+    for net in nets:
+        if any(net.overlaps(n) for n in _NEVER_ALLOWED if n.version == net.version):
+            log.warning("%s: %s overlaps loopback, link-local or metadata addresses; those stay blocked",
+                        ALLOWED_PRIVATE_ENV, net)
 
 
 def _resolve_checked(url: str) -> Tuple[ParseResult, List[str]]:
@@ -90,8 +156,10 @@ def _resolve_checked(url: str) -> Tuple[ParseResult, List[str]]:
         except ValueError:
             continue
         if _is_blocked(ip):
+            hint = "" if _never_allowed(ip) else (
+                f" (to crawl intranet sites, add its range to {ALLOWED_PRIVATE_ENV})")
             raise UnsafeUrlError(
-                f"Refusing to fetch private/loopback/link-local address {ip_str}"
+                f"Refusing to fetch private/loopback/link-local address {ip_str}{hint}"
             )
         if ip_str not in addresses:
             addresses.append(ip_str)

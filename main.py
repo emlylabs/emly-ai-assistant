@@ -200,6 +200,8 @@ from services.secrets import validate_configuration as _validate_secrets_key  # 
 _validate_secrets_key()
 _init_embedded_issuer()
 _log_llm_endpoint_policy()
+from services.crawl_fetch import log_crawl_settings as _log_crawl_settings  # noqa: E402
+_log_crawl_settings()  # G10a: a malformed CRAWL_ALLOWED_PRIVATE_CIDRS stops start-up
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 

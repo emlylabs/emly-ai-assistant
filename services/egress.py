@@ -119,6 +119,19 @@ def _external_idp() -> Optional[str]:
     return host_of(issuer)
 
 
+def _crawl_scope() -> str:
+    try:
+        from services.crawl_fetch import allowed_private_networks
+
+        nets = allowed_private_networks()
+    except Exception:
+        nets = ()
+    scope = "public addresses"
+    if nets:
+        scope += " and " + ", ".join(str(n) for n in nets)
+    return f"{scope}, when an admin adds a crawl"
+
+
 def egress_summary() -> List[Tuple[str, str]]:
     """(destination, where it goes) for each kind of outbound traffic."""
     from utils.model_pins import hf_offline
@@ -145,7 +158,7 @@ def egress_summary() -> List[Tuple[str, str]]:
         ("Chat platforms", ", ".join(platforms) if platforms else "none connected"),
         ("Hugging Face Hub", "off" if hf_offline() else "on, model downloads allowed"),
         ("LangSmith tracing", "ALLOWED by ALLOW_LANGSMITH_TRACING" if tracing else "off"),
-        ("Website crawling", "public addresses only, when an admin adds a crawl"),
+        ("Website crawling", _crawl_scope()),
     ]
 
 
