@@ -104,7 +104,7 @@ Checklist for a production deployment. Each variable is described in full under 
 |---------|------------------|-----|
 | `MODE` | `prod` | Turns on the production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set |
 | `APP_BASE_URL`, `PUBLIC_BASE_URL` | Your public `https://` URL | Required with `MODE=prod`. An https URL also turns on HSTS and `Secure` cookies, and is the base for links in emails |
-| `BOT_SECRETS_KEY` | A Fernet key you generate and back up | Encrypts stored API keys and channel credentials, and signs widget tokens. The app refuses to start in prod without it. Rotate with `BOT_SECRETS_KEY_PREVIOUS` ([how](#rotating-the-secrets-key)) |
+| `BOT_SECRETS_KEY` | A Fernet key you generate and back up | Encrypts stored API keys and channel credentials, and signs widget tokens. The app refuses to start in prod without it. Rotate with `BOT_SECRETS_KEY_PREVIOUS` ([how](#rotating-the-secrets-key)). Prefer `BOT_SECRETS_KEY_FILE` and the other `*_FILE` variables ([secrets from files](#secrets-from-files)) |
 | `POSTGRES_PASSWORD` | A long random value | Docker Compose refuses to start without it; there is no default password |
 | `FORWARDED_ALLOW_IPS` | Only your reverse proxy's address or subnet | Client IPs (rate limits, audit log) are read from proxy headers only when they come from these addresses. Never `*` |
 
@@ -211,6 +211,12 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 - **Retention:** each bot's *Config → Limits → Data retention* sets how many days to keep conversations. Every night (03:45) messages, conversations, form submissions and chat attachments older than that are deleted, along with visitor profiles that have nothing left. Empty keeps everything.
 - **Erasure:** a bot owner can delete everything stored about one visitor from the bot's *Users* page (or `DELETE /api/admin/bots/{slug}/end-users/{id}`): profile, conversations, messages, form submissions, attachments (including the files), channel identities and OTP rows. The audit log records who did it and how many rows went, never the content.
 - **Deleting a bot** removes its chat attachments, uploaded files and every row tied to it once the 7-day grace period ends. The audit log is kept.
+
+#### Secrets from files
+
+For Docker and Kubernetes secrets, set `NAME_FILE` to a file's path instead of setting `NAME`, and the app reads the value from that file at start-up. The value then isn't in `docker inspect`, the pod spec or the process environment of other tools. A trailing newline is removed. Setting both `NAME` and `NAME_FILE`, or pointing at a missing or empty file, stops start-up. Only the variable names are logged.
+
+This works for `BOT_SECRETS_KEY`, `BOT_SECRETS_KEY_PREVIOUS`, `OPENAI_API_KEY`, `DATABASE_URL`, `QDRANT_API_KEY`, `EMAIL_PASSWORD`, `AUTH_OIDC_CLIENT_SECRET`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD`, `META_APP_SECRET` and `META_CLIENT_SECRET`. The Postgres image reads `POSTGRES_PASSWORD_FILE` itself.
 
 #### Rotating the secrets key
 

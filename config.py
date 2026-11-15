@@ -3,8 +3,13 @@ import os
 import time
 from pathlib import Path
 
+# G6c: NAME_FILE secrets, before anything reads NAME. See utils/secret_files.py.
+from utils.secret_files import load_secret_files
+
+load_secret_files()
+
 # G2c: before LangChain is imported. See utils/tracing_guard.py.
-from utils.tracing_guard import disable_unapproved_tracing
+from utils.tracing_guard import disable_unapproved_tracing  # noqa: E402
 
 disable_unapproved_tracing()
 
