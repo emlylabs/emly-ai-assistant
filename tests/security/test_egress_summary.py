@@ -153,3 +153,36 @@ def test_remote_postgres_without_tls_is_flagged_in_prod(monkeypatch, mode, url, 
     if warnings:
         assert warnings[0]["code"] == "postgres_no_tls"
         assert "u:p" not in warnings[0]["message"] and "db.example.com" in warnings[0]["message"]
+
+
+# ------------------------------------------------------------- G8c
+@pytest.mark.parametrize("mode,url,key,refused", [
+    ("prod", "https://abc.cloud.qdrant.io:6333", None, True),
+    ("prod", "http://8.8.8.8:6333", None, True),
+    ("prod", "https://abc.cloud.qdrant.io:6333", "k", False),
+    ("prod", "http://qdrant:6333", None, False),          # compose: private network
+    ("prod", "http://10.0.0.5:6333", None, False),
+    ("prod", None, None, False),                           # embedded
+    ("dev", "https://abc.cloud.qdrant.io:6333", None, False),
+])
+def test_remote_qdrant_needs_a_key_in_prod(monkeypatch, mode, url, key, refused):
+    from services.egress import QdrantSettingsError, check_qdrant_settings
+
+    monkeypatch.setenv("MODE", mode)
+    for name, value in (("QDRANT_URL", url), ("QDRANT_API_KEY", key)):
+        if value:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+    if refused:
+        with pytest.raises(QdrantSettingsError, match="QDRANT_API_KEY"):
+            check_qdrant_settings()
+    else:
+        check_qdrant_settings()
+
+
+def test_start_up_runs_the_qdrant_check():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "main.py").read_text()
+    assert "_check_qdrant()" in source

@@ -11,6 +11,10 @@ connections" and enforced by tests/security/test_network_clients.py.
 G2f: Qdrant holds the plain text of every indexed passage.
 ``qdrant_warnings`` flags a ``QDRANT_URL`` that isn't a private address
 or an internal name (Qdrant Cloud, say), on the boot log and readyz.
+
+G8c: in production, such a Qdrant must have ``QDRANT_API_KEY`` set, or
+start-up stops (``check_qdrant_settings``). A Qdrant on the private
+network (compose's ``http://qdrant:6333``) may run without one.
 """
 from __future__ import annotations
 
@@ -175,6 +179,24 @@ def qdrant_warnings() -> List[Dict[str, str]]:
                    "yours, uses https and an API key, and has telemetry off "
                    "(QDRANT__TELEMETRY_DISABLED=true).",
     }]
+
+
+class QdrantSettingsError(RuntimeError):
+    pass
+
+
+def check_qdrant_settings() -> None:
+    """Boot (G8c): refuse a remote Qdrant without an API key in production."""
+    from utils.runtime import is_prod_mode
+
+    url = _env("QDRANT_URL")
+    name = hostname_of(url)
+    if not is_prod_mode() or not name or is_internal_host(name) or _env("QDRANT_API_KEY"):
+        return
+    raise QdrantSettingsError(
+        f"QDRANT_URL points at {host_of(url)}, outside your network, and QDRANT_API_KEY is not set. "
+        "The vector database holds the text of every indexed document: set QDRANT_API_KEY (or "
+        "QDRANT_API_KEY_FILE), or use a Qdrant on your private network.")
 
 
 _TLS_SSLMODES = {"require", "verify-ca", "verify-full"}

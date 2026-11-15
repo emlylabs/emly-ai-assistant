@@ -211,6 +211,8 @@ _check_session_limits()  # G3a: a malformed AUTH_SESSION_MAX_AGE_SECONDS stops s
 _log_llm_endpoint_policy()
 from services.crawl_fetch import log_crawl_settings as _log_crawl_settings  # noqa: E402
 _log_crawl_settings()  # G10a: a malformed CRAWL_ALLOWED_PRIVATE_CIDRS stops start-up
+from services.egress import check_qdrant_settings as _check_qdrant  # noqa: E402
+_check_qdrant()  # G8c: a remote Qdrant needs an API key in production
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
