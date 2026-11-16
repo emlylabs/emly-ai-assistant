@@ -160,6 +160,16 @@ class AdminUsersTable:
         rows = AdminUser.update(**updates).where(AdminUser.id == id).execute()
         return rows > 0
 
+    def sync_profile(self, id: str, *, email: Optional[str] = None, name: Optional[str] = None) -> bool:
+        """Update email/name from the IdP without touching ``last_login_at``."""
+        updates: dict = {"updated_at": datetime.utcnow()}
+        if email is not None:
+            updates["email"] = email.lower()
+        if name is not None:
+            updates["name"] = name
+        rows = AdminUser.update(**updates).where(AdminUser.id == id).execute()
+        return rows > 0
+
     def set_superadmin(self, id: str, value: bool) -> bool:
         rows = AdminUser.update(is_superadmin=value, updated_at=datetime.utcnow()).where(AdminUser.id == id).execute()
         return rows > 0

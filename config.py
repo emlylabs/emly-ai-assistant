@@ -2,7 +2,18 @@ import logging
 import os
 import time
 from pathlib import Path
-from langchain_openai import OpenAIEmbeddings
+
+# G6c: NAME_FILE secrets, before anything reads NAME. See utils/secret_files.py.
+from utils.secret_files import load_secret_files
+
+load_secret_files()
+
+# G2c: before LangChain is imported. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing  # noqa: E402
+
+disable_unapproved_tracing()
+
+from langchain_openai import OpenAIEmbeddings  # noqa: E402
 from sentence_transformers import CrossEncoder
 from sentence_transformers import SentenceTransformer
 from datetime import timedelta
@@ -39,21 +50,24 @@ EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "huggingface")
 # Model names, pinned revisions and cache folders: utils/model_pins.py (D2).
 SENTENCE_TRANSFORMERS_HOME = model_pins.embedding_cache_dir()
 RE_RANKING_MODEL_CACHE_FOLDER = model_pins.rerank_cache_dir()
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
 
 EMBEDDING_MODEL_INSTANCE = None
 EMBEDDING_MODEL_NAME = model_pins.embedding_model_name()
 if EMBEDDING_PROVIDER == "openai":
+    from services.llm_settings import embedding_endpoint
+
     OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL")
     EMBEDDING_MODEL_NAME = OPENAI_EMBEDDING_MODEL or EMBEDDING_MODEL_NAME
     EMBEDDING_MODEL_INSTANCE = OpenAIEmbeddings(
         api_key=OPENAI_API_KEY,
         model=OPENAI_EMBEDDING_MODEL,
-        base_url=OPENAI_BASE_URL,
+        # Required, never api.openai.com by default (G2b).
+        base_url=embedding_endpoint(),
     )
 elif EMBEDDING_PROVIDER == "huggingface":
     try:
-        EMBEDDING_MODEL_INSTANCE = SentenceTransformer(
+        EMBEDDING_MODEL_INSTANCE = model_pins.load_pinned(
+            SentenceTransformer,
             EMBEDDING_MODEL_NAME,
             cache_folder=SENTENCE_TRANSFORMERS_HOME,
             device="cpu",
@@ -161,8 +175,9 @@ ENABLE_RAG_HYBRID_SEARCH = os.environ.get("ENABLE_RAG_HYBRID_SEARCH", "false").l
 RE_RANKING_MODEL = model_pins.rerank_model_name()
 if ENABLE_RAG_HYBRID_SEARCH:
     try:
-        RE_RANKING_MODEL = CrossEncoder(RE_RANKING_MODEL, max_length=512, cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
-                                        **model_pins.rerank_load_kwargs())
+        RE_RANKING_MODEL = model_pins.load_pinned(CrossEncoder, RE_RANKING_MODEL, max_length=512,
+                                                  cache_folder=RE_RANKING_MODEL_CACHE_FOLDER,
+                                                  **model_pins.rerank_load_kwargs())
     except OSError as exc:
         if not model_pins.hf_offline():
             raise

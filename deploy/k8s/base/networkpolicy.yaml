@@ -1,0 +1,71 @@
+# Deny everything, then allow only what Emly needs. NetworkPolicies add up,
+# so overlays and components add their own allow rules.
+#
+# Egress outside the cluster (model endpoint, mail server, identity
+# provider, chat platforms, Postgres) is closed until your overlay lists
+# those addresses in "emly-app-egress-external" (see overlays/example).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-default-deny
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emly-app
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    # From the ingress controller's namespace only. Overlays set its name.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+  egress:
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Qdrant.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emly-qdrant
+      ports:
+        - port: 6333
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: emly-qdrant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emly-qdrant
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emly-app
+      ports:
+        - port: 6333
+  # No egress: Qdrant needs none (telemetry is off).
+  egress: []

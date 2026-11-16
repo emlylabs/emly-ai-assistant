@@ -20,7 +20,7 @@
 #   - app      : the FastAPI service + admin UI + embeddable widget bundle
 #
 # This stack is intentionally single-replica. Horizontal scale needs S3-backed
-# file storage and Redis-backed locks — see docs/multi-bot.md.
+# file storage and Redis-backed locks. Kubernetes manifests: deploy/k8s.
 # =============================================================================
 
 name: emly-ai-assistant
@@ -48,7 +48,10 @@ services:
     #   - "5432:5432"
 
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    # Keep within one minor version of qdrant-client in uv.lock (enforced by
+    # tests/security/test_deploy_config.py). Upgrading an existing store:
+    # README "Upgrading Qdrant".
+    image: qdrant/qdrant:v1.17.1
     restart: unless-stopped
     volumes:
       # Bind-mount under ./data so backups / inspection are easy.
@@ -81,6 +84,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-emly}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-emly}
       QDRANT_URL: http://qdrant:6333
       DATA_DIR: /app/data
+      # PORT in .env picks the host port (below); inside the container the
+      # app always listens on 8080, which the mapping and healthcheck use.
+      PORT: "8080"
     ports:
       - "${PORT:-8080}:8080"
     volumes:

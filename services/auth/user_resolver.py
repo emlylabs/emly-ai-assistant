@@ -3,11 +3,16 @@
 Called from the FastAPI dependency after ``OidcProvider.verify_token`` returns
 a ``Principal``. The resolver:
 
-1. Looks up by ``(issuer, subject)``. If found, refreshes ``last_login_at`` /
-   ``email`` / ``name`` and returns.
+1. Looks up by ``(issuer, subject)``. If found, syncs ``email`` / ``name``
+   (writing only when they changed) and returns. ``last_login_at`` is set
+   only when ``record_login=True``: the sign-in callback, not every API
+   request (G13f: that was a database write per request, and the admin UI
+   labels the value "Last sign-in").
 2. Looks up by ``email``. If found AND ``(issuer, subject)`` differ from the
    token, the call is refused **by default**: this is the email-takeover guard.
    Operators flip ``AUTH_ALLOW_EMAIL_RELINK=true`` for planned migration windows.
+   One case relinks by itself: the built-in issuer moved (``APP_BASE_URL``
+   changed, e.g. a restore at a new address). See ``_built_in_issuer_moved``.
 3. Else looks for a ``pending_admin`` row matching the email. If present and
    not consumed/expired, consumes it: creates the ``admin_user`` with
    ``is_superadmin`` and ``bot_assignments`` from the row, links the OIDC
@@ -55,6 +60,31 @@ class EmailNotVerified(AuthError):
     invitee's address would inherit the admin row."""
 
 
+def _built_in_issuer_moved(principal: Principal, row) -> bool:
+    """True when this sign-in came from the built-in issuer and ``row`` was
+    linked by a built-in issuer at another address.
+
+    The built-in issuer's ``iss`` is ``APP_BASE_URL``, so restoring a
+    backup at a new address (a recovery site, a test restore, a move)
+    left every admin linked to the old one: "uses a different sign-in
+    method" for all of them (found in the G8b restore drill). Relinking
+    here is safe: the built-in issuer only signs a token after checking
+    the password stored for this very row, and its ``sub`` is the row's
+    lower-cased email. A row linked to an external IdP (opaque ``sub``)
+    or without a built-in password never matches, so it can't be moved
+    between providers this way."""
+    from models.local_credentials import LocalCredentials
+    from services.auth.factory import issuer_is_embedded
+
+    email = (row.email or "").lower()
+    return (
+        issuer_is_embedded()
+        and principal.subject == email
+        and (row.subject or "") == email
+        and LocalCredentials.get(row.id) is not None
+    )
+
+
 def _allow_email_relink() -> bool:
     return os.environ.get("AUTH_ALLOW_EMAIL_RELINK", "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -89,7 +119,7 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
             )
 
 
-def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
+def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) -> AdminUserModel:
     """Map an authenticated ``Principal`` to a row in ``admin_user``.
 
     Raises:
@@ -101,7 +131,17 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
         # 1) Existing OIDC link.
         existing = AdminUsers.get_by_issuer_subject(principal.issuer, principal.subject)
         if existing is not None:
-            AdminUsers.touch_login(existing.id, email=principal.email, name=principal.name)
+            if record_login:
+                AdminUsers.touch_login(existing.id, email=principal.email, name=principal.name)
+                return _refetch(existing.id)
+            email = principal.email.lower() if principal.email else None
+            changed = {}
+            if email is not None and email != (existing.email or ""):
+                changed["email"] = email
+            if principal.name is not None and principal.name != existing.name:
+                changed["name"] = principal.name
+            if changed:
+                AdminUsers.sync_profile(existing.id, **changed)
             return _refetch(existing.id)
 
         # 2) Email already belongs to a different IdP link.
@@ -114,11 +154,12 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
                 and existing_subject is not None
                 and (existing_issuer != principal.issuer or existing_subject != principal.subject)
             )
-            if different_link and not _allow_email_relink():
+            moved = different_link and _built_in_issuer_moved(principal, by_email)
+            if different_link and not moved and not _allow_email_relink():
                 log.warning(
-                    "Refusing email-relink for %s: existing issuer=%s subject=%s, "
+                    "Refusing email-relink for admin %s: existing issuer=%s subject=%s, "
                     "incoming issuer=%s subject=%s. Set AUTH_ALLOW_EMAIL_RELINK=true to override.",
-                    principal.email, existing_issuer, existing_subject,
+                    by_email.id, existing_issuer, existing_subject,
                     principal.issuer, principal.subject,
                 )
                 raise EmailLinkedToOtherProvider(
@@ -148,6 +189,8 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
                         "from_subject": existing_subject,
                         "to_issuer": principal.issuer,
                         "to_subject": principal.subject,
+                        "reason": ("built_in_issuer_moved" if moved
+                                   else "relink_allowed" if different_link else "first_link"),
                     },
                 )
             except Exception:
@@ -171,8 +214,8 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
         if not all_pending:
             # 4) Authenticated stranger — no invite, no admin, refuse.
             log.info(
-                "Refusing login for %s: no existing admin and no pending invite",
-                principal.email,
+                "Refusing login for issuer=%s subject=%s: no existing admin and no pending invite",
+                principal.issuer, principal.subject,
             )
             raise AdminNotProvisioned("admin_not_provisioned")
 
@@ -183,8 +226,9 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
         # ``AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY=true``.
         if not principal.email_verified:
             log.warning(
-                "Refusing to activate pending invite for %s: IdP reports email_verified=false",
-                principal.email,
+                "Refusing to activate pending invite for issuer=%s subject=%s: IdP reports "
+                "email_verified=false",
+                principal.issuer, principal.subject,
             )
             raise EmailNotVerified("email_not_verified")
 
@@ -211,8 +255,8 @@ def resolve_or_create_admin(principal: Principal) -> AdminUserModel:
             PendingAdmins.mark_accepted(pending.id, admin_id)
         _migrate_bootstrap_credential(principal.email, admin_id)
         log.info(
-            "Activated admin %s as %s (superadmin=%s, %d legacy + %d space invites)",
-            principal.email, admin_id, becomes_superadmin,
+            "Activated admin %s (superadmin=%s, %d legacy + %d space invites)",
+            admin_id, becomes_superadmin,
             len(legacy_pending), len(space_invites),
         )
         try:
@@ -272,7 +316,7 @@ def _migrate_bootstrap_credential(email: str, admin_id: str) -> None:
         must_change=sentinel_row.must_change if sentinel_row is not None else False,
     )
     LocalCredentials.delete(sentinel_id)
-    log.info("Migrated bootstrap credential for %s onto admin_id=%s", email, admin_id)
+    log.info("Migrated bootstrap credential onto admin_id=%s", admin_id)
     # The generated temporary password (if any) has now been used to sign in;
     # the plaintext copy on disk is no longer needed.
     from services.auth.bootstrap import remove_bootstrap_password_file

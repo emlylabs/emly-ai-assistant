@@ -29,7 +29,7 @@ from config import (
     TIMEZONE,
 )
 from models.bots import Bots
-from models.emly_messages import EMLYMessages
+from models.emly_messages import FORM_SUBMISSION_MARKER, EMLYMessages, is_form_submission
 from models.emly_users import EMLYUsers
 from services.email_service import EmailSender
 from services.scheduler import scheduler
@@ -353,10 +353,13 @@ def get_html_content_with_summarized_messages(
         bot_id=bot_id, user_id=user.id, session_id=session_id
     )
 
+    # The emailed transcript keeps form submissions (full alerts carry the
+    # visitor's details anyway); the summary LLM call doesn't get them.
+    conversation = [m for m in messages if not is_form_submission(m.expanded_query)]
     summarized_prompt = ""
-    if messages:
+    if conversation:
         try:
-            summarized_prompt = _summarize_conversation(bot_id, messages, prompt)
+            summarized_prompt = _summarize_conversation(bot_id, conversation, prompt)
         except Exception:
             log.exception("Failed to summarize conversation")
 
@@ -462,7 +465,7 @@ def send_scheduled_email(
         role="user",
         not_useful=False,
         message=f"I have submitted the form named {form_title} with the following details:\n{user.meta}",
-        expanded_query="call_back",
+        expanded_query=FORM_SUBMISSION_MARKER,
         page=page,
     )
     EMLYMessages.insert_new_message(
@@ -472,7 +475,7 @@ def send_scheduled_email(
         role="assistant",
         not_useful=False,
         message="",
-        expanded_query="call_back",
+        expanded_query=FORM_SUBMISSION_MARKER,
         page=page,
         model_used="form_handler",
     )

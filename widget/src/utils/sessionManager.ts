@@ -38,25 +38,24 @@ export interface MessageForm {
 export const startChatKey = (botId: string): string => `chatbot.startChat.${botId}`;
 
 /** RAG citation as it arrives in the chat NDJSON `done` chunk. The
- * agent runs `get_filtered_citations` server-side, which deduplicates by
- * source and returns entries shaped roughly as `{metadata, chunk,
- * relevance_score, og?, payload?}`. The widget treats every field as
- * optional and parses `metadata.og` lazily (it can be a JSON string from
- * older ingestions). */
+ * server (`services/public_citations.py`) sends only what the pill
+ * shows: `{metadata: {title?, source_url?, image?, page?}, og?: {title?,
+ * description?, url?, image?}, chunk?: <short excerpt>,
+ * relevance_score?}`, and an empty list when the bot's
+ * `show_citations` is off. Every field is optional. */
 export interface Citation {
     metadata?: {
-        source?: string;
         source_url?: string;
         title?: string;
         og?: string | Record<string, unknown>;
-        payload?: string | Record<string, unknown>;
         image?: string;
+        /** Page label for documents with pages, e.g. "12". */
+        page?: string;
         [key: string]: unknown;
     };
     chunk?: string;
     relevance_score?: number;
     og?: Record<string, unknown> | string;
-    payload?: Record<string, unknown> | string;
     [key: string]: unknown;
 }
 

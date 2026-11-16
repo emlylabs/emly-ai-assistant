@@ -30,7 +30,9 @@ def error_page(
     retry_after: Optional[int] = None,
     retry_href: str = "/api/admin/auth/login",
 ) -> HTMLResponse:
-    headers = {"Cache-Control": "no-store"}
+    from services.ui_csp import STATIC_PAGE_POLICY
+
+    headers = {"Cache-Control": "no-store", "Content-Security-Policy": STATIC_PAGE_POLICY}
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)
     body = f"""<!doctype html>

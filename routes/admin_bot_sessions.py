@@ -28,6 +28,7 @@ from models.emly_sessions import EMLYSessionModel, EMLYSessions
 from services.audit import audit
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
+from services.data_access_audit import record_read, used_filters
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -244,6 +245,7 @@ def list_sessions(
         search=q,
     )
     rows = EMLYSessions.list_for_bot(bot.id, skip=skip, limit=limit, **filter_kwargs)
+    record_read(admin, bot.id, "conversation_list", filters=used_filters(**filter_kwargs))
     total = EMLYSessions.count_for_bot(bot.id, **filter_kwargs)
     items: List[SessionRow] = []
     channel_types: dict = {}
@@ -276,6 +278,7 @@ def get_session(
     session = EMLYSessions.get(bot.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    record_read(admin, bot.id, "conversation", session_id)
     # Fetch messages — `list_all` returns newest-first; reverse for the
     # thread view which renders top-to-bottom oldest-first. For now pull
     # up to 500 turns; larger sessions get a follow-up paging param.

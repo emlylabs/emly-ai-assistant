@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 import peewee as pw
@@ -119,7 +121,7 @@ class CrawlJobsTable:
         document_type: str,
         created_by_admin_id: Optional[str],
     ) -> dict:
-        now = datetime.now()
+        now = utc_now()
         row = CrawlJob.create(
             id=str(uuid.uuid4()),
             bot_id=bot_id,
@@ -214,7 +216,7 @@ class CrawlJobsTable:
         error_message: Optional[str] = None,
         completed: bool = False,
     ) -> bool:
-        now = datetime.now()
+        now = utc_now()
         updates: dict = {"status": new_status, "updated_at": now}
         if error_message is not None:
             updates["error_message"] = error_message
@@ -231,7 +233,7 @@ class CrawlJobsTable:
         delta_failed: int = 0,
     ) -> None:
         # SQL-level increments to avoid read-modify-write races between workers.
-        updates: dict = {"updated_at": datetime.now()}
+        updates: dict = {"updated_at": utc_now()}
         if delta_total:
             updates["pages_total"] = CrawlJob.pages_total + delta_total
         if delta_done:
@@ -252,7 +254,7 @@ class CrawlJobsTable:
             .exists()
         ):
             return False
-        now = datetime.now()
+        now = utc_now()
         CrawlJobPage.create(
             job_id=job_id,
             url=url,
@@ -270,7 +272,7 @@ class CrawlJobsTable:
         reason: Optional[str] = None,
         file_id: Optional[str] = None,
     ) -> bool:
-        updates: dict = {"state": state, "updated_at": datetime.now()}
+        updates: dict = {"state": state, "updated_at": utc_now()}
         if reason is not None:
             updates["reason"] = reason
         if file_id is not None:
@@ -292,7 +294,7 @@ class CrawlJobsTable:
         if candidate is None:
             return None
         rows = (
-            CrawlJobPage.update(state=PAGE_FETCHING, updated_at=datetime.now())
+            CrawlJobPage.update(state=PAGE_FETCHING, updated_at=utc_now())
             .where((CrawlJobPage.id == candidate.id) & (CrawlJobPage.state == PAGE_QUEUED))
             .execute()
         )
@@ -325,7 +327,7 @@ class CrawlJobsTable:
         Crash recovery — without this, restarting the pod would orphan
         those pages forever."""
         rows = (
-            CrawlJobPage.update(state=PAGE_QUEUED, updated_at=datetime.now())
+            CrawlJobPage.update(state=PAGE_QUEUED, updated_at=utc_now())
             .where(
                 (CrawlJobPage.job_id == job_id)
                 & CrawlJobPage.state.in_([PAGE_FETCHING, PAGE_UPLOADING, PAGE_EMBEDDING])

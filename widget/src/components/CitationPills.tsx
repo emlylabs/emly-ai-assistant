@@ -33,6 +33,8 @@ interface DerivedCitation {
     image: string | null;
     chunk: string | null;
     host: string | null;
+    /** Page the passage is on ("12", "iv"), for documents with pages. */
+    page: string | null;
 }
 
 const deriveCitation = (citation: Citation): DerivedCitation => {
@@ -42,10 +44,11 @@ const deriveCitation = (citation: Citation): DerivedCitation => {
         ?? parseMaybeJson(meta.og)
         ?? {};
 
+    // The server sends only http(s) links (services/public_citations.py);
+    // it never sends the stored file path.
     const url =
         (typeof meta.source_url === 'string' && meta.source_url) ||
         (typeof og.url === 'string' && og.url) ||
-        (typeof meta.source === 'string' && meta.source) ||
         null;
 
     const title =
@@ -63,19 +66,18 @@ const deriveCitation = (citation: Citation): DerivedCitation => {
         null;
 
     const chunk = typeof citation.chunk === 'string' ? citation.chunk : null;
+    const page = typeof meta.page === 'string' && meta.page ? meta.page : null;
 
     let host: string | null = null;
     if (url) {
         try {
             host = new URL(url).hostname.replace(/^www\./, '');
         } catch {
-            // Sources can be local file paths (data uploads). The host
-            // stays null for those — the pill just shows the title and
-            // there's no external link.
+            // Not a parseable URL: no host, the pill shows just the title.
         }
     }
 
-    return { title, url, description, image, chunk, host };
+    return { title, url, description, image, chunk, host, page };
 };
 
 const isHttp = (url: string | null): boolean =>
@@ -99,8 +101,9 @@ const CitationPills: React.FC<CitationPillsProps> = ({
         <div className="emw-citations">
             <ul className="emw-cite-pill-row" role="list">
                 {items.map((it, i) => {
-                    const labelFull = it.title;
-                    const label = truncate(labelFull, titleMaxChars);
+                    const pageSuffix = it.page ? `, p. ${it.page}` : '';
+                    const labelFull = it.title + pageSuffix;
+                    const label = truncate(it.title, titleMaxChars) + pageSuffix;
                     const linkable = isHttp(it.url);
                     const isOpen = expanded === i;
                     return (
@@ -185,8 +188,10 @@ const CitationCard: React.FC<CardProps> = ({ citation, chunkMaxChars }) => {
                         {citation.title}
                     </span>
                 )}
-                {citation.host && (
-                    <span className="emw-cite-card-host">{citation.host}</span>
+                {(citation.host || citation.page) && (
+                    <span className="emw-cite-card-host">
+                        {[citation.host, citation.page && `Page ${citation.page}`].filter(Boolean).join(' · ')}
+                    </span>
                 )}
                 {citation.description && (
                     <p className="emw-cite-card-desc">{citation.description}</p>

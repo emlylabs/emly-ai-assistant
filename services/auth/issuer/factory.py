@@ -113,9 +113,8 @@ def issuer_url(request=None) -> str:
       1. ``AUTH_OIDC_ISSUER`` env — pin the issuer regardless of how the
          request arrived. Required when behind multiple hostnames.
       2. ``APP_BASE_URL`` env.
-      3. Derived from ``request.url`` (uvicorn runs with
-         ``--forwarded-allow-ips '*'`` in start.sh, so this respects
-         X-Forwarded-Proto/Host behind a reverse proxy).
+      3. Derived from ``request.url`` (X-Forwarded-Proto/Host are honoured
+         only from the proxies listed in ``FORWARDED_ALLOW_IPS``).
       4. ``http://localhost:8080`` last-resort fallback.
     """
     explicit_issuer = os.environ.get("AUTH_OIDC_ISSUER")

@@ -10,11 +10,28 @@ import { relativeTime } from "@/lib/aggregations";
 const PAGE_SIZE = 50;
 
 /**
- * Phase 11 backend-backfill: per-bot audit log. Any role on the bot can
- * read; the API layer enforces membership. Mirrors the workspace page in
- * `/admins/audit` but scoped to the active bot.
+ * Phase 11 backend-backfill: per-bot audit log. Owners and admins of the
+ * bot can read it (the API enforces this); viewers get a short note.
+ * Mirrors the workspace page in `/admins/audit` but scoped to the active bot.
  */
 export default function BotAuditPage() {
+  const { bot, currentRole } = useBot();
+  if (currentRole === "viewer") {
+    return (
+      <div className="header">
+        <div>
+          <h1>Audit — {bot.name}</h1>
+          <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>
+            Only owners and admins of this bot can read its audit log.
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <BotAuditLog />;
+}
+
+function BotAuditLog() {
   const { bot } = useBot();
   const [items, setItems] = useState<AuditLog[]>([]);
   const [error, setError] = useState<string | null>(null);

@@ -18,6 +18,8 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
+from utils.private_files import write_private
+
 log = logging.getLogger(__name__)
 
 BOOTSTRAP_PASSWORD_FILENAME = "bootstrap_password.txt"
@@ -34,26 +36,14 @@ def bootstrap_password_path(data_dir: Optional[Path] = None) -> Path:
 
 
 def _write_password_file(path: Path, email: str, password: str) -> None:
-    """Write the temporary password with owner-only permissions.
-
-    ``os.open`` with an explicit mode avoids a window where the file exists
-    with umask-default permissions; the ``chmod`` covers a pre-existing file.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(
-            fd,
-            (
-                f"email: {email}\n"
-                f"temporary_password: {password}\n"
-                "This password must be changed on first sign-in. "
-                "This file is deleted automatically after the first successful sign-in.\n"
-            ).encode("utf-8"),
-        )
-    finally:
-        os.close(fd)
-    os.chmod(str(path), 0o600)
+    """Write the temporary password with owner-only permissions (created
+    0600, then renamed into place: see utils/private_files.py)."""
+    write_private(path, (
+        f"email: {email}\n"
+        f"temporary_password: {password}\n"
+        "This password must be changed on first sign-in. "
+        "This file is deleted automatically after the first successful sign-in.\n"
+    ).encode("utf-8"))
 
 
 def remove_bootstrap_password_file(data_dir: Optional[Path] = None) -> None:

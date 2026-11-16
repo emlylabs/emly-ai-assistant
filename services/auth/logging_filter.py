@@ -7,6 +7,10 @@ strips known-sensitive substrings:
 - ``Cookie: ...`` / ``Set-Cookie: ...``
 - token / access_token / refresh_token / id_token / password fields in
   dict-like reprs
+- email addresses (G13f), as ``<email:1a2b3c4d at corp.example>``: a
+  short hash of the lower-cased address plus its domain, so lines about
+  the same person can still be matched (hash a known address the same
+  way to search for it) without the address itself being stored
 
 The filter is conservative — it leaves the rest of the message intact and
 only swaps out the secret-bearing portions. Operators still get readable
@@ -15,6 +19,7 @@ error messages without leaking the secret in the access log.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 
@@ -35,10 +40,25 @@ _REPLACEMENTS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# The masked form ("<email:… at domain>") has no "@", so masking twice is a no-op.
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@((?:[A-Za-z0-9\-]+\.)+[A-Za-z]{2,})")
+
+
+def email_tag(address: str) -> str:
+    """The masked form of ``address`` as it appears in the logs."""
+    digest = hashlib.sha256(address.strip().lower().encode()).hexdigest()[:8]
+    domain = address.rsplit("@", 1)[-1].lower()
+    return f"<email:{digest} at {domain}>"
+
+
+def _mask_emails(text: str) -> str:
+    return _EMAIL.sub(lambda m: email_tag(m.group(0)), text)
+
+
 def _redact(text: str) -> str:
     for pattern, replacement in _REPLACEMENTS:
         text = pattern.sub(replacement, text)
-    return text
+    return _mask_emails(text)
 
 
 class RedactSecretsFilter(logging.Filter):
@@ -62,9 +82,7 @@ class RedactSecretsFilter(logging.Filter):
             return True
         try:
             # Apply to the formatted message (after % args have been substituted).
-            msg = record.getMessage()
-            for pattern, replacement in _REPLACEMENTS:
-                msg = pattern.sub(replacement, msg)
+            msg = _redact(record.getMessage())
             # Stash the redacted message back; the logging handler emits this.
             record.msg = msg
             record.args = ()

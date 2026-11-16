@@ -45,11 +45,12 @@ from starlette.concurrency import run_in_threadpool
 
 from services.audit import audit
 from services.auth.base import AuthError, AuthProvider, InvalidTokenError
-from services.auth.dependencies import get_auth_provider
+from services.auth.dependencies import audit_actor_id, get_auth_provider
 from services.auth.factory import get_state_store
 from services.auth.oidc import generate_nonce, generate_pkce_verifier, generate_state
 from services.auth.ratelimit import limit_for, limiter
-from services.secrets import decrypt_session_cookie, encrypt_session_cookie
+from services.auth.session_limits import is_over as _session_over
+from services.secrets import RefreshCookie, decrypt_refresh_cookie, encrypt_refresh_cookie
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +98,8 @@ def _max_age_seconds(expires_at: datetime) -> int:
     return max(delta, 60)
 
 
-def _set_session_cookies(response: Response, request: Request, *, id_token: str, refresh_token: str | None, expires_at: datetime) -> None:
+def _set_session_cookies(response: Response, request: Request, *, id_token: str, refresh_token: str | None,
+                         expires_at: datetime, auth_time: float) -> None:
     """Set the trio of session cookies in one place.
 
     - ``emly_admin_session``: id_token (httpOnly, samesite=lax) — the
@@ -108,7 +110,12 @@ def _set_session_cookies(response: Response, request: Request, *, id_token: str,
       (public, samesite=lax, NOT httpOnly) — read by the JS
       proactive-refresh interceptor.
     """
+    from services.auth.session_limits import remaining_seconds
+
     max_age = _max_age_seconds(expires_at)
+    left = remaining_seconds(auth_time)  # G3a: never outlive the session
+    if left is not None:
+        max_age = max(min(max_age, left), 1)
     expires_at_unix = int(expires_at.timestamp())
 
     response.set_cookie(
@@ -124,7 +131,7 @@ def _set_session_cookies(response: Response, request: Request, *, id_token: str,
     if refresh_token:
         response.set_cookie(
             key=_cookie_name_refresh(),
-            value=encrypt_session_cookie(refresh_token) or "",
+            value=encrypt_refresh_cookie(refresh_token, auth_time) or "",
             max_age=max_age,
             path="/",
             secure=_cookie_secure(request),
@@ -164,15 +171,23 @@ def _clear_session_cookies(response: Response, request: Request) -> None:
 # -------- helpers --------
 
 
-def _extract_refresh_token(request: Request) -> str | None:
+def _extract_refresh_cookie(request: Request) -> RefreshCookie | None:
     """Read + decrypt the refresh-token cookie. Returns ``None`` if the
     cookie is absent, empty, or fails to decrypt (tampered / wrong
     key). The BFF treats any of these as "no usable refresh token"
     rather than 500-ing."""
-    raw = request.cookies.get(_cookie_name_refresh())
-    if not raw:
-        return None
-    return decrypt_session_cookie(raw)
+    return decrypt_refresh_cookie(request.cookies.get(_cookie_name_refresh()))
+
+
+def _revoke_local_refresh_token(refresh_token: str) -> None:
+    """Drop a built-in issuer refresh token so it can't be used again."""
+    try:
+        from services.auth.issuer.factory import get_refresh_store, is_local_issuer_enabled
+
+        if is_local_issuer_enabled():
+            get_refresh_store().revoke(refresh_token)
+    except Exception:
+        log.debug("refresh-token revoke skipped", exc_info=True)
 
 
 async def _perform_refresh(request: Request, provider: AuthProvider, refresh_token: str):
@@ -188,10 +203,13 @@ async def _perform_refresh(request: Request, provider: AuthProvider, refresh_tok
         token_set = await run_in_threadpool(provider.refresh_tokens, refresh_token)
     except (InvalidTokenError, AuthError) as e:
         log.info("BFF refresh: IdP rejected refresh_token (%s) — clearing session", e)
-        audit("auth.refresh_failed", request=request, success=False, payload={"err": str(e)})
+        audit("auth.refresh_failed", admin_id=audit_actor_id(request, provider), request=request,
+              success=False, payload={"err": str(e)})
         return None
 
-    audit("auth.refresh", request=request, success=True)
+    actor_id = (audit_actor_id(request, provider, token=token_set.id_token)
+                or audit_actor_id(request, provider))
+    audit("auth.refresh", admin_id=actor_id, request=request, success=True)
     return token_set
 
 
@@ -211,21 +229,32 @@ async def _refresh_response(
     (the BFF contract is "a successful refresh = a refreshed session
     cookie, regardless of what the caller asked for").
     """
-    refresh_token = _extract_refresh_token(request)
-    if not refresh_token:
+    cookie = _extract_refresh_cookie(request)
+    if not cookie:
         # With offline_access disabled (Google) no refresh token is ever
         # issued, so this is the normal end of a session, not an anomaly:
         # don't fill the audit log. The UI stops its refresh loop on 401.
         from services.auth.factory import offline_access_requested
 
         if offline_access_requested():
-            audit("auth.refresh_missing", request=request, success=False)
+            audit("auth.refresh_missing", admin_id=audit_actor_id(request, provider), request=request,
+                  success=False)
         return JSONResponse(
             {"detail": {"code": "missing_refresh_token"}},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    token_set = await _perform_refresh(request, provider, refresh_token)
+    if _session_over(cookie.auth_time):
+        # G3a: the session reached AUTH_SESSION_MAX_AGE_SECONDS. Sign in again.
+        audit("auth.session_expired", admin_id=audit_actor_id(request, provider), request=request,
+              success=False, payload={"reason": "max_age"})
+        _revoke_local_refresh_token(cookie.refresh_token)
+        response = JSONResponse({"detail": {"code": "session_expired"}},
+                                status_code=status.HTTP_401_UNAUTHORIZED)
+        _clear_session_cookies(response, request)
+        return response
+
+    token_set = await _perform_refresh(request, provider, cookie.refresh_token)
     if token_set is None:
         response = JSONResponse(
             {"detail": {"code": "refresh_failed"}},
@@ -266,7 +295,7 @@ async def _refresh_response(
         )
         try:
             principal = provider.verify_token(id_token)
-            admin = resolve_or_create_admin(principal)
+            admin = resolve_or_create_admin(principal, record_login=False)  # a refresh, not a sign-in
             memberships = AdminBotMemberships.list_for_admin(admin.id)
             payload["admin"] = {
                 "id": admin.id,
@@ -295,6 +324,7 @@ async def _refresh_response(
         id_token=id_token,
         refresh_token=new_refresh,
         expires_at=token_set.expires_at,
+        auth_time=cookie.auth_time,  # carried across refreshes (G3a)
     )
     return response
 

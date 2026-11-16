@@ -26,6 +26,17 @@ def test_qdrant_ports_not_published():
     assert not qdrant.get("ports"), "Qdrant must stay on the internal compose network"
 
 
+def test_container_port_is_pinned_whatever_port_env_says():
+    """PORT in .env chooses the host port of the compose mapping, but
+    ``env_file: .env`` also passed it into the container, where start.sh
+    listened on it: with PORT=18080 the app listened on 18080 while the
+    mapping and healthcheck used 8080, so it was unreachable (found in the
+    G8b restore drill)."""
+    app = _compose()["services"]["app"]
+    assert app["environment"]["PORT"] == "8080"
+    assert any(str(p).endswith(":8080") for p in app["ports"])
+
+
 def test_qdrant_telemetry_disabled():
     env = _compose()["services"]["qdrant"].get("environment") or {}
     assert str(env.get("QDRANT__TELEMETRY_DISABLED")).lower() == "true"
@@ -141,6 +152,14 @@ def test_base_images_pinned_by_digest():
     assert "imagetools inspect" in text  # update instructions present
 
 
+def test_runtime_image_drops_system_pip():
+    """F6: the base image's pip is unused (uv owns /app/.venv) and its
+    vendored urllib3/msgpack/setuptools trail their fixes."""
+    runtime = _dockerfile().split(" AS runtime", 1)[1]
+    code = [l for l in runtime.splitlines() if l.startswith("RUN")]
+    assert "RUN python -m pip uninstall --yes --no-input pip" in code
+
+
 # ---------------------------------------------------------------------- E3
 
 
@@ -157,6 +176,14 @@ def test_ci_runs_required_checks():
     assert "pull_request" in on and "push" in on
     release = _workflows()["release.yml"]
     assert "syft" in release and "spdx-json" in release and "gh release upload" in release
+
+
+def test_pip_audit_blocks_the_build():
+    # Q8: the runtime dependencies audit clean, so a new advisory must fail CI.
+    job = yaml.safe_load(_workflows()["ci.yml"])["jobs"]["pip-audit"]
+    assert not job.get("continue-on-error"), "pip-audit must fail the build on a known advisory"
+    audit = next(step["run"] for step in job["steps"] if step.get("name") == "Audit")
+    assert 'exit "${status:-0}"' in audit  # the audit's exit status reaches the job
 
 
 def test_workflow_dependencies_are_pinned():
@@ -193,7 +220,10 @@ HARDENING_VARS = (
     "EMAIL_SERVER", "MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
     "SENTENCE_TRANSFORMERS_HOME", "RE_RANKING_MODEL_HOME", "RAG_EMBEDDING_MODEL_REVISION",
     "RE_RANKING_MODEL_REVISION", "RAG_EMBEDDING_TRUST_REMOTE_CODE", "AUDIT_RETENTION_DAYS",
-    "WEBHOOK_DEDUPE_RETENTION_HOURS",
+    "WEBHOOK_DEDUPE_RETENTION_HOURS", "LLM_ENDPOINT_ALLOWLIST", "ALLOW_LANGSMITH_TRACING", "WIDGET_MAX_REQUEST_MB", "AUDIT_FAIL_CLOSED",
+    "CRAWL_ALLOWED_PRIVATE_CIDRS", "WIDGET_ICON_HOSTS", "BOT_SECRETS_KEY_FILE",
+    "REQUIRE_PER_BOT_LLM_KEY", "AUTH_OIDC_REQUIRED_AMR",
+    "AUTH_SESSION_MAX_AGE_SECONDS", "AUDIT_DATA_ACCESS", "AUTH_ALLOW_BEARER", "AUDIT_LOG_STDOUT",
 )
 
 
@@ -219,3 +249,24 @@ def test_readme_internal_links_resolve():
         assert target in anchors, f"broken anchor #{target}"
     for target in re.findall(r"\]\((?!https?:|#|mailto:)([^)#]+)", text):
         assert (REPO_ROOT / target).exists(), f"broken link {target}"
+
+
+def _minor(version: str) -> tuple:
+    major, minor = version.lstrip("v").split("-")[0].split(".")[:2]
+    return int(major), int(minor)
+
+
+def test_qdrant_server_matches_the_client():
+    """qdrant-client 1.17 against server 1.12 logged an incompatibility
+    warning on every start (found in the G8a cluster trial). Qdrant
+    supports one minor version of difference."""
+    import re
+
+    lock = (REPO_ROOT / "uv.lock").read_text()
+    client = re.search(r'name = "qdrant-client"\nversion = "([^"]+)"', lock).group(1)
+    compose_tag = _compose()["services"]["qdrant"]["image"].split(":")[1]
+    k8s = yaml.safe_load((REPO_ROOT / "deploy/k8s/base/kustomization.yaml").read_text())
+    (k8s_tag,) = [i["newTag"] for i in k8s["images"] if i["name"] == "qdrant"]
+    assert compose_tag.split("-")[0] == k8s_tag.split("-")[0], "compose and Kubernetes run different Qdrant versions"
+    (c_major, c_minor), (s_major, s_minor) = _minor(client), _minor(compose_tag)
+    assert c_major == s_major and abs(c_minor - s_minor) <= 1, (client, compose_tag)

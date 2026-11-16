@@ -48,6 +48,9 @@ class RefreshTokenRecord:
     name: Optional[str]
     scope: str
     issued_at: datetime
+    # G3a: when the admin signed in. Carried across rotations, unlike
+    # issued_at, so a refresh chain can't outlive the session maximum.
+    auth_time: Optional[datetime] = None
 
 
 class RefreshTokenStore(Protocol):

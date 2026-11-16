@@ -30,6 +30,7 @@ from models.workspace_settings import WorkspaceSettingsStore
 from services.audit import audit
 from services.auth.dependencies import get_admin
 from services.authz import require_superadmin, require_writer, require_owner
+from services.config_gate import check_new_config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +90,14 @@ def _validate_workspace_settings(settings: Dict[str, Any]) -> None:
                 ),
             },
         )
+    from services.model_prices import SETTINGS_KEY as PRICES_KEY, InvalidModelPrices, validate as validate_prices
+
+    if PRICES_KEY in settings:
+        try:
+            validate_prices(settings[PRICES_KEY])
+        except InvalidModelPrices as exc:
+            raise HTTPException(status_code=400,
+                                detail={"code": "invalid_value", "key": PRICES_KEY, "message": str(exc)})
     try:
         encoded = json.dumps(settings, ensure_ascii=False)
     except (TypeError, ValueError) as exc:
@@ -229,27 +238,26 @@ def create_workspace_template(
     accept an explicit ``config_json``. Both paths land in the same
     table; the source bot is just a convenience."""
     config = payload.config_json
+    copied_from = None
     if payload.source_bot_slug:
         bot = Bots.get_by_slug(payload.source_bot_slug)
         if bot is None or bot.is_deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source bot not found")
         require_writer(admin, bot.id)
-        # Snapshot the source's config. Drop slug/name overrides so the
-        # next bot created from this template doesn't inherit identity
-        # tags from the source.
-        snapshot = dict(bot.config_json or {})
-        agent_cfg = snapshot.get("agent_config")
-        if isinstance(agent_cfg, dict):
-            agent_cfg = dict(agent_cfg)
-            agent_cfg.pop("bot_slug", None)
-            agent_cfg.pop("bot_name", None)
-            snapshot["agent_config"] = agent_cfg
-        config = snapshot
+        # Snapshot the source's config, minus the legacy ``agent_config``
+        # block: ``BotConfig`` forbids it, so a bot created from a template
+        # carrying it couldn't load.
+        copied_from = bot.config_json or {}
+        config = dict(copied_from)
+        config.pop("agent_config", None)
     if not isinstance(config, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either source_bot_slug or config_json is required",
         )
+    # Bots created from this template store it as-is, so it must pass the
+    # same checks as a config save (G1d/N4).
+    check_new_config(config, copied_from=copied_from)
     template_id = f"wt-{uuid.uuid4()}"
     row = WorkspaceBotTemplates.insert(
         id=template_id,

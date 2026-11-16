@@ -32,6 +32,8 @@ from authlib.jose import JsonWebKey
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from utils.private_files import ensure_private_dir, write_private
+
 log = logging.getLogger(__name__)
 
 DEFAULT_KEY_BITS = 4096
@@ -58,7 +60,7 @@ class Keystore:
         self._key_bits = key_bits
         self._lock = threading.Lock()
         self._keys: list[KeyEntry] = []
-        self._dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self._dir)
         self._load_or_generate()
 
     # -------- loading & generating --------
@@ -108,11 +110,8 @@ class Keystore:
 
         priv_path = self._dir / f"{kid}.pem"
         pub_path = self._dir / f"{kid}.pub.pem"
-        priv_path.write_bytes(priv_pem)
-        try:
-            os.chmod(priv_path, 0o600)
-        except OSError:
-            pass
+        # Created with mode 0600: no window where the private key is readable.
+        write_private(priv_path, priv_pem)
         pub_path.write_bytes(pub_pem)
 
         entry = KeyEntry(

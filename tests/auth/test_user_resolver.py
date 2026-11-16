@@ -211,3 +211,69 @@ def test_email_match_is_case_insensitive(isolated_db):
     PendingAdmins.create(email="ALICE@example.com", is_superadmin=False)
     result = resolve_or_create_admin(_principal(email="alice@EXAMPLE.com"))
     assert result.email == "alice@example.com"
+
+
+# -------- built-in issuer moved (G8b restore drill) --------
+
+
+def _built_in_row(admin_id="adm-moved", email="ops@example.com", issuer="http://old.example:8080",
+                  password=True, subject=None):
+    from models.admin_users import AdminUsers
+    from models.local_credentials import LocalCredentials
+
+    AdminUsers.insert(id=admin_id, email=email, issuer=issuer, subject=subject or email,
+                      email_verified=True, is_superadmin=True)
+    if password:
+        LocalCredentials.upsert(admin_id=admin_id, password_hash="$argon2id$x")
+
+
+@pytest.fixture
+def built_in(monkeypatch):
+    monkeypatch.delenv("AUTH_OIDC_ISSUER", raising=False)
+    monkeypatch.setenv("APP_BASE_URL", "https://new.example")
+
+
+def test_built_in_sign_in_relinks_after_the_base_url_changed(isolated_db, built_in):
+    """A restore at a new address used to lock every built-in admin out."""
+    from models.admin_audit_log import AdminAuditLog
+    from models.admin_users import AdminUsers
+    from services.auth.user_resolver import resolve_or_create_admin
+
+    _built_in_row()
+    result = resolve_or_create_admin(_principal(issuer="https://new.example", subject="ops@example.com",
+                                                email="ops@example.com"))
+    assert result.id == "adm-moved"
+    assert AdminUsers.get_by_id("adm-moved").issuer == "https://new.example"
+    row = AdminAuditLog.select().where((AdminAuditLog.action == "admin.relinked")
+                                       & (AdminAuditLog.target_id == "adm-moved")).get()
+    assert "built_in_issuer_moved" in str(row.payload)
+
+
+def test_external_idp_row_is_not_moved_by_a_built_in_sign_in(isolated_db, built_in):
+    from services.auth.user_resolver import EmailLinkedToOtherProvider, resolve_or_create_admin
+
+    # Linked to Entra (opaque subject), even though it also has a password.
+    _built_in_row(issuer="https://login.microsoftonline.com/t/v2.0", subject="oid-123")
+    with pytest.raises(EmailLinkedToOtherProvider):
+        resolve_or_create_admin(_principal(issuer="https://new.example", subject="ops@example.com",
+                                           email="ops@example.com"))
+
+
+def test_row_without_a_built_in_password_is_not_moved(isolated_db, built_in):
+    from services.auth.user_resolver import EmailLinkedToOtherProvider, resolve_or_create_admin
+
+    _built_in_row(password=False)
+    with pytest.raises(EmailLinkedToOtherProvider):
+        resolve_or_create_admin(_principal(issuer="https://new.example", subject="ops@example.com",
+                                           email="ops@example.com"))
+
+
+def test_an_external_idp_sign_in_never_uses_the_move_rule(isolated_db, monkeypatch):
+    from services.auth.user_resolver import EmailLinkedToOtherProvider, resolve_or_create_admin
+
+    monkeypatch.setenv("APP_BASE_URL", "https://app.example")
+    monkeypatch.setenv("AUTH_OIDC_ISSUER", "https://idp.example")
+    _built_in_row()
+    with pytest.raises(EmailLinkedToOtherProvider):
+        resolve_or_create_admin(_principal(issuer="https://idp.example", subject="ops@example.com",
+                                           email="ops@example.com"))

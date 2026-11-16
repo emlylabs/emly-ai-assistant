@@ -1,0 +1,21 @@
+# Non-secret settings. Secrets come from the "emly-secrets" Secret as files
+# (NAME_FILE), so they never appear in the pod spec or the environment.
+# Every variable is described in the README; override in your overlay.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: emly-config
+data:
+  MODE: prod
+  DATA_DIR: /app/data
+  QDRANT_URL: http://emly-qdrant:6333
+  # The public https address admins and the widget use.
+  APP_BASE_URL: https://emly.example.com
+  # Address range your ingress controller connects from (usually the pod
+  # CIDR). Client IPs from X-Forwarded-For feed rate limits and the audit
+  # log, so never "*".
+  FORWARDED_ALLOW_IPS: 10.244.0.0/16
+  # One worker per pod: in-memory state is per process.
+  WEB_CONCURRENCY: "1"
+  # Copy audit events to stdout for your log pipeline / SIEM.
+  AUDIT_LOG_STDOUT: "true"

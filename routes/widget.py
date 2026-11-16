@@ -35,6 +35,9 @@ from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessages
 from models.emly_user_action import EMLYUserActionsFormData, USER_ACTIONS
 from models.emly_users import EMLYUsers, EMLYUserUpdateForm
+from services.data_recipients import coerce_email_list
+from services.upload_types import UploadRejected, check_upload
+from services.widget_icons import is_icon_allowed
 from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
 from services.auth.ratelimit import client_ip, hit, rate_limit
 from services.auth.widget_hmac import WidgetPrincipal
@@ -92,10 +95,15 @@ def _safe_url(value: Optional[str]) -> Optional[str]:
 
     Admins paste the logo/avatar URL via the structured config editor;
     a malicious admin could put ``javascript:...`` or ``data:text/html...``
-    there. Force ``http(s)://`` or root-relative ``/foo``."""
+    there. Force ``http(s)://`` or root-relative ``/foo``. G10b: when
+    WIDGET_ICON_HOSTS is set, a URL on another host is dropped too, so
+    visitors' browsers never fetch from it (stored before the list was
+    set, say); the widget then shows its default icon."""
     if not value:
         return None
-    return value if _SAFE_URL_RE.match(value) else None
+    if not _SAFE_URL_RE.match(value) or not is_icon_allowed(value):
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +423,10 @@ def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
         mime_allowlist = [m.lower() for m in (limits.mime_allowlist or [])]
 
     for f in files:
-        # Starlette/FastAPI exposes ``size`` only when the client sent
-        # a Content-Length per part. When absent we still cap during
-        # ``handle_file_uploads`` (it reads ``await file.read()`` once
-        # and the byte length is checked there), but rejecting
-        # known-too-large uploads here is cheaper for the client.
+        # Starlette's multipart parser sets ``size`` to the bytes it
+        # actually received for this part (not a client-supplied value),
+        # so this is the per-file cap. The whole request body is capped
+        # earlier, as it arrives, by WidgetBodyLimitMiddleware (G13c).
         size = getattr(f, "size", None)
         if size is not None and size > max_bytes:
             raise HTTPException(
@@ -434,6 +441,14 @@ def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
                     detail=f"File '{f.filename}' has type '{f.content_type}' "
                     "which is not allowed by this bot's upload policy",
                 )
+        # G13c: the declared type is the browser's word; check the bytes.
+        try:
+            check_upload(f.file, f.filename, f.content_type)
+        except UploadRejected as exc:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"File '{f.filename}': {exc}",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +460,9 @@ class WidgetRatePayload(BaseModel):
     rating: int  # -1, 0, +1
     session_id: str
     user_id: Optional[str] = None
-    free_text: Optional[str] = None  # captured by the audit log only for v1
+    # G13f: a free-text comment used to be accepted and copied into the
+    # audit log, where every bot viewer could read it. Unknown keys are
+    # ignored, so older clients that still send it keep working.
 
 
 class WidgetRateResponse(BaseModel):
@@ -503,7 +520,6 @@ def widget_rate_message(
                 "rating": payload.rating,
                 "session_id": payload.session_id,
                 "user_id": payload.user_id,
-                "free_text": payload.free_text,
             },
         )
     except Exception:
@@ -721,19 +737,10 @@ def _resolve_alert_trigger(
                 continue
             trigger = body.get("trigger") or {}
             return (
-                _coerce_email_list(trigger.get("alert_emails")),
+                coerce_email_list(trigger.get("alert_emails")),
                 str(trigger.get("analysis_prompt") or ""),
             )
     return [], ""
-
-
-def _coerce_email_list(value: Any) -> List[str]:
-    """Normalize ``alert_emails`` (list | comma-string | None) to a clean list."""
-    if isinstance(value, list):
-        return [s.strip() for s in value if isinstance(s, str) and s.strip()]
-    if isinstance(value, str):
-        return [s.strip() for s in value.split(",") if s.strip()]
-    return []
 
 
 async def _get_or_create_widget_user(

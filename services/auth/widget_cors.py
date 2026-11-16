@@ -233,3 +233,25 @@ class WidgetCORSMiddleware(BaseHTTPMiddleware):
 
 
 __all__ = ["WidgetCORSMiddleware", "origin_allowed"]
+
+
+def bots_open_to_any_site() -> list[str]:
+    """G11b: slugs of live bots whose widget accepts any website (``*`` in
+    *Allowed widget origins*), e.g. bots migrated to ``*`` by migration 010."""
+    import json
+
+    from models.bots import Bot
+
+    out = []
+    for row in Bot.select(Bot.slug, Bot.config_json).where(Bot.deleted_at.is_null(True)).dicts():
+        cfg = row.get("config_json") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except ValueError:
+                continue
+        limits = cfg.get("limits") if isinstance(cfg, dict) else None
+        origins = limits.get("widget_allowed_origins") if isinstance(limits, dict) else None
+        if isinstance(origins, list) and "*" in origins:
+            out.append(row["slug"])
+    return sorted(out)

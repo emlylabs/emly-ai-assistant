@@ -29,7 +29,7 @@ def _forget_known_users():
     dispatcher._KNOWN_END_USERS.clear()
 
 
-def _channel(bot_id: str, type_: str = "slack"):
+def _channel(bot_id: str, type_: str = "slack", *, store_email: bool = False):
     from models.bot_channels import BotChannelModel
 
     return BotChannelModel(
@@ -39,6 +39,7 @@ def _channel(bot_id: str, type_: str = "slack"):
         external_id="T123",
         is_active=True,
         created_at=datetime.now(),
+        config_json={"store_sender_email": True} if store_email else None,
     )
 
 
@@ -111,7 +112,7 @@ def test_new_end_user_gets_the_name_and_email_from_the_payload(bot):
     user_id = _uid()
     adapter = _Adapter()
     _ensure(
-        bot.id, user_id, _channel(bot.id, "google_chat"), adapter=adapter,
+        bot.id, user_id, _channel(bot.id, "google_chat", store_email=True), adapter=adapter,
         profile=UserProfile(first_name="Ada", last_name="Lovelace", email="ada@example.com"),
     )
     user = EMLYUsers.get_user_by_id(bot.id, user_id)
@@ -125,7 +126,7 @@ def test_platform_lookup_fills_in_when_the_payload_has_no_name(bot):
 
     user_id = _uid()
     adapter = _Adapter(UserProfile(first_name="Grace", last_name="Hopper", email="grace@example.com"))
-    _ensure(bot.id, user_id, _channel(bot.id), adapter=adapter)
+    _ensure(bot.id, user_id, _channel(bot.id, store_email=True), adapter=adapter)
     user = EMLYUsers.get_user_by_id(bot.id, user_id)
     assert (user.first_name, user.email) == ("Grace", "grace@example.com")
     assert adapter.calls == ["U1"]
@@ -217,7 +218,7 @@ def test_lost_insert_race_is_swallowed_and_keeps_winner_row(bot, monkeypatch):
 
     monkeypatch.setattr(EMLYUsers, "insert_new_user", _spy_insert)
 
-    _ensure(bot.id, user_id, _channel(bot.id, "slack"),
+    _ensure(bot.id, user_id, _channel(bot.id, "slack", store_email=True),
             profile=UserProfile(first_name="Loser", email="l@example.com"))  # must not raise
 
     # The conflict path was really exercised (not short-circuited).
@@ -494,3 +495,31 @@ def test_async_webhook_is_acked_before_the_profile_lookup(bot, monkeypatch):
 
     asyncio.run(_go())
     assert events == ["ack", "lookup", "agent", "send"]
+
+
+# ------------------------------------------------------------- Q-N6
+@pytest.mark.parametrize("type_", ["google_chat", "slack"])
+def test_sender_email_is_not_stored_unless_the_channel_opts_in(bot, type_):
+    """Names are kept; the email from the payload or the platform lookup
+    is dropped while the channel's "Store sender email" is off."""
+    from models.emly_users import EMLYUsers
+
+    payload_user, lookup_user = _uid(), _uid()
+    _ensure(bot.id, payload_user, _channel(bot.id, type_),
+            profile=UserProfile(first_name="Ada", email="ada@example.com"), adapter=_Adapter())
+    adapter = _Adapter(UserProfile(first_name="Grace", email="grace@example.com"))
+    _ensure(bot.id, lookup_user, _channel(bot.id, type_), adapter=adapter)
+
+    a = EMLYUsers.get_user_by_id(bot.id, payload_user)
+    g = EMLYUsers.get_user_by_id(bot.id, lookup_user)
+    assert a.first_name == "Ada" and not a.email
+    assert g.first_name == "Grace" and not g.email
+
+
+def test_whatsapp_number_is_still_kept(bot):
+    from models.emly_users import EMLYUsers
+
+    user_id = _uid()
+    _ensure(bot.id, user_id, _channel(bot.id, "whatsapp_cloud"),
+            profile=UserProfile(first_name="Wa", phone="+15550001"), adapter=_Adapter())
+    assert EMLYUsers.get_user_by_id(bot.id, user_id).phone == "+15550001"

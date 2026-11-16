@@ -58,3 +58,4 @@ widget/dist/
 # Tests (no test framework wired up; would just bloat the layer)
 test.py
 tests/
+deploy/

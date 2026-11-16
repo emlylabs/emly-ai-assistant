@@ -7,7 +7,17 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+# G6c: NAME_FILE secrets, before anything reads NAME. See utils/secret_files.py.
+from utils.secret_files import load_secret_files
+
+load_secret_files()
+
+# G2c: before anything imports LangChain. See utils/tracing_guard.py.
+from utils.tracing_guard import disable_unapproved_tracing  # noqa: E402
+
+disable_unapproved_tracing()
+
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from routes import (
@@ -168,6 +178,18 @@ def _init_embedded_issuer() -> None:
         )
 
 
+def _log_llm_endpoint_policy() -> None:
+    """G2a: say at boot whether model traffic is restricted, and flag a
+    deployment default endpoint that the allowlist itself blocks."""
+    from services.llm_settings import ALLOWLIST_ENV, endpoint_allowlist, endpoint_policy_warnings
+
+    entries = endpoint_allowlist()
+    if entries is not None:
+        log.info("%s: model traffic limited to %d approved endpoint(s)", ALLOWLIST_ENV, len(entries))
+    for w in endpoint_policy_warnings():
+        log.warning(w["message"])
+
+
 def _bootstrap_pending_superadmin() -> None:
     """Pre-stage the first admin from ``AUTH_BOOTSTRAP_SUPERADMIN_EMAIL``.
     See ``services.auth.bootstrap`` — a generated temporary password is
@@ -182,6 +204,15 @@ _assert_runtime_topology()
 from services.secrets import validate_configuration as _validate_secrets_key  # noqa: E402
 _validate_secrets_key()
 _init_embedded_issuer()
+from services.auth.factory import check_required_authentication as _check_mfa  # noqa: E402
+_check_mfa()  # G3b: required acr/amr need an external IdP
+from services.auth.session_limits import check_settings as _check_session_limits  # noqa: E402
+_check_session_limits()  # G3a: a malformed AUTH_SESSION_MAX_AGE_SECONDS stops start-up
+_log_llm_endpoint_policy()
+from services.crawl_fetch import log_crawl_settings as _log_crawl_settings  # noqa: E402
+_log_crawl_settings()  # G10a: a malformed CRAWL_ALLOWED_PRIVATE_CIDRS stops start-up
+from services.egress import check_qdrant_settings as _check_qdrant  # noqa: E402
+_check_qdrant()  # G8c: a remote Qdrant needs an API key in production
 _bootstrap_pending_superadmin()
 _start_purge_scheduler()
 
@@ -208,15 +239,21 @@ def _register_channel_adapters() -> None:
 _register_channel_adapters()
 
 
-# Validate every bot's config_json against the current Pydantic schema
-# at boot. A bot whose config is unparseable is a deploy bug, not a
-# runtime fallback — fail fast in CI/CD.
+# Load every bot's config_json under the current schema at boot. N4: a
+# bot whose config doesn't load is logged and listed on /api/readyz, and
+# answers "not configured" until fixed; it no longer stops the other
+# bots. Only a failure to list the bots at all stops start-up.
 try:
     from services.bot_config import boot_validate_all_configs
     boot_validate_all_configs()
 except Exception:
     log.exception("Bot config schema validation failed at boot")
     raise
+
+# G2d: one INFO block naming every outbound destination, by host only.
+from services.egress import log_egress_summary  # noqa: E402
+
+log_egress_summary()
 
 
 class CustomMiddleware(BaseHTTPMiddleware):
@@ -367,9 +404,19 @@ if is_local_issuer_enabled():
 # like ``GET /widget/{bot_id}/config`` and ``POST /widget/{bot_id}/action``.
 app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=False)
 app.add_middleware(CustomMiddleware)
+# G13c: hard cap on widget request bodies, counted as bytes arrive. Inside
+# the CORS layers so the widget can read the 413.
+from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
+app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
-from services.audit import AuditRequestContextMiddleware  # noqa: E402
+from services.audit import AuditRequestContextMiddleware, AuditUnavailable  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)
+
+
+@app.exception_handler(AuditUnavailable)
+async def _audit_unavailable(request: Request, exc: AuditUnavailable):
+    # Q-G5a: a security event couldn't be audited, so the request fails.
+    return JSONResponse(status_code=503, content={"detail": {"code": "audit_unavailable"}})
 # CSRF: cookie-authenticated mutating requests must carry an Origin from the
 # trusted-list. Bearer-only callers (no cookie) bypass — without ambient
 # credentials there's no CSRF surface. Mounted before CORS so the response
@@ -618,6 +665,50 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
             "message": "Multi-worker deploy with SQLite — expect write contention. Use Postgres for production.",
         })
 
+    from services.llm_settings import endpoint_policy_warnings
+
+    out.extend(endpoint_policy_warnings())
+
+    from services.egress import qdrant_warnings
+
+    out.extend(qdrant_warnings())
+    from services.egress import postgres_tls_warnings
+
+    out.extend(postgres_tls_warnings())
+
+    from utils.runtime import is_prod_mode
+
+    if is_prod_mode():
+        from services.auth.widget_cors import bots_open_to_any_site
+
+        open_bots = bots_open_to_any_site()
+        if open_bots:
+            out.append({
+                "code": "widget_any_origin",
+                "message": f"{len(open_bots)} bot(s) let any website embed their widget (Allowed widget "
+                           f"origins is *): {', '.join(open_bots[:20])}"
+                           f"{' …' if len(open_bots) > 20 else ''}. Set each one's origins to your own sites.",
+            })
+
+    from services.audit import audit_write_failures
+
+    failures = audit_write_failures()
+    if failures:
+        out.append({
+            "code": "audit_write_failures",
+            "message": f"{failures} audit log write(s) failed since start-up. Check the database and "
+                       "the AUDIT WRITE FAILED lines in the logs.",
+        })
+
+    from services.bot_config import invalid_bot_configs
+
+    broken = invalid_bot_configs()
+    if broken:
+        out.append({
+            "code": "bot_config_invalid",
+            "message": f"{len(broken)} bot(s) have a config that can't be loaded and won't answer until an "
+                       f"admin saves a valid one: {', '.join(sorted(broken))}. See the start-up log.",
+        })
     return out
 
 
@@ -707,10 +798,26 @@ def _app_base_url_from_request(request: Request) -> str:
     return "http://localhost:8080"
 
 
+def _ui_file(path: Path) -> FileResponse:
+    """Serve a file from the UI export. HTML pages carry the admin UI's
+    Content-Security-Policy, with hashes for their inline scripts (G13b)."""
+    if path.suffix == ".html":
+        from services.ui_csp import ui_policy_for_file
+
+        return FileResponse(path, headers={"Content-Security-Policy": ui_policy_for_file(path)})
+    return FileResponse(path)
+
+
 def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # With API docs disabled, their paths must 404 — not fall through to
     # the SPA shell below and look like they exist.
     if rel_path.strip("/") in API_DOC_PATHS and not api_docs_enabled():
+        return JSONResponse(status_code=404, content={"message": "Not found"})
+    # Unknown API and widget paths are 404s, not the admin UI's HTML with a
+    # 200: a client calling a wrong or retired endpoint must see the error
+    # (found in the G8b restore drill). The UI has no pages under these.
+    first = rel_path.strip("/").split("/", 1)[0]
+    if first in ("api", "widget"):
         return JSONResponse(status_code=404, content={"message": "Not found"})
 
     if not _UI_DIR.exists():
@@ -737,13 +844,13 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     # Try the literal path first (handles /favicon.ico, /file.svg, etc.).
     candidate = (_UI_DIR / rel_path).resolve()
     if _UI_DIR.resolve() in candidate.parents and candidate.is_file():
-        return FileResponse(candidate)
+        return _ui_file(candidate)
 
     # Next.js static export emits a foo.html for the /foo route.
     if rel_path:
         html_candidate = (_UI_DIR / f"{rel_path}.html").resolve()
         if _UI_DIR.resolve() in html_candidate.parents and html_candidate.is_file():
-            return FileResponse(html_candidate)
+            return _ui_file(html_candidate)
 
     # Per-bot routes — `/bots/<slug>/<tab>` — are statically exported
     # under a placeholder slug `_` (Next.js requires `generateStaticParams`
@@ -768,15 +875,15 @@ def _serve_ui_path(request: Request | None, rel_path: str) -> Response:
     if rewritten is not None:
         literal = (_UI_DIR / rewritten).resolve()
         if _UI_DIR.resolve() in literal.parents and literal.is_file():
-            return FileResponse(literal)
+            return _ui_file(literal)
         scaffold = (_UI_DIR / f"{rewritten}.html").resolve()
         if _UI_DIR.resolve() in scaffold.parents and scaffold.is_file():
-            return FileResponse(scaffold)
+            return _ui_file(scaffold)
 
     # SPA fallback.
     index = _UI_DIR / "index.html"
     if index.is_file():
-        return FileResponse(index)
+        return _ui_file(index)
     return JSONResponse(status_code=404, content={"message": "Not found"})
 
 

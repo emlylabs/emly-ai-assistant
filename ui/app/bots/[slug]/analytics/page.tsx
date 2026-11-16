@@ -6,10 +6,7 @@ import { useBot } from "@/components/BotShell";
 import KpiCard from "@/components/KpiCard";
 import VolumeChart from "@/components/charts/VolumeChart";
 import TopIntentsCard from "@/components/analytics/TopIntentsCard";
-import ModelUsageCard, {
-  PRICE_TABLE_PER_1K,
-  totalSpend,
-} from "@/components/analytics/ModelUsageCard";
+import ModelUsageCard, { totalSpend } from "@/components/analytics/ModelUsageCard";
 import SessionFlowCard from "@/components/analytics/SessionFlowCard";
 import ResolutionFunnelCard from "@/components/analytics/ResolutionFunnelCard";
 import ChannelFilter from "@/components/analytics/ChannelFilter";
@@ -145,29 +142,6 @@ function alignPriorSeries(prior: number[], targetLength: number): number[] {
   if (prior.length === targetLength) return prior;
   if (prior.length > targetLength) return prior.slice(prior.length - targetLength);
   return new Array(targetLength - prior.length).fill(0).concat(prior);
-}
-
-function csvCell(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  const s = String(value);
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function csvLine(cells: unknown[]): string {
-  return cells.map(csvCell).join(",");
-}
-
-function downloadBlob(content: string, filename: string, mime = "text/csv;charset=utf-8") {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /** Convert an `<input type="date">` value (`YYYY-MM-DD`) to a UTC unix
@@ -419,6 +393,7 @@ export default function BotAnalyticsPage() {
         messages: deltaPct(messagesCount, priorMessagesCount),
         sessions: deltaPct(sessionsCount, priorSessionsCount),
         resolution: deltaPctPoint(report?.resolution_rate, priorReport?.resolution_rate),
+        likelyResolved: deltaPctPoint(report?.likely_resolved_rate, priorReport?.likely_resolved_rate),
         csat: deltaCsat(report?.csat_avg, priorReport?.csat_avg),
         deflection: deltaPctPoint(report?.deflection_rate, priorReport?.deflection_rate),
         latency: deltaLatency(report?.p95_latency_ms, priorReport?.p95_latency_ms),
@@ -459,186 +434,22 @@ export default function BotAnalyticsPage() {
     );
   }, [priorSessionDaily]);
 
+  // G7b: the CSV is built on the server (same aggregates as this page,
+  // spreadsheet-formula safe) and every download is audited.
   const exportCsv = useCallback(() => {
-    if (!report || !messageDaily) return;
-    const lines: string[] = [];
-    const append = (s: string) => lines.push(s);
-
-    append(`# Analytics export — ${bot.name} (${bot.slug})`);
-    append(
-      `# Window: ${tsToDateInput(viewWindow.fromTs)} → ${tsToDateInput(viewWindow.toTs)} · ${viewWindow.days}d · UTC`,
-    );
-    if (channelId) append(`# Channel filter: ${channelId}`);
-    append(`# Generated ${new Date().toISOString()}`);
-    append("");
-
-    append("# KPIs");
-    append(csvLine(["metric", "value", "prior", "delta"]));
-    const fmtPrior = compare && priorReport ? priorReport : null;
-    const kpiRows: Array<[string, unknown, unknown, string]> = [
-      ["total_messages", report.messages, fmtPrior?.messages ?? "", deltas?.messages?.value ?? ""],
-      ["sessions", report.conversations, fmtPrior?.conversations ?? "", deltas?.sessions?.value ?? ""],
-      ["resolution_rate", report.resolution_rate ?? "", fmtPrior?.resolution_rate ?? "", deltas?.resolution?.value ?? ""],
-      ["deflection_rate", report.deflection_rate ?? "", fmtPrior?.deflection_rate ?? "", deltas?.deflection?.value ?? ""],
-      ["csat_avg", report.csat_avg ?? "", fmtPrior?.csat_avg ?? "", deltas?.csat?.value ?? ""],
-      ["csat_count", report.csat_count, fmtPrior?.csat_count ?? "", ""],
-      ["p95_latency_ms", report.p95_latency_ms ?? "", fmtPrior?.p95_latency_ms ?? "", deltas?.latency?.value ?? ""],
-      [
-        "llm_spend_usd",
-        llmSpend && llmSpend.priced ? llmSpend.total.toFixed(4) : "",
-        priorLlmSpend && priorLlmSpend.priced ? priorLlmSpend.total.toFixed(4) : "",
-        deltas?.spend?.value ?? "",
-      ],
-      [
-        "widget_views_short",
-        report.short_impressions ?? 0,
-        fmtPrior?.short_impressions ?? "",
-        deltas?.widgetViews?.value ?? "",
-      ],
-      [
-        "widget_views_long",
-        report.impressions ?? 0,
-        fmtPrior?.impressions ?? "",
-        "",
-      ],
-    ];
-    for (const row of kpiRows) append(csvLine(row));
-    append("");
-
-    if (latency) {
-      append("# Latency quantiles");
-      append(csvLine(["quantile", "ms", "samples"]));
-      append(csvLine(["p50", latency.p50 ?? "", latency.count]));
-      append(csvLine(["p95", latency.p95 ?? "", latency.count]));
-      append(csvLine(["p99", latency.p99 ?? "", latency.count]));
-      append("");
-    }
-
-    if (citations) {
-      append("# Citations");
-      append(csvLine(["metric", "value"]));
-      append(csvLine(["assistant_turns", citations.assistant_turns]));
-      append(csvLine(["with_citations", citations.with_citations]));
-      append(csvLine(["citation_rate", citations.citation_rate ?? ""]));
-      append("");
-      if (citations.top_files.length > 0) {
-        append("# Top cited files");
-        append(csvLine(["file_id", "filename", "citations"]));
-        for (const f of citations.top_files) {
-          append(csvLine([f.file_id ?? "", f.filename ?? "", f.citation_count]));
-        }
-        append("");
-      }
-    }
-
-    if (funnel) {
-      append("# Resolution funnel");
-      append(csvLine(["stage", "count", "rate"]));
-      append(csvLine(["started", funnel.started, funnel.started > 0 ? 1 : ""]));
-      append(csvLine(["understood", funnel.understood, funnel.understood_rate ?? ""]));
-      append(csvLine(["resolved", funnel.resolved, funnel.resolved_rate ?? ""]));
-      append("");
-    }
-
-    append("# Daily messages");
-    if (compare && priorMessageDaily) {
-      append(csvLine(["date", "messages", "user", "assistant", "prior_messages"]));
-      const prior = alignPriorSeries(
-        priorMessageDaily.map((d) => d.count),
-        messageDaily.length,
-      );
-      messageDaily.forEach((d, i) => {
-        append(csvLine([d.day, d.count, d.user_count ?? "", d.assistant_count ?? "", prior[i]]));
-      });
-    } else {
-      append(csvLine(["date", "messages", "user", "assistant"]));
-      for (const d of messageDaily)
-        append(csvLine([d.day, d.count, d.user_count ?? "", d.assistant_count ?? ""]));
-    }
-    append("");
-
-    if (sessionDaily && sessionDaily.length > 0) {
-      append("# Daily sessions");
-      append(csvLine(["date", "started", "resolved"]));
-      for (const d of sessionDaily) append(csvLine([d.day, d.started, d.resolved]));
-      append("");
-    }
-
-    if (channelMix && channelMix.length > 0) {
-      append("# Channel mix");
-      append(csvLine(["channel_id", "channel_type", "display_name", "count"]));
-      for (const r of channelMix) {
-        append(csvLine([r.channel_id ?? "", r.channel_type ?? "", r.display_name ?? "", r.count]));
-      }
-      append("");
-    }
-
-    if (enrichment) {
-      append("# Enrichment");
-      append(csvLine(["metric", "value"]));
-      append(csvLine(["cohort_size", enrichment.cohort_size]));
-      append(csvLine(["enriched_count", enrichment.enriched_count]));
-      append(csvLine(["sentiment_positive", enrichment.sentiment.positive]));
-      append(csvLine(["sentiment_neutral", enrichment.sentiment.neutral]));
-      append(csvLine(["sentiment_negative", enrichment.sentiment.negative]));
-      append(csvLine(["sentiment_unrated", enrichment.sentiment.unrated]));
-      append("");
-      if (enrichment.intents.length > 0) {
-        append("# Top enrichment intents");
-        append(csvLine(["intent", "count"]));
-        for (const i of enrichment.intents) append(csvLine([i.intent, i.count]));
-        append("");
-      }
-    }
-
-    append("# Model usage");
-    append(csvLine(["model", "turns", "prompt_tokens", "completion_tokens", "cost_usd"]));
-    if (usageByModel) {
-      for (const row of usageByModel) {
-        const price = PRICE_TABLE_PER_1K[row.model];
-        const cost = price
-          ? (row.prompt_tokens / 1000) * price.prompt +
-            (row.completion_tokens / 1000) * price.completion
-          : null;
-        append(
-          csvLine([
-            row.model,
-            row.turns,
-            row.prompt_tokens,
-            row.completion_tokens,
-            cost === null ? "" : cost.toFixed(4),
-          ]),
-        );
-      }
-    }
-
-    const today = new Date().toISOString().slice(0, 10);
-    const suffix = channelId ? `-${channelId.slice(0, 8)}` : "";
-    downloadBlob(
-      lines.join("\n") + "\n",
-      `${bot.slug}-analytics-${today}-${viewWindow.days}d${suffix}.csv`,
-    );
-  }, [
-    bot.name,
-    bot.slug,
-    viewWindow,
-    channelId,
-    report,
-    priorReport,
-    compare,
-    messageDaily,
-    priorMessageDaily,
-    sessionDaily,
-    usageByModel,
-    llmSpend,
-    priorLlmSpend,
-    deltas,
-    funnel,
-    channelMix,
-    enrichment,
-    citations,
-    latency,
-  ]);
+    const params = new URLSearchParams({
+      from: String(viewWindow.fromTs),
+      to: String(viewWindow.toTs),
+    });
+    if (channelId) params.set("channel_id", channelId);
+    if (compare) params.set("compare", "true");
+    const a = document.createElement("a");
+    a.href = `/api/admin/bots/${encodeURIComponent(bot.slug)}/analytics/export?${params}`;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [bot.slug, viewWindow, channelId, compare]);
 
   // ---------- Empty state ----------
   // The bot has loaded but never received traffic in the active window.
@@ -733,8 +544,8 @@ export default function BotAnalyticsPage() {
           <button
             className="ghost compact"
             onClick={exportCsv}
-            disabled={!report || !messageDaily}
-            title="Download a CSV with KPIs, daily series, and per-model usage"
+            disabled={!report}
+            title="Download a CSV with KPIs, daily series, and per-model usage and cost"
           >
             Export
           </button>
@@ -801,7 +612,17 @@ export default function BotAnalyticsPage() {
               footnote={
                 report?.resolution_rate === null
                   ? "no resolved sessions in window"
-                  : "sessions marked resolved in window"
+                  : "sessions staff marked resolved"
+              }
+            />
+            <KpiCard
+              label="Likely resolved"
+              value={formatPct(report?.likely_resolved_rate)}
+              delta={deltas?.likelyResolved ?? undefined}
+              footnote={
+                report?.likely_resolved_rate === null || report?.likely_resolved_rate === undefined
+                  ? "no sessions in window"
+                  : "automatic: answered, no thumbs-down or handover, then thumbs-up or 30 min quiet"
               }
             />
             <KpiCard

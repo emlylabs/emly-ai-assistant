@@ -13,6 +13,15 @@
 // cookie either lands on return or the IdP routes the user to
 // "Request access" / "Email not verified" pages.
 
+/** G2g: one row of a bot's "Where this bot's data goes" panel. */
+export type DataRecipientRow = {
+  what: string;
+  destination: string;
+  detail: string;
+  /** "internal": inside your network; "external": outside it; null: nothing leaves. */
+  scope: "internal" | "external" | null;
+};
+
 export type AdminUser = {
   id: string;
   email: string;
@@ -242,12 +251,14 @@ export type HeatmapCell = {
 
 export type MessageUsageByModel = {
   /** The exact `model_used` string persisted on `emly_messages`, e.g.
-   * `openai/gpt-4o`. The frontend applies a local price table to turn
-   * these tallies into a USD figure. */
+   * `openai/gpt-4o`. */
   model: string;
   turns: number;
   prompt_tokens: number;
   completion_tokens: number;
+  /** USD from the workspace price table; null when the model has no
+   * price (unknown, not free). */
+  cost_usd?: number | null;
 };
 
 export type MessageCountByTopic = {
@@ -290,6 +301,9 @@ export type BotReport = {
   csat_count: number;
   p95_latency_ms: number | null;
   resolution_rate: number | null;
+  /** G7d: automatic estimate, not staff-marked (services/auto_resolution.py). */
+  likely_resolved_rate: number | null;
+  likely_resolved_count: number;
 };
 
 export type EndUser = {
@@ -381,6 +395,10 @@ export type BotConfigResponse = {
   last_updated_by_admin_email: string | null;
   last_updated_at: string | null;
   draft: ConfigDraft | null;
+  /** Set when the stored config doesn't load under the current schema:
+   * field paths and error types. The bot answers "not configured"
+   * until a valid config is saved. */
+  load_error?: string | null;
 };
 
 /** One row of `GET /api/admin/bots/summary` — Phase 5 workspace overview. */
@@ -1467,6 +1485,11 @@ export const api = {
     request<{ erased: Record<string, number> }>(
       "DELETE",
       `/bots/${encodeURIComponent(slug)}/end-users/${encodeURIComponent(userId)}`
+    ),
+  getBotDataRecipients: (slug: string) =>
+    request<DataRecipientRow[]>(
+      "GET",
+      `/bots/${encodeURIComponent(slug)}/data-recipients`
     ),
   getBotConfig: (slug: string) =>
     request<BotConfigResponse>(
