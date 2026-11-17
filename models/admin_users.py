@@ -185,6 +185,10 @@ class AdminUsersTable:
         )
         return [AdminUserModel(**model_to_dict(u)) for u in rows]
 
+    def any_ever_existed(self) -> bool:
+        """Whether any admin row exists, soft-deleted ones included."""
+        return AdminUser.select().exists()
+
     def count(self) -> int:
         return AdminUser.select().where(AdminUser.deleted_at.is_null()).count()
 
