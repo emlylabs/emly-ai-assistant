@@ -17,11 +17,12 @@
 
 import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { safeReturnTo } from "@/lib/return-to";
 
 function Inner() {
   const router = useRouter();
   const params = useSearchParams();
-  const returnTo = params.get("return_to") || "/bots";
+  const returnTo = safeReturnTo(params.get("return_to"));
 
   useEffect(() => {
     router.replace(returnTo);

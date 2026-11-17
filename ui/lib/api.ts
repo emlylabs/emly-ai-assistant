@@ -1,3 +1,5 @@
+import { safeReturnTo } from "./return-to";
+
 // Tiny fetch wrapper. Auth is cookie-based — every request sends
 // `credentials: "include"` so the httpOnly session cookie set by
 // `/api/admin/auth/callback` flows automatically. JS never reads or
@@ -644,7 +646,7 @@ export function setToken(_token: string | null): void {
 /** Build the URL the UI should redirect to in order to start the OIDC login flow. */
 export function loginUrl(returnTo?: string): string {
   const target = returnTo ?? (typeof window !== "undefined" ? window.location.pathname + window.location.search : "/");
-  const safe = target.startsWith("/") && !target.startsWith("//") ? target : "/";
+  const safe = safeReturnTo(target, "/");
   return `/api/admin/auth/login?return_to=${encodeURIComponent(safe)}`;
 }
 

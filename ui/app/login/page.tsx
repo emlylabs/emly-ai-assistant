@@ -4,10 +4,11 @@ import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { loginUrl } from "@/lib/api";
+import { safeReturnTo } from "@/lib/return-to";
 
 function Inner() {
   const params = useSearchParams();
-  const returnTo = params.get("return_to") || "/bots";
+  const returnTo = safeReturnTo(params.get("return_to"));
 
   // No client-side `me()` probe. The middleware (and the FastAPI
   // catchall in static-export prod) handles "you need a session"

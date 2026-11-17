@@ -267,11 +267,16 @@ def _post_login_default(request: Request | None = None) -> str:
 
 
 def _is_safe_return_to(target: str) -> bool:
-    """Only allow same-origin returns to prevent open-redirect."""
+    """Only allow same-origin returns to prevent open-redirect.
+
+    A path starting with a single "/". Browsers read "//host" and "/\\host"
+    as another origin, and strip control characters, so those are refused.
+    Mirrors ``safeReturnTo`` in ui/lib/return-to.ts (S10)."""
     if not target:
         return False
-    # Allow paths starting with /, but reject anything that could be a host.
-    return target.startswith("/") and not target.startswith("//")
+    if not target.startswith("/") or target.startswith("//"):
+        return False
+    return "\\" not in target and not any(ord(c) < 32 or ord(c) == 127 for c in target)
 
 
 _AUTH_ERROR_COPY = {
