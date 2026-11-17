@@ -1,0 +1,87 @@
+# After a pull request is merged into main, GitHub sends a push event for
+# that merge (merge commit, squash, or rebase). This workflow checks out
+# that commit, builds the image, and pushes it to Harbor.
+#
+# Also runs on a manual "Run workflow" from the Actions tab, which builds
+# whatever is currently on main.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   HARBOR_USERNAME  Harbor user, or a robot account (robot$project+name)
+#   HARBOR_PASSWORD  Harbor CLI secret for that account
+# The account needs push permission on the destination project. Do not put
+# the password in the repo.
+#
+# Required repository variables (Settings → Secrets and variables → Actions → Variables):
+#   HARBOR_REGISTRY  registry host, no scheme
+#   HARBOR_IMAGE     repository path inside that registry (project/image)
+#
+# Tags pushed:
+#   :<full git sha>  immutable; this is the merge commit
+#   :latest          moving tag the cluster manifests already pull
+#
+# Supply-chain notes match ci.yml: third-party actions are pinned to commit
+# SHAs. Provenance attestations are off because Harbor rejects the extra
+# manifest they attach.
+name: Publish main to Harbor
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # GitHub Actions cache used by the Docker build
+
+concurrency:
+  group: harbor-main-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ${{ vars.HARBOR_REGISTRY }}
+  IMAGE_NAME: ${{ vars.HARBOR_IMAGE }}
+
+jobs:
+  publish:
+    name: build and push
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require Harbor settings
+        run: |
+          test -n "$REGISTRY" || { echo "Set repository variable HARBOR_REGISTRY"; exit 1; }
+          test -n "$IMAGE_NAME" || { echo "Set repository variable HARBOR_IMAGE"; exit 1; }
+
+      - name: Stamp build time
+        id: build
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Harbor
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+            GIT_SHA=${{ github.sha }}
+            BUILT_AT=${{ steps.build.outputs.built_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
