@@ -270,3 +270,14 @@ def test_qdrant_server_matches_the_client():
     assert compose_tag.split("-")[0] == k8s_tag.split("-")[0], "compose and Kubernetes run different Qdrant versions"
     (c_major, c_minor), (s_major, s_minor) = _minor(client), _minor(compose_tag)
     assert c_major == s_major and abs(c_minor - s_minor) <= 1, (client, compose_tag)
+
+
+def test_local_working_notes_never_reach_the_image():
+    """L27: the notes excluded from git describe unfixed weaknesses; a
+    local docker build must not copy them in."""
+    ignore = (REPO_ROOT / ".dockerignore").read_text().split()
+    exclude = (REPO_ROOT / ".git" / "info" / "exclude")
+    notes = [ln.strip().lstrip("/") for ln in exclude.read_text().splitlines()
+             if ln.strip().endswith(".md") and not ln.startswith("#")] if exclude.exists() else []
+    for note in notes or ["fable-audit.md", "claim-gaps.md"]:
+        assert note in ignore, note
