@@ -119,6 +119,30 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
             )
 
 
+def _email_to_sync(existing: AdminUserModel, principal: Principal) -> str | None:
+    """The IdP email to store on an already-linked admin, or None to keep
+    the stored one (S6).
+
+    Invites are matched on the admin's stored email, so a linked identity
+    may take a new address only under the same rule a new admin gets
+    (step 3): the IdP reports it verified. It may never take an address
+    another admin already has (that also used to fail every request with a
+    unique-constraint error)."""
+    new = principal.email.lower() if principal.email else None
+    if new is None or new == (existing.email or "").lower():
+        return None
+    if not principal.email_verified:
+        log.warning("Not updating email for admin %s: the IdP reports the new address unverified",
+                    existing.id)
+        return None
+    other = AdminUsers.get_by_email(new)
+    if other is not None and other.id != existing.id:
+        log.warning("Not updating email for admin %s: the new address belongs to admin %s",
+                    existing.id, other.id)
+        return None
+    return new
+
+
 def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) -> AdminUserModel:
     """Map an authenticated ``Principal`` to a row in ``admin_user``.
 
@@ -131,10 +155,11 @@ def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) 
         # 1) Existing OIDC link.
         existing = AdminUsers.get_by_issuer_subject(principal.issuer, principal.subject)
         if existing is not None:
+            synced_email = _email_to_sync(existing, principal)
             if record_login:
-                AdminUsers.touch_login(existing.id, email=principal.email, name=principal.name)
+                AdminUsers.touch_login(existing.id, email=synced_email, name=principal.name)
                 return _refetch(existing.id)
-            email = principal.email.lower() if principal.email else None
+            email = synced_email
             changed = {}
             if email is not None and email != (existing.email or ""):
                 changed["email"] = email

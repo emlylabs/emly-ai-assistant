@@ -277,3 +277,48 @@ def test_an_external_idp_sign_in_never_uses_the_move_rule(isolated_db, monkeypat
     with pytest.raises(EmailLinkedToOtherProvider):
         resolve_or_create_admin(_principal(issuer="https://idp.example", subject="ops@example.com",
                                            email="ops@example.com"))
+
+
+# -------- S6: a linked admin's email changes only under the step-3 rule --------
+
+
+def _linked(email="alice@example.com"):
+    from models.admin_users import AdminUsers
+
+    AdminUsers.insert(id="adm-1", email=email, issuer="https://idp.test/", subject="sub-1",
+                      email_verified=True, is_superadmin=False)
+
+
+@pytest.mark.parametrize("record_login", [True, False])
+def test_unverified_new_email_is_not_stored(isolated_db, record_login):
+    from models.admin_users import AdminUsers
+    from services.auth.user_resolver import resolve_or_create_admin
+
+    _linked()
+    resolve_or_create_admin(_principal(email="boss-invite@example.com", email_verified=False),
+                            record_login=record_login)
+    assert AdminUsers.get_by_id("adm-1").email == "alice@example.com"
+
+
+@pytest.mark.parametrize("record_login", [True, False])
+def test_verified_new_email_is_stored(isolated_db, record_login):
+    from models.admin_users import AdminUsers
+    from services.auth.user_resolver import resolve_or_create_admin
+
+    _linked()
+    resolve_or_create_admin(_principal(email="Alice.New@Example.com"), record_login=record_login)
+    assert AdminUsers.get_by_id("adm-1").email == "alice.new@example.com"
+
+
+@pytest.mark.parametrize("record_login", [True, False])
+def test_another_admins_email_is_not_taken(isolated_db, record_login):
+    from models.admin_users import AdminUsers
+    from services.auth.user_resolver import resolve_or_create_admin
+
+    _linked()
+    AdminUsers.insert(id="adm-2", email="bob@example.com", issuer="https://idp.test/", subject="sub-2",
+                      email_verified=True, is_superadmin=True)
+    result = resolve_or_create_admin(_principal(email="bob@example.com"), record_login=record_login)
+    assert result.id == "adm-1"
+    assert AdminUsers.get_by_id("adm-1").email == "alice@example.com"
+
