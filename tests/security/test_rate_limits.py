@@ -40,7 +40,9 @@ def widget_env(isolated_db, small_limits):
         # A form that verifies email, so the OTP routes are open (S3).
         return Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"r-{uuid.uuid4().hex[:6]}", name="R",
                            config_json={"c_forms_selected": [
-                               {"contact": {"form_schema": {}, "trigger": {"verify_action": True}}}]})
+                               {"contact": {"form_schema": {}, "trigger": {"verify_action": True}}},
+                               {"uploads": {"form_schema": {"name": "uploads", "form": {"doc": {"type": "file"}}},
+                                            "trigger": {}}}]})
 
     app = FastAPI()
     app.include_router(widget.router)
@@ -118,7 +120,8 @@ def test_widget_upload_has_its_own_limit(widget_env, monkeypatch):
 
     monkeypatch.setattr(widget_routes, "handle_file_uploads", _no_uploads)
     c, bot = widget_env["client"], widget_env["make_bot"]()
-    payload = json.dumps({"session_id": "s1", "action_name": "upload", "action_value": "x"})
+    payload = json.dumps({"session_id": "s1", "action_name": "upload", "action_value": "x",
+                          "form_title": "uploads"})
 
     def send(with_file=True):
         files = {"files": ("a.txt", b"hello", "text/plain")} if with_file else None

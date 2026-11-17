@@ -435,30 +435,19 @@ def send_scheduled_email(
             form_title=form_title or "",
         )
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = email
-    msg.attach(MIMEText(content, "html"))
-
+    attachments = []
     for file in [] if link_only else uploaded_files:
         try:
             with open(file["path"], "rb") as f:
-                file_content = f.read()
-            attachment = MIMEApplication(file_content)
-            attachment.add_header(
-                "Content-Disposition", "attachment", filename=file["filename"]
-            )
-            msg.attach(attachment)
+                attachments.append((file["filename"], f.read()))
         except Exception:
             log.warning("Could not attach file %s", file.get("filename"), exc_info=True)
 
-    EmailSender(
-        smtp_server=EMAIL_SERVER,
-        port=EMAIL_PORT,
-        username=EMAIL_USER,
-        password=EMAIL_PASSWORD,
-    ).send_email(msg)
+    # S17: one job serves every recipient (older jobs carry one address),
+    # so the summary above is made once. Each recipient gets their own
+    # message, so the list of recipients isn't shared.
+    for recipient in ([email] if isinstance(email, str) else list(email or [])):
+        _send_one_alert(recipient, subject, content, attachments)
 
     EMLYMessages.insert_new_message(
         bot_id=bot_id,
@@ -483,8 +472,27 @@ def send_scheduled_email(
     )
 
 
+def _send_one_alert(recipient: str, subject: str, content: str, attachments) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_FROM
+    msg["To"] = recipient
+    msg.attach(MIMEText(content, "html"))
+    for filename, data in attachments:
+        attachment = MIMEApplication(data)
+        attachment.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(attachment)
+
+    EmailSender(
+        smtp_server=EMAIL_SERVER,
+        port=EMAIL_PORT,
+        username=EMAIL_USER,
+        password=EMAIL_PASSWORD,
+    ).send_email(msg)
+
+
 async def send_email_with_attachments(
-    email: str,
+    email,
     user,
     form_data,
     form_title,

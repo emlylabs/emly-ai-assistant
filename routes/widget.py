@@ -391,7 +391,7 @@ def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
 from services.email_service import email_enabled  # noqa: E402
 from services.otp import authorize_otp, bot_verifies_email, create_otp, normalize_otp_email  # noqa: E402
 from services.widget_email import send_email_with_attachments  # noqa: E402
-from services.widget_uploads import handle_file_uploads  # noqa: E402
+from services.widget_uploads import attachment_quota_allows, handle_file_uploads  # noqa: E402
 
 
 def _validate_uploads(files: Optional[List[UploadFile]], bot: BotModel) -> None:
@@ -654,6 +654,15 @@ async def widget_action(
         if msg is None or (msg.user_id and str(msg.user_id) != principal.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
+    if files:
+        if not _form_takes_files(bot.id, payload_data.get("form_title")):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="This form doesn't take files")
+        incoming = sum(int(getattr(f, "size", 0) or 0) for f in files)
+        if not attachment_quota_allows(bot.id, incoming):
+            raise HTTPException(status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                                detail="This assistant can't store more attachments right now")
+
     user_action = USER_ACTIONS.insert_new_action(
         bot_id=bot.id,
         user_id=user.id,
@@ -680,17 +689,17 @@ async def widget_action(
             "action_value": payload_data.get("action_value"),
             "action_payload": payload_data.get("action_payload"),
         })
-        for recipient in recipients:
-            await send_email_with_attachments(
-                recipient,
-                user,
-                form_data,
-                payload_data.get("form_title"),
-                uploaded_files,
-                page,
-                analysis_prompt,
-                bot_id=bot.id,
-            )
+        # S17: one job for every recipient, so one summary call.
+        await send_email_with_attachments(
+            recipients,
+            user,
+            form_data,
+            payload_data.get("form_title"),
+            uploaded_files,
+            page,
+            analysis_prompt,
+            bot_id=bot.id,
+        )
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -724,6 +733,21 @@ def _resolve_alert_trigger(
     except LookupError:
         return [], ""
 
+    body = _find_form(cfg, form_title)
+    if body is None:
+        return [], ""
+    trigger = body.get("trigger") or {}
+    return (
+        coerce_email_list(trigger.get("alert_emails")),
+        str(trigger.get("analysis_prompt") or ""),
+    )
+
+
+def _find_form(cfg, form_title: Optional[str]) -> Optional[dict]:
+    """The ``c_forms_selected`` entry whose name, id or schema name is
+    ``form_title`` (case-insensitive), as a plain dict, or None."""
+    if not form_title:
+        return None
     target = form_title.strip().lower()
     raw = cfg.model_dump(mode="json")
     for entry in raw.get("c_forms_selected") or []:
@@ -738,14 +762,23 @@ def _resolve_alert_trigger(
                 str(schema.get("id") or "").strip().lower(),
                 str(schema.get("name") or "").strip().lower(),
             }
-            if target not in keys:
-                continue
-            trigger = body.get("trigger") or {}
-            return (
-                coerce_email_list(trigger.get("alert_emails")),
-                str(trigger.get("analysis_prompt") or ""),
-            )
-    return [], ""
+            if target in keys:
+                return body
+    return None
+
+
+def _form_takes_files(bot_id: str, form_title: Optional[str]) -> bool:
+    """S17: whether the named form has a file field. Uploads on any other
+    action (or an unknown form) are refused."""
+    try:
+        body = _find_form(get_config_for_bot(bot_id), form_title)
+    except LookupError:
+        return False
+    if body is None:
+        return False
+    fields = (body.get("form_schema") or {}).get("form") or {}
+    return isinstance(fields, dict) and any(
+        isinstance(f, dict) and f.get("type") == "file" for f in fields.values())
 
 
 async def _get_or_create_widget_user(
