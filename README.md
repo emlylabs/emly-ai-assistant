@@ -966,7 +966,7 @@ For one bot, its *Settings* page shows the same as "Where this bot's data goes" 
 | Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused unless their range is in `CRAWL_ALLOWED_PRIVATE_CIDRS`, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
 | Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
 
-Teams and Google Chat check each incoming message's signature with keys fetched from Microsoft and Google, so those two channels need outbound access to them even when everything else runs inside your network. Slack, WhatsApp and Telegram also need to reach their platforms; only the web widget works with no outbound connection.
+Teams and Google Chat check each incoming message's signature with keys fetched from Microsoft and Google, so those two channels need outbound access to them even when everything else runs inside your network. A Teams channel with your Microsoft 365 tenant ID set (*Channels* page) refuses messages from every other tenant; without it, any tenant's users who know the app ID can reach the bot, and the log says so. Google Chat accepts only messages signed for Chat's own service account. Slack, WhatsApp and Telegram also need to reach their platforms; only the web widget works with no outbound connection.
 
 The browser loads the widget from this app. Logo, avatar and launcher icons set by an admin load from wherever their URLs point, unless `WIDGET_ICON_HOSTS` limits them.
 
