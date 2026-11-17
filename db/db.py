@@ -1,8 +1,9 @@
 import json
 
-from peewee import Check, Database, TextField
+from peewee import Check, Database, InterfaceError, OperationalError, PostgresqlDatabase, TextField
 from peewee_migrate import Router
-from playhouse.db_url import connect
+from playhouse.db_url import connect, register_database
+from playhouse.shortcuts import ReconnectMixin
 from config import SRC_LOG_LEVELS, DATA_DIR, DATABASE_URL, BACKEND_DIR
 import os
 import logging
@@ -27,6 +28,32 @@ if os.path.exists(f"{DATA_DIR}/ollama.db"):
     log.info("Database migrated from Ollama-WebUI successfully.")
 else:
     pass
+
+class ReconnectingPostgresqlDatabase(ReconnectMixin, PostgresqlDatabase):
+    """R1: Postgres that recovers from a dropped connection.
+
+    Each thread keeps its connection open for the life of the process
+    (the event loop, the threadpool, the scheduler threads). After a
+    Postgres restart, a managed-database failover or an idle-connection
+    reset, every query on that thread failed until the app was restarted,
+    and ``/api/livez`` stayed green so nothing restarted it. Now a query
+    that finds its connection gone, outside a transaction, reconnects and
+    is retried once. Inside a transaction the error is raised as before,
+    so no partial work is silently replayed.
+    """
+
+    reconnect_errors = (
+        (OperationalError, "terminat"),  # terminating connection due to administrator command
+        (OperationalError, "server closed the connection"),
+        (OperationalError, "connection already closed"),
+        (OperationalError, "ssl connection has been closed"),
+        (OperationalError, "could not receive data from server"),
+        (OperationalError, "connection not open"),
+        (InterfaceError, "connection already closed"),
+    )
+
+
+register_database(ReconnectingPostgresqlDatabase, "postgres", "postgresql")
 
 DB = connect(DATABASE_URL)
 log.info(f"Connected to a {DB.__class__.__name__} database.")
