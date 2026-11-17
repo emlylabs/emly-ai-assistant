@@ -368,6 +368,15 @@ async def _process_page(
     html: str = result["html"]
     final_url = result.get("final_url") or url
 
+    # S19: a redirect can land outside the crawl's scope (another host, path
+    # or pattern); links were checked when found, the landing page wasn't.
+    canonical_landing = _canonicalize(final_url)
+    if canonical_landing != _canonicalize(url) and (
+            not canonical_landing or not _passes_scope(canonical_landing, options, seed_host)):
+        Crawl_Jobs.update_page_state(page_id, PAGE_SKIPPED, reason="redirected out of scope")
+        Crawl_Jobs.bump_counters(job_id, delta_skipped=1)
+        return
+
     # Discover links
     if depth < int(options.get("maxDepth", 3)):
         for raw_link in _extract_links(html, final_url):
