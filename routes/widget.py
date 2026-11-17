@@ -389,7 +389,7 @@ def widget_init(bot_ref: str, payload: Optional[WidgetInitRequest] = None):
 # POST /widget/{bot_id}/action — form submissions / OTP
 # ---------------------------------------------------------------------------
 from services.email_service import email_enabled  # noqa: E402
-from services.otp import authorize_otp, create_otp  # noqa: E402
+from services.otp import authorize_otp, bot_verifies_email, create_otp, normalize_otp_email  # noqa: E402
 from services.widget_email import send_email_with_attachments  # noqa: E402
 from services.widget_uploads import handle_file_uploads  # noqa: E402
 
@@ -580,12 +580,22 @@ async def widget_action(
 
     # OTP flows (auth_authentication / auth_verification) — handled by
     # the same helpers the legacy route uses, but bot-scoped.
-    if form_title == "auth_authentication":
-        if not payload_data.get("user_id"):
+    if form_title in ("auth_authentication", "auth_verification"):
+        # S3: one plain address, and only on a bot that verifies email.
+        address = normalize_otp_email(payload_data.get("user_id"))
+        if address is None:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "failed", "message": "user_id is required"},
+                content={"status": "failed", "message": "A single valid email address is required"},
             )
+        if not bot_verifies_email(get_config_for_bot(bot.id)):
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"status": "failed", "message": "Email verification isn't enabled for this assistant"},
+            )
+        payload_data["user_id"] = address
+
+    if form_title == "auth_authentication":
         # Without an SMTP relay the code could never arrive; say so instead
         # of reporting success.
         if not email_enabled():
@@ -600,7 +610,7 @@ async def widget_action(
         # Per-recipient limit stops email-bombing one address; per-IP limit
         # stops one client spraying many addresses.
         hit("otp_send_ip", client_ip(request), bot.id)
-        hit("otp_send_target", bot.id, str(payload_data["user_id"]).strip().lower())
+        hit("otp_send_target", bot.id, payload_data["user_id"])
         create_otp(payload_data, bot_id=bot.id)
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -608,11 +618,6 @@ async def widget_action(
         )
 
     if form_title == "auth_verification":
-        if not payload_data.get("user_id"):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"status": "failed", "message": "user_id is required"},
-            )
         hit("otp_verify", client_ip(request), bot.id)
         result = authorize_otp(payload_data, bot_id=bot.id)
         return JSONResponse(

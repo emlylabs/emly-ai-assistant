@@ -37,7 +37,10 @@ def widget_env(isolated_db, small_limits):
             return ("ok", [])
 
     def make_bot():
-        return Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"r-{uuid.uuid4().hex[:6]}", name="R")
+        # A form that verifies email, so the OTP routes are open (S3).
+        return Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"r-{uuid.uuid4().hex[:6]}", name="R",
+                           config_json={"c_forms_selected": [
+                               {"contact": {"form_schema": {}, "trigger": {"verify_action": True}}}]})
 
     app = FastAPI()
     app.include_router(widget.router)
