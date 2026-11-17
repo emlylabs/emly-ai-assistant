@@ -31,6 +31,7 @@ requirements.txt
 scripts/*
 !scripts/__init__.py
 !scripts/rotate_bot_secrets.py
+!scripts/unlock_local_admin.py
 
 # UI artifacts (rebuilt inside the ui-builder stage)
 ui/node_modules/

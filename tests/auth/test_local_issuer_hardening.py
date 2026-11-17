@@ -214,3 +214,52 @@ def test_lockout_check_does_not_crash(isolated_db):
         LocalCredential.admin_id == "lock-k").execute()
     assert LocalCredentials.is_locked("lock-k") is False
     LocalCredentials.delete("lock-k")
+
+
+# ------------------------------------------------- S13: lockout can end
+
+
+def test_failures_after_a_lock_expires_start_a_fresh_count(isolated_db):
+    from models.local_credentials import LocalCredential, LocalCredentials
+
+    LocalCredentials.upsert("lock-s13", "h")
+    for _ in range(3):
+        LocalCredentials.record_failure("lock-s13", lockout_threshold=3, lockout_duration_seconds=60)
+    assert LocalCredentials.is_locked("lock-s13")
+    LocalCredential.update(locked_until="2000-01-01 00:00:00+00:00").where(
+        LocalCredential.admin_id == "lock-s13").execute()
+
+    # One wrong password after the lock ran out: not locked again.
+    after = LocalCredentials.record_failure("lock-s13", lockout_threshold=3, lockout_duration_seconds=60)
+    assert after.failed_attempts == 1
+    assert not LocalCredentials.is_locked("lock-s13")
+    LocalCredentials.delete("lock-s13")
+
+
+def test_unlock_script_clears_a_lock(isolated_db):
+    from models.admin_audit_log import AdminAuditLog
+    from models.admin_users import AdminUsers
+    from models.local_credentials import LocalCredentials
+    from scripts.unlock_local_admin import main
+
+    AdminUsers.insert(id="adm-lock", email="locked@example.com", is_active=True)
+    LocalCredentials.upsert("adm-lock", "h")
+    LocalCredentials.record_failure("adm-lock", lockout_threshold=1, lockout_duration_seconds=600)
+    assert LocalCredentials.is_locked("adm-lock")
+
+    assert main(["Locked@Example.com"]) == 0
+    assert not LocalCredentials.is_locked("adm-lock")
+    assert AdminAuditLog.select().where(AdminAuditLog.action == "auth.local.unlocked").count() == 1
+    assert main(["nobody@example.com"]) == 1
+    LocalCredentials.delete("adm-lock")
+
+
+def test_unknown_address_costs_a_password_check(issuer, monkeypatch):
+    from routes import auth_issuer
+
+    calls = []
+    real = auth_issuer.verify_password
+    monkeypatch.setattr(auth_issuer, "verify_password", lambda p, h: calls.append(h) or real(p, h))
+    r = _post(issuer, email="nobody@example.com")
+    assert "Invalid email or password" in r.text
+    assert len(calls) == 1

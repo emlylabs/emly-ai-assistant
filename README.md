@@ -787,6 +787,10 @@ AUTH_LOCAL_BOOTSTRAP_PASSWORD=your-secure-password
 
 On first boot, the app creates an RSA keypair and seeds the admin account.
 
+Built-in sign-in is meant for one operator and for evaluation. It has no password reset, and admins you invite sign in through an identity provider. For a team, use an external identity provider (below), which turns built-in sign-in off in production.
+
+After `AUTH_LOCAL_LOCKOUT_THRESHOLD` (5) wrong passwords the account is locked for `AUTH_LOCAL_LOCKOUT_DURATION_SECONDS` (15 minutes); the count starts again once a lock runs out. Anyone who knows the address can trigger the lock, so keep the sign-in page off the public internet. To unlock early: `python -m scripts.unlock_local_admin admin@example.com` (Docker: `docker compose exec app python -m scripts.unlock_local_admin admin@example.com`). It is audited as `auth.local.unlocked`.
+
 ### External Identity Provider (SSO)
 
 To use Keycloak, Okta, Auth0, Microsoft Entra, or any OIDC-compliant provider:
