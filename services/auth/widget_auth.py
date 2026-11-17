@@ -91,7 +91,13 @@ def ensure_same_user(principal: WidgetPrincipal, claimed_user_id: Optional[str])
 
 # -------- identity for /init (Q2) --------
 
-_SUPPLIED_ID_RE = __import__("re").compile(r"^[A-Za-z0-9._:@-]{1,128}$")
+# S7: only the widget's own id shape (``emly-<uuid4>``, as the widget and
+# the server mint them) may be claimed. Chat-platform user ids are 32-hex
+# hashes of guessable inputs; accepting any shape let a visitor claim one
+# before its owner first messaged the bot. It also rules out ids such as
+# ``..`` that end up as a path component for attachments.
+_SUPPLIED_ID_RE = __import__("re").compile(
+    r"^emly-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def _renewal_window_seconds() -> int:
