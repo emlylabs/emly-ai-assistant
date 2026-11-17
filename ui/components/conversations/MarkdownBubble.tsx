@@ -25,18 +25,10 @@ const renderers: Components = {
       {children}
     </pre>
   ),
-  // Constrain images so a stray bot reply linking a giant screenshot
-  // doesn't blow the bubble's width. Lazy-load to keep the thread fast
-  // when many sessions are scrolled.
-  img: ({ src, alt, ...rest }) => (
-    <img
-      src={typeof src === "string" ? src : undefined}
-      alt={alt ?? ""}
-      loading="lazy"
-      style={{ maxWidth: "100%", height: "auto", borderRadius: 6 }}
-      {...rest}
-    />
-  ),
+  // S4: never load an image from an answer. A document or crawled page can
+  // tell the model to add one whose URL carries the conversation; it would
+  // load the moment an admin opens the transcript. Show its alt text only.
+  img: ({ alt }) => (alt ? <span className="muted">[{alt}]</span> : null),
 };
 
 /**
