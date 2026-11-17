@@ -50,6 +50,8 @@ _LIMITS = {
     "otp_send_target": os.environ.get("AUTH_RATE_OTP_SEND_TARGET", "5/10minutes"),
     "otp_send_ip": os.environ.get("AUTH_RATE_OTP_SEND_IP", "20/hour"),
     "otp_verify": os.environ.get("AUTH_RATE_OTP_VERIFY", "10/10minutes"),
+    # S11: invites send email from the customer's relay; per inviting admin.
+    "admin_invite": os.environ.get("AUTH_RATE_ADMIN_INVITE", "30/hour"),
 }
 
 

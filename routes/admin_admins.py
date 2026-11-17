@@ -34,6 +34,7 @@ from models.pending_admins import (
 )
 from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.auth.ratelimit import hit
 from services.authz import deny, require_owner, require_superadmin
 
 log = logging.getLogger(__name__)
@@ -774,6 +775,7 @@ async def create_space_invite(
             detail={"code": "bot_not_found"},
         )
     require_owner(admin, bot.id)
+    hit("admin_invite", admin.id)
 
     existing_admin = AdminUsers.get_by_email(payload.email)
     if existing_admin is not None:
