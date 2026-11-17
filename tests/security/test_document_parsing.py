@@ -97,9 +97,10 @@ def test_email_markdown_drops_script_links(link):
     assert 'href="data:' not in html
 
 
-def test_email_markdown_keeps_normal_links_and_escapes_html():
+def test_email_markdown_keeps_link_text_and_escapes_html():
     from services import widget_email
 
     html = widget_email._normalize_summary_to_html("Read [the docs](https://docs.example/x) <script>x</script>")
-    assert '<a href="https://docs.example/x">the docs</a>' in html
+    # S5: model-written links don't survive into emails; their text does.
+    assert "the docs" in html and "<a" not in html and "docs.example" not in html
     assert "<script>" not in html

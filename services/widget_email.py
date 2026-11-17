@@ -31,6 +31,7 @@ from config import (
 from models.bots import Bots
 from models.emly_messages import FORM_SUBMISSION_MARKER, EMLYMessages, is_form_submission
 from models.emly_users import EMLYUsers
+from services.email_html import sanitize_email_html
 from services.email_service import EmailSender
 from services.scheduler import scheduler
 
@@ -63,9 +64,10 @@ def _normalize_summary_to_html(raw: str) -> str:
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*\n?", "", text)
         text = re.sub(r"\n?```\s*$", "", text).strip()
+    # S5: the summary is model output; keep only plain formatting.
     if text.startswith("<"):
-        return text
-    return mistune.create_markdown()(text)
+        return sanitize_email_html(text)
+    return sanitize_email_html(mistune.create_markdown()(text))
 
 
 def _render_user_details_rows(data: dict) -> tuple[str, str]:
@@ -112,7 +114,7 @@ def _render_transcript(messages) -> str:
         role = (getattr(m, "role", "") or "").lower()
         is_user = role == "user"
         body = getattr(m, "message", "") or ""
-        rendered = _html_escape(body) if is_user else md(body)
+        rendered = _html_escape(body) if is_user else sanitize_email_html(md(body))
         rendered = rendered.replace("\n", "<br>") if is_user else rendered
         label = "User" if is_user else "Assistant"
         bg = _EMAIL_USER_BG if is_user else _EMAIL_BOT_BG
