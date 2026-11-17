@@ -119,12 +119,16 @@ def _assert_runtime_topology() -> None:
     # Falling back to ``request.url.netloc`` (Host header) for the OIDC redirect
     # / post-login normalization opens a Host-spoof window where return_to
     # could resolve to an attacker-controlled origin.
-    from utils.runtime import current_mode, is_prod_mode
+    from utils.runtime import current_mode, is_prod_mode, mode_warning
 
     mode = current_mode()
+    warning = mode_warning()
+    if warning:
+        logging.getLogger(__name__).warning(warning)
     if is_prod_mode() and not os.environ.get("APP_BASE_URL"):
         raise RuntimeError(
-            f"MODE={mode!r} requires APP_BASE_URL to be set (the public-facing origin of this app). "
+            f"Production mode (MODE={mode or 'unset'}) requires APP_BASE_URL to be set "
+            "(the public-facing origin of this app; set MODE=dev for local development). "
             "Without it the OIDC callback redirect derives from the Host header, which is "
             "user-controllable and unsafe for production deploys."
         )

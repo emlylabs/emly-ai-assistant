@@ -37,6 +37,9 @@ cd emly-ai-assistant
 cp .env.sample .env
 
 # 3. Open .env and fill in at minimum:
+#    - MODE=dev for a local trial on http://localhost:8080 (the sample
+#      says prod, which also needs APP_BASE_URL, PUBLIC_BASE_URL and
+#      BOT_SECRETS_KEY; see Production hardening)
 #    - AUTH_BOOTSTRAP_SUPERADMIN_EMAIL  (your admin login email)
 #    - AUTH_LOCAL_BOOTSTRAP_PASSWORD     (your admin login password)
 #    - POSTGRES_PASSWORD  (required; e.g. `openssl rand -hex 24`)
@@ -141,7 +144,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| `MODE` | `prod` | Turns on the production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set |
+| `MODE` | `prod` (also the default when unset) | Production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set. Only `MODE=dev` turns them off |
 | `APP_BASE_URL`, `PUBLIC_BASE_URL` | Your public `https://` URL | Required with `MODE=prod`. An https URL also turns on HSTS and `Secure` cookies, and is the base for links in emails |
 | `BOT_SECRETS_KEY` | A Fernet key you generate and back up | Encrypts stored API keys and channel credentials, and signs widget tokens. The app refuses to start in prod without it. Rotate with `BOT_SECRETS_KEY_PREVIOUS` ([how](#rotating-the-secrets-key)). Prefer `BOT_SECRETS_KEY_FILE` and the other `*_FILE` variables ([secrets from files](#secrets-from-files)) |
 | `POSTGRES_PASSWORD` | A long random value | Docker Compose refuses to start without it; there is no default password |
@@ -236,7 +239,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 
 | Variable | What it does | Default |
 |----------|-------------|---------|
-| `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
+| `MODE` | `prod` (or `production`, `preprod`, `stage`, `staging`): production-safe defaults, which require `APP_BASE_URL` and `BOT_SECRETS_KEY`. `dev` (or `development`, `local`, `test`) for local development only. Unset or any other value also means production, with a warning at start-up | unset (production) |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
 | `ALLOW_LANGSMITH_TRACING` | Allow LangSmith tracing, which sends every prompt and reply (conversation text included) to LangSmith's cloud. Unless this is `true`, a `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` (or alias) set to `true` stops the app starting when `MODE=prod`; in development it is removed with a warning | `false` |
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys and channel credentials. Separate keys derived from it encrypt the admin refresh cookie, sign widget tokens and hash one-time passcodes, so none of these can be used in place of another. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
