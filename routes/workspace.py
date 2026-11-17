@@ -28,7 +28,7 @@ from models.admin_users import AdminUserModel
 from models.bots import Bots
 from models.workspace_bot_templates import WorkspaceBotTemplates
 from models.workspace_settings import WorkspaceSettingsStore
-from services.audit import audit
+from services.audit import audit, audited_change
 from services.auth.dependencies import get_admin
 from services.authz import require_bot_creator, require_owner, require_superadmin, require_writer
 from services.config_gate import check_new_config
@@ -142,6 +142,7 @@ def get_workspace_settings(_admin: AdminUserModel = Depends(get_admin)):
 
 
 @router.put("/workspace/settings", response_model=WorkspaceSettingsResponse)
+@audited_change
 def put_workspace_settings(
     payload: WorkspaceSettingsPayload,
     admin: AdminUserModel = Depends(get_admin),
@@ -239,6 +240,7 @@ def get_workspace_template(template_id: str, admin: AdminUserModel = Depends(get
     response_model=WorkspaceTemplateDetail,
     status_code=status.HTTP_201_CREATED,
 )
+@audited_change
 def create_workspace_template(
     payload: CreateWorkspaceTemplateRequest,
     admin: AdminUserModel = Depends(get_admin),
@@ -303,6 +305,7 @@ def create_workspace_template(
 
 
 @router.delete("/workspace/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 def delete_workspace_template(
     template_id: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -351,6 +354,7 @@ class BulkBotActionResponse(BaseModel):
 
 
 @router.post("/bots/bulk-action", response_model=BulkBotActionResponse)
+@audited_change
 def bulk_bot_action(
     payload: BulkBotActionRequest,
     admin: AdminUserModel = Depends(get_admin),

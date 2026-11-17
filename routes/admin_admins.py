@@ -32,7 +32,7 @@ from models.pending_admins import (
     PendingAdminModel,
     PendingAdmins,
 )
-from services.audit import audit
+from services.audit import audit, audited_change
 from services.auth.dependencies import get_admin
 from services.auth.ratelimit import hit
 from services.authz import deny, require_owner, require_superadmin
@@ -130,6 +130,7 @@ async def list_admins(admin: AdminUserModel = Depends(get_admin)) -> AdminListRe
 
 
 @router.patch("/admins/{admin_id}", response_model=AdminUserModel)
+@audited_change
 async def update_admin(
     admin_id: str,
     payload: AdminUpdateRequest,
@@ -188,6 +189,7 @@ async def update_admin(
 
 
 @router.delete("/admins/{admin_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 async def delete_admin(
     admin_id: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -233,6 +235,7 @@ async def list_pending(admin: AdminUserModel = Depends(get_admin)) -> List[Pendi
 
 
 @router.post("/admins/pending", response_model=PendingAdminModel, status_code=status.HTTP_201_CREATED)
+@audited_change
 async def create_pending(
     payload: PendingInviteRequest,
     admin: AdminUserModel = Depends(get_admin),
@@ -330,6 +333,7 @@ def _try_send_invite_email(
 
 
 @router.delete("/admins/pending/{email}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 async def revoke_pending(
     email: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -418,6 +422,7 @@ class BulkMembershipResponse(BaseModel):
 
 
 @router.post("/admins/{admin_id}/memberships", response_model=BulkMembershipResponse)
+@audited_change
 async def bulk_update_admin_memberships(
     admin_id: str,
     payload: BulkMembershipRequest,
@@ -552,6 +557,7 @@ class TransferOwnershipResponse(BaseModel):
 
 
 @router.post("/bots/{slug}/transfer-ownership", response_model=TransferOwnershipResponse)
+@audited_change
 async def transfer_bot_ownership(
     slug: str,
     payload: TransferOwnershipRequest,
@@ -765,6 +771,7 @@ def _build_my_invite_view(p: PendingAdminModel) -> MyInviteView:
     response_model=SpaceInviteResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@audited_change
 async def create_space_invite(
     payload: SpaceInviteRequest,
     admin: AdminUserModel = Depends(get_admin),
@@ -915,6 +922,7 @@ def _row_expired(row: PendingAdminModel) -> bool:
 
 
 @router.post("/admins/invites/{token}/accept", response_model=AcceptInviteResponse)
+@audited_change
 async def accept_invite(
     token: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -976,6 +984,7 @@ async def accept_invite(
 
 
 @router.post("/admins/invites/{token}/reject", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 async def reject_invite(
     token: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -1008,6 +1017,7 @@ async def reject_invite(
 
 
 @router.delete("/admins/invites/{token}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 async def revoke_invite(
     token: str,
     admin: AdminUserModel = Depends(get_admin),
