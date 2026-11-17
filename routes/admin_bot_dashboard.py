@@ -28,7 +28,9 @@ from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
+from services.data_access_audit import record_read, used_filters
 from services.bot_config import (
+    BotConfigInvalid,
     discard_draft_for_bot,
     get_config_for_bot,
     get_draft_for_bot,
@@ -36,6 +38,7 @@ from services.bot_config import (
     save_draft_for_bot,
     set_api_key,
 )
+from services.config_gate import invalid_config_error, raise_on_format_errors
 from services.config_validation import (
     FIELD_FORMAT_RULE_PREFIXES,
     blocking_format_issues,
@@ -140,43 +143,6 @@ def _issues_to_response(issues: List[Issue]) -> ValidationResponse:
     )
 
 
-def _raise_on_format_errors(config: Dict[str, Any], before: Optional[Dict[str, Any]]) -> None:
-    """422 on malformed field values (bad email / URL / colour,
-    out-of-range numbers) that this save introduces or changes. These are
-    never a deliberate choice, so they block regardless of the workspace
-    save gate and of ``force``. A value already in ``before`` (the live
-    config) doesn't block, so one stored before a rule existed can't stop
-    every unrelated save."""
-    format_issues = blocking_format_issues(validate_config(config), config, before)
-    if format_issues:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_failed",
-                "message": (
-                    f"Save blocked — {len(format_issues)} invalid value"
-                    f"{'s' if len(format_issues) != 1 else ''}: "
-                    + " ".join(i.message for i in format_issues)
-                ),
-                "issues": [i.to_dict() for i in format_issues],
-                "can_force": False,
-            },
-        )
-
-
-def _invalid_config_error(exc: PydanticValidationError) -> HTTPException:
-    """422 for a config the schema rejects (instead of a 500)."""
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail={
-            "error": "invalid_config",
-            "message": "; ".join(
-                f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()[:5]
-            ),
-        },
-    )
-
-
 def _build_validation_context(bot: BotModel) -> ValidationContext:
     """Probe per-bot state the validator needs for RT* rules. File count
     is the only DB hit; the rest are env / row reads we already have."""
@@ -274,19 +240,23 @@ class BotReport(BaseModel):
     csat_count: int = 0
     p95_latency_ms: Optional[int] = None
     resolution_rate: Optional[float] = None
+    # G7d: automatic estimate (services/auto_resolution.py), not staff-marked.
+    likely_resolved_rate: Optional[float] = None
+    likely_resolved_count: int = 0
 
 
 class MessageUsageByModel(BaseModel):
-    """Per-`model_used` token tally over a window. Pricing lives client-side
-    (see ``ModelUsageCard``'s ``PRICE_TABLE_PER_1K``); the backend just
-    returns observable counts. Models with no `model_used` (legacy rows
-    from before Phase 2) are dropped — counting them under "unknown"
-    would invent attribution we don't have."""
+    """Per-`model_used` token tally over a window, with its cost from the
+    workspace price table (G7a, ``services/model_prices.py``). ``cost_usd``
+    is null when the model has no price: unknown, not free. Models with no
+    `model_used` (legacy rows from before Phase 2) are dropped — counting
+    them under "unknown" would invent attribution we don't have."""
 
     model: str
     turns: int
     prompt_tokens: int
     completion_tokens: int
+    cost_usd: Optional[float] = None
 
 
 @router.get(
@@ -338,15 +308,20 @@ def bot_messages_by_model(
         .group_by(EMLYMessage.model_used)
     )
 
-    return [
-        MessageUsageByModel(
+    from services.model_prices import PriceTable
+
+    prices = PriceTable()
+    out = []
+    for r in rows.dicts():
+        prompt, completion = int(r["prompt_tokens"] or 0), int(r["completion_tokens"] or 0)
+        out.append(MessageUsageByModel(
             model=r["model_used"],
             turns=int(r["turns"] or 0),
-            prompt_tokens=int(r["prompt_tokens"] or 0),
-            completion_tokens=int(r["completion_tokens"] or 0),
-        )
-        for r in rows.dicts()
-    ]
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cost_usd=prices.cost_usd(r["model_used"], prompt, completion),
+        ))
+    return out
 
 
 class FunnelResponse(BaseModel):
@@ -1011,6 +986,7 @@ def bot_list_messages(
 ):
     bot = _resolve_bot(slug)
     _require_member(admin, bot.id)
+    record_read(admin, bot.id, "message_list", filters=used_filters(user_id=user_id, session_id=session_id))
     return MessageListResponse(
         items=EMLYMessages.list_all(bot.id, user_id=user_id, session_id=session_id, skip=skip, limit=limit),
         total=EMLYMessages.count_all(bot.id, user_id=user_id, session_id=session_id),
@@ -1030,6 +1006,7 @@ def bot_get_message(
     msg = EMLYMessages.get_message_by_id(bot.id, message_id)
     if msg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    record_read(admin, bot.id, "message", str(message_id))
     return msg
 
 
@@ -1162,6 +1139,7 @@ def bot_list_end_users(
 ):
     bot = _resolve_bot(slug)
     _require_member(admin, bot.id)
+    record_read(admin, bot.id, "visitor_list")
     return UserListResponse(
         items=EMLYUsers.get_users(bot.id, skip=skip, limit=limit),
         total=EMLYUsers.count(bot.id),
@@ -1181,6 +1159,7 @@ def bot_get_end_user(
     u = EMLYUsers.get_user_by_id(bot.id, user_id)
     if u is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    record_read(admin, bot.id, "visitor", user_id)
     return u
 
 
@@ -1224,6 +1203,11 @@ class ConfigResponse(BaseModel):
     last_updated_by_admin_email: Optional[str] = None
     last_updated_at: Optional[datetime] = None
     draft: Optional["DraftBlock"] = None
+    # N4: set when the stored config doesn't load under the current
+    # schema. ``config`` is then the stored JSON as is, so the editor can
+    # open it and an admin can save a fixed version. Field paths and error
+    # types only, no values.
+    load_error: Optional[str] = None
 
 
 class DraftBlock(BaseModel):
@@ -1237,7 +1221,12 @@ ConfigResponse.model_rebuild()
 
 
 def _build_config_response(bot: BotModel) -> ConfigResponse:
-    cfg = get_config_for_bot(bot.id)
+    load_error: Optional[str] = None
+    try:
+        config = get_config_for_bot(bot.id).model_dump(mode="json")
+    except BotConfigInvalid as exc:
+        config = dict(bot.config_json or {})
+        load_error = exc.problems
     draft_block: Optional[DraftBlock] = None
     if bot.config_draft_json:
         draft_email: Optional[str] = None
@@ -1254,7 +1243,8 @@ def _build_config_response(bot: BotModel) -> ConfigResponse:
             updated_by_admin_email=draft_email,
         )
     return ConfigResponse(
-        config=cfg.model_dump(mode="json"),
+        config=config,
+        load_error=load_error,
         config_version=bot.config_version,
         last_updated_by_admin_id=bot.last_updated_by_admin_id,
         last_updated_by_admin_email=bot.last_updated_by_admin_email,
@@ -1321,7 +1311,7 @@ def bot_put_config(
 
     # Malformed values can't be forced, so check them before the save gate
     # (which offers ``force``) and before a forced save is audited.
-    _raise_on_format_errors(payload.config, bot.config_json or {})
+    raise_on_format_errors(payload.config, bot.config_json or {})
 
     # Optional save gate (§10 of improve-ux.md). Off by default — flipping
     # it on must not retroactively lock admins out of bots that are
@@ -1374,7 +1364,7 @@ def bot_put_config(
     try:
         save_config_for_bot(bot.id, payload.config, admin_id=admin.id, admin_email=admin.email)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.saved", admin, bot, before_config, refreshed.config_json if refreshed else payload.config,
@@ -1428,7 +1418,7 @@ def bot_put_config_draft(
     try:
         save_draft_for_bot(bot.id, payload.config, admin_id=admin.id)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.draft.saved", admin, bot, before_draft,
@@ -1658,12 +1648,12 @@ def bot_restore_config_history(
     row = BotConfigHistories.get_by_id(entry_id)
     if row is None or row.bot_id != bot.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History entry not found")
-    _raise_on_format_errors(row.config_json or {}, bot.config_json or {})
+    raise_on_format_errors(row.config_json or {}, bot.config_json or {})
     before_config = dict(bot.config_json or {})
     try:
         save_config_for_bot(bot.id, row.config_json, admin_id=admin.id, admin_email=admin.email)
     except PydanticValidationError as exc:
-        raise _invalid_config_error(exc)
+        raise invalid_config_error(exc)
     refreshed = Bots.get_by_id(bot.id)
     _audit_config_change(
         "config.history.restored", admin, bot, before_config,
@@ -1744,6 +1734,7 @@ def bot_rag_search(
         query=query,
         top_k=top_k,
         embedding_threshold=threshold,
+        hybrid=rag_cfg.enable_hybrid_search if rag_cfg else None,
     )
     hits = [
         RAGSearchHit(
@@ -1754,3 +1745,174 @@ def bot_rag_search(
         for c in citations
     ]
     return RAGSearchResponse(query=query, top_k=top_k, threshold=threshold, hits=hits)
+
+
+# ---------------------------------------------------------------------------
+# G7b: analytics CSV export, built on the server and audited
+# ---------------------------------------------------------------------------
+@router.get("/bots/{slug}/analytics/export")
+def export_bot_analytics(
+    slug: str,
+    from_ts: Optional[int] = Query(None, alias="from"),
+    to_ts: Optional[int] = Query(None, alias="to"),
+    channel_id: Optional[str] = Query(None),
+    compare: bool = Query(False, description="Add the same-length period just before the window."),
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """The analytics page's figures for a window as CSV: KPIs, latency,
+    citations, the resolution funnel, daily messages and sessions, channel
+    and topic mix, enrichment and model usage with cost.
+
+    Built from the same aggregates as the page, so the numbers match it.
+    Cells that a spreadsheet would read as formulas are neutralised
+    (``utils/csv_export.py``), and every export is audited as
+    ``analytics.exported``. Bot members (and superadmins) may export, as
+    they may view the page; it holds aggregates only, no conversation text."""
+    from datetime import timezone as _tz
+
+    from routes.admin_bot_sessions import list_sessions_daily
+    from services.audit import audit
+    from utils.csv_export import csv_download, csv_lines
+
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    start, end = _resolve_window(from_ts, to_ts)
+    import math
+
+    f = math.floor(start.replace(tzinfo=_tz.utc).timestamp())
+    t = math.ceil(end.replace(tzinfo=_tz.utc).timestamp())  # whole seconds, covering the window
+
+    def window(ff: int, tt: int) -> Dict[str, Any]:
+        kw = dict(slug=slug, from_ts=ff, to_ts=tt, admin=admin)
+        usage = bot_messages_by_model(channel_id=channel_id, **kw)
+        priced = [u.cost_usd for u in usage if u.cost_usd is not None]
+        return {
+            "report": bot_get_report(channel_id=channel_id, **kw),
+            "usage": usage,
+            "spend": round(sum(priced), 6) if priced else None,
+            "daily": bot_messages_daily(channel_id=channel_id, **kw),
+        }
+
+    cur = window(f, t)
+    prior = window(f - (t - f) - 1, f - 1) if compare else None
+    kw = dict(slug=slug, from_ts=f, to_ts=t, admin=admin)
+    latency = bot_latency_quantiles(channel_id=channel_id, **kw)
+    citations = bot_citation_stats(channel_id=channel_id, **kw)
+    funnel = bot_funnel(channel_id=channel_id, **kw)
+    sessions = list_sessions_daily(channel_id_q=channel_id, **kw)
+    channels = bot_messages_by_channel(**kw)
+    topics = bot_messages_by_topic(channel_id=channel_id, **kw)
+    enrichment = bot_enrichment_summary(channel_id=channel_id, **kw)
+
+    audit("analytics.exported", admin_id=admin.id, bot_id=bot.id, target_type="analytics",
+          payload={"from": f, "to": t, "channel_id": channel_id, "compare": compare})
+
+    def kpis(w):
+        r = w["report"] if w else None
+        return [
+            ("total_messages", r and r.messages), ("sessions", r and r.conversations),
+            ("resolution_rate", r and r.resolution_rate),
+            ("likely_resolved_rate_automatic", r and r.likely_resolved_rate),
+            ("deflection_rate", r and r.deflection_rate),
+            ("csat_avg", r and r.csat_avg), ("csat_count", r and r.csat_count),
+            ("p95_latency_ms", r and r.p95_latency_ms), ("llm_spend_usd", w and w["spend"]),
+            ("widget_views_short", r and r.short_impressions), ("widget_views_long", r and r.impressions),
+        ]
+
+    def rows():
+        yield [f"# Analytics export: {bot.name} ({bot.slug})"]
+        yield [f"# Window (UTC): {start.isoformat()} to {end.isoformat()}"]
+        if channel_id:
+            yield [f"# Channel filter: {channel_id}"]
+        yield [f"# Generated {datetime.now(_tz.utc).isoformat()} by {admin.id}"]
+        yield []
+        yield ["# KPIs"]
+        yield ["metric", "value"] + (["prior"] if prior else [])
+        for (name, value), (_, before) in zip(kpis(cur), kpis(prior)):
+            yield [name, value] + ([before] if prior else [])
+        yield []
+        yield ["# Latency quantiles"]
+        yield ["quantile", "ms", "samples"]
+        for q in ("p50", "p95", "p99"):
+            yield [q, getattr(latency, q), latency.count]
+        yield []
+        yield ["# Citations"]
+        yield ["metric", "value"]
+        yield ["assistant_turns", citations.assistant_turns]
+        yield ["with_citations", citations.with_citations]
+        yield ["citation_rate", citations.citation_rate]
+        if citations.top_files:
+            yield []
+            yield ["# Top cited files"]
+            yield ["file_id", "filename", "citations"]
+            for c in citations.top_files:
+                yield [c.file_id, c.filename, c.citation_count]
+        yield []
+        yield ["# Resolution funnel"]
+        yield ["stage", "count", "rate"]
+        yield ["started", funnel.started, 1 if funnel.started else None]
+        yield ["understood", funnel.understood, funnel.understood_rate]
+        yield ["resolved", funnel.resolved, funnel.resolved_rate]
+        yield []
+        yield ["# Daily messages"]
+        yield ["date", "messages", "user", "assistant"] + (["prior_messages"] if prior else [])
+        prior_counts = [d.count for d in prior["daily"]] if prior else []
+        for i, d in enumerate(cur["daily"]):
+            extra = [prior_counts[i] if i < len(prior_counts) else None] if prior else []
+            yield [d.day, d.count, d.user_count, d.assistant_count] + extra
+        yield []
+        yield ["# Daily sessions"]
+        yield ["date", "started", "resolved"]
+        for d in sessions:
+            yield [d.day, d.started, d.resolved]
+        yield []
+        yield ["# Channel mix"]
+        yield ["channel_id", "channel_type", "display_name", "count"]
+        for c in channels:
+            yield [c.channel_id, c.channel_type, c.display_name, c.count]
+        yield []
+        yield ["# Topics"]
+        yield ["topic", "count"]
+        for tp in topics:
+            yield [tp.topic, tp.count]
+        yield []
+        yield ["# Enrichment"]
+        yield ["metric", "value"]
+        yield ["cohort_size", enrichment.cohort_size]
+        yield ["enriched_count", enrichment.enriched_count]
+        for k in ("positive", "neutral", "negative", "unrated"):
+            yield [f"sentiment_{k}", getattr(enrichment.sentiment, k)]
+        if enrichment.intents:
+            yield []
+            yield ["# Top enrichment intents"]
+            yield ["intent", "count"]
+            for i in enrichment.intents:
+                yield [i.intent, i.count]
+        yield []
+        yield ["# Model usage (answer tokens; cost from Workspace settings, Model prices)"]
+        yield ["model", "turns", "prompt_tokens", "completion_tokens", "cost_usd"]
+        for u in cur["usage"]:
+            yield [u.model, u.turns, u.prompt_tokens, u.completion_tokens, u.cost_usd]
+
+    return csv_download(csv_lines(rows()), f"analytics-{bot.slug}")
+
+
+# ---------------------------------------------------------------------------
+# G2g: where this bot's data goes
+# ---------------------------------------------------------------------------
+class DataRecipientRow(BaseModel):
+    what: str
+    destination: str
+    detail: str = ""
+    # "internal": inside your network; "external": outside it; None: nothing leaves.
+    scope: Optional[str] = None
+
+
+@router.get("/bots/{slug}/data-recipients", response_model=List[DataRecipientRow])
+def bot_data_recipients(slug: str, admin: AdminUserModel = Depends(get_admin)):
+    """Hosts that receive this bot's data, from its live config. Read-only."""
+    from services.data_recipients import for_bot
+
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    return [DataRecipientRow(**row) for row in for_bot(bot.id)]

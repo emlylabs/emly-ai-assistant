@@ -3,6 +3,8 @@ revoking the built-in issuer's refresh token directly."""
 
 from __future__ import annotations
 
+import time
+
 import tempfile
 from types import SimpleNamespace
 
@@ -70,7 +72,7 @@ def test_session_cookies_are_secure_httponly_lax_in_prod(monkeypatch):
     resp = JSONResponse({})
     auth._set_session_cookies(
         resp, _req("http"), id_token="idt", refresh_token="rt",
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1), auth_time=time.time(),
     )
     cookies = resp.headers.getlist("set-cookie")
     assert len(cookies) == 3
@@ -106,7 +108,9 @@ def test_logout_revokes_refresh_token_without_http_loopback(logout_client, monke
     from routes import auth
     from services.auth.issuer.factory import get_refresh_store
     from services.auth.issuer.flows import issue_refresh_token
-    from services.secrets import encrypt_session_cookie
+    import time as _time
+
+    from services.secrets import encrypt_refresh_cookie
 
     def _no_http(*a, **kw):
         raise AssertionError("logout must not call back into the app over HTTP")
@@ -114,7 +118,7 @@ def test_logout_revokes_refresh_token_without_http_loopback(logout_client, monke
     monkeypatch.setattr(httpx, "post", _no_http)
     rt = issue_refresh_token(refresh_store=get_refresh_store(), admin_id="a@x.example",
                              email="a@x.example", email_verified=True)
-    logout_client.cookies.set(auth._refresh_cookie_name(), encrypt_session_cookie(rt))
+    logout_client.cookies.set(auth._refresh_cookie_name(), encrypt_refresh_cookie(rt, _time.time()))
     r = logout_client.post("/api/admin/auth/logout")
     assert r.status_code == 200
     assert get_refresh_store().pop(rt) is None  # revoked

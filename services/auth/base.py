@@ -36,6 +36,15 @@ class MissingClaimError(InvalidTokenError):
     """Token is missing a required claim (``sub``, ``email``, …)."""
 
 
+class MfaRequired(InvalidTokenError):
+    """G3b: the sign-in didn't meet AUTH_OIDC_REQUIRED_ACR / _AMR."""
+
+    def __init__(self, acr: Any, amr: Any):
+        self.acr = acr if isinstance(acr, str) else None
+        self.amr = [a for a in amr if isinstance(a, str)] if isinstance(amr, list) else []
+        super().__init__("sign-in did not meet the required authentication strength (acr/amr)")
+
+
 class UnknownProviderError(AuthError):
     """Provider config is missing or invalid."""
 
@@ -81,8 +90,13 @@ class OAuthState:
 class AuthProvider(Protocol):
     """Provider-portable auth interface. The only auth surface routes import."""
 
-    def verify_token(self, token: str) -> Principal:
-        """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure."""
+    def verify_token(self, token: str, *, allow_expired: bool = False) -> Principal:
+        """Validate a JWT and return its Principal. Raises ``InvalidTokenError`` on failure.
+
+        ``allow_expired`` skips only the ``exp`` check (signature, issuer
+        and audience still apply). It is for attributing audit events on
+        routes that run as a session ends (logout, refresh), never for
+        granting access."""
 
     def authorize_url(self, oauth_state: OAuthState, redirect_uri: str) -> str:
         """Build the IdP authorize URL the browser should redirect to."""

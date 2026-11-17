@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: emly-qdrant
+spec:
+  selector:
+    app.kubernetes.io/name: emly-qdrant
+  ports:
+    - name: http
+      port: 6333
+      targetPort: http

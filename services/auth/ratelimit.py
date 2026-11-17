@@ -67,6 +67,16 @@ def client_ip(request: Request) -> str:
     return get_remote_address(request) or "unknown"
 
 
+def try_hit(limit: str, *key_parts: str) -> bool:
+    """Count one event against an explicit ``limit`` string (``"5/minute"``)
+    for ``key_parts``, in the same in-memory storage as ``hit``. Returns
+    False once the limit is exceeded; never raises. For limits that come
+    from per-bot config rather than the env table (G13a)."""
+    if not limiter.enabled:
+        return True
+    return bool(limiter.limiter.hit(parse_limit(limit), *[str(k) for k in key_parts]))
+
+
 def hit(name: str, *key_parts: str) -> None:
     """Count one request against limit ``name`` for ``key_parts``; raise
     429 with ``Retry-After`` once the limit is exceeded."""

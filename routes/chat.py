@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from services.agent_service import AgentService
 from services.auth.ratelimit import rate_limit
+from services.public_citations import bot_shows_citations, public_citations
 from utils.dependencies import get_agent_service
 from utils.schemas import AgentRequest
 
@@ -93,6 +94,9 @@ async def widget_chat(
 
     from models.bot_channels import BotChannels
     channel_id = BotChannels.get_default_web_widget_channel_id(bot.id)
+    # N3: visitors get only what the citation pill shows, and only when
+    # the bot shows citations at all.
+    show_citations = bot_shows_citations(bot.id)
 
     try:
         response = agent_service.process_message(
@@ -117,7 +121,7 @@ async def widget_chat(
                 }) + "\n"
                 yield json.dumps({
                     "message": {"role": "assistant", "content": ""},
-                    "citations": citations,
+                    "citations": public_citations(citations, show=show_citations),
                     "done": True,
                     "done_reason": "stop",
                     "message_id": 123,
@@ -137,7 +141,7 @@ async def widget_chat(
                 elif event["type"] == "citations":
                     yield json.dumps({
                         "message": {"role": "assistant", "content": ""},
-                        "citations": event["data"],
+                        "citations": public_citations(event["data"], show=show_citations),
                         "done": True,
                         "done_reason": "stop",
                         "message_id": event.get("message_id", None),

@@ -26,6 +26,17 @@ from models.bot_channels import channel_filter
 from models.bots import Bot
 from config import IMPRESSION_USER
 
+# ``expanded_query`` marker on the pair of rows written when a visitor
+# submits a form (services/widget_email.py). The user row holds the
+# submitted field values so admins see them in the transcript; they must
+# not reach any LLM call (router history, alert summaries, enrichment).
+FORM_SUBMISSION_MARKER = "call_back"
+
+
+def is_form_submission(expanded_query: Optional[str]) -> bool:
+    return expanded_query == FORM_SUBMISSION_MARKER
+
+
 ####################
 # Message DB Schema
 ####################
@@ -218,20 +229,8 @@ class EMLYMessagesTable:
                 "EMLYSessions.upsert_on_message failed (non-fatal) for session=%s",
                 session_id,
             )
-        # Phase 8 backend-backfill: enqueue enrichment for user turns
-        # only. The worker is opt-in per bot and short-circuits when
-        # disabled. Failures here are silent — enrichment is best-effort.
-        if role == "user" and row is not None:
-            try:
-                from services.enrichment import enqueue as _enqueue_enrichment
-                _enqueue_enrichment(
-                    bot_id=bot_id,
-                    session_id=session_id,
-                    message_id=row.id,
-                    user_text=message,
-                )
-            except Exception:
-                logging.debug("enrichment enqueue failed (non-fatal)", exc_info=True)
+        # Enrichment classifies whole conversations once they go quiet
+        # (services/enrichment.sweep_finished, Q-G1), not each message.
         return row
 
     def set_deflection(
@@ -299,6 +298,11 @@ class EMLYMessagesTable:
         skip: int = 0,
         limit: int = 50,
     ) -> List[EMLYMessageModel]:
+        """Conversation turns for the agent's history, newest first.
+
+        Leaves out widget-view markers and form submissions (their field
+        values must not reach the LLM). Filtered in SQL so skipped rows
+        don't use up ``limit``."""
         return [
             _row_to_model(m)
             for m in (
@@ -307,12 +311,17 @@ class EMLYMessagesTable:
                     (EMLYMessage.bot == bot_id)
                     & (EMLYMessage.user_id == user_id)
                     & (EMLYMessage.session_id == session_id)
+                    & (
+                        EMLYMessage.expanded_query.is_null(True)
+                        | EMLYMessage.expanded_query.not_in(
+                            ["VIEW_BOT", "BOT_VIEWED", FORM_SUBMISSION_MARKER]
+                        )
+                    )
                 )
                 .order_by(EMLYMessage.created_at.desc())
                 .limit(limit)
                 .offset(skip)
             )
-            if m.expanded_query not in ("VIEW_BOT", "BOT_VIEWED")
         ]
 
     def list_all(
@@ -578,6 +587,8 @@ class EMLYMessagesTable:
         # file doesn't import the sibling at load time. Returns None when
         # the table is empty for the bot in the window.
         resolution_rate: Optional[float] = None
+        likely_resolved_rate: Optional[float] = None
+        likely_resolved_count = 0
         try:
             from models.emly_sessions import EMLYSession
 
@@ -592,6 +603,11 @@ class EMLYMessagesTable:
             if sess_total > 0:
                 sess_resolved = sess.where(EMLYSession.is_resolved == True).count()  # noqa: E712
                 resolution_rate = round(sess_resolved / sess_total, 4)
+                # G7d: automatic estimate, reported separately.
+                from services.auto_resolution import count_likely_resolved
+
+                likely_resolved_count = count_likely_resolved(sess, bot_id)
+                likely_resolved_rate = round(likely_resolved_count / sess_total, 4)
         except Exception:
             logging.debug("get_report: resolution_rate lookup skipped", exc_info=True)
 
@@ -614,6 +630,8 @@ class EMLYMessagesTable:
             "csat_count": csat_count,
             "p95_latency_ms": p95_latency_ms,
             "resolution_rate": resolution_rate,
+            "likely_resolved_rate": likely_resolved_rate,
+            "likely_resolved_count": likely_resolved_count,
         }
 
     def get_messages_from_to(

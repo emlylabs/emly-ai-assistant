@@ -197,7 +197,8 @@ def test_enrichment_does_not_log_llm_output(monkeypatch, caplog):
             return _R()
 
     monkeypatch.setattr(enrichment, "_build_llm_for_bot", lambda _bot_id: _LLM())
-    job = enrichment._EnrichmentJob(bot_id="b", session_id="s", message_id=1, user_text=SECRET_MESSAGE)
+    monkeypatch.setattr(enrichment, "conversation_text", lambda bot_id, session_id: SECRET_MESSAGE)
+    job = enrichment._EnrichmentJob(bot_id="b", session_id="s")
     with caplog.at_level(logging.DEBUG):
         assert enrichment._classify_one(job) is None
     assert "non-JSON output" in caplog.text

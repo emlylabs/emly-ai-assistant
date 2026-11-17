@@ -55,13 +55,14 @@ def web(monkeypatch):
             raise socket.gaierror(host)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
 
-    def fake_get(url, **kwargs):
-        assert kwargs.get("allow_redirects") is False, "redirects must be followed by hand"
+    def fake_get(url, ip, **kwargs):
+        # The connection goes to the address that was checked (G13i).
+        assert ip == fake_getaddrinfo(__import__("urllib.parse").parse.urlparse(url).hostname)[0][4][0]
         requested.append(url)
         return routes.get(url) or FakeResponse(url, status=404, body=b"")
 
     monkeypatch.setattr(crawl_fetch.socket, "getaddrinfo", fake_getaddrinfo)
-    monkeypatch.setattr(crawl_fetch.requests, "get", fake_get)
+    monkeypatch.setattr(crawl_fetch, "_pinned_get", fake_get)
     return routes, requested
 
 
@@ -130,3 +131,106 @@ def test_robots_redirect_to_internal_is_blocked(web):
         "https://public.example/robots.txt", 302, location="http://127.0.0.1/robots.txt")
     assert crawl_fetch.fetch_robots("public.example") is None
     assert "http://127.0.0.1/robots.txt" not in requested
+
+
+# ------------------------------------------------- G10a: intranet ranges
+INTRANET = {
+    "wiki.corp": "10.20.1.5",
+    "hr.corp": "192.168.1.9",
+}
+
+
+@pytest.fixture
+def intranet(web, monkeypatch):
+    routes, requested = web
+    DNS.update(INTRANET)
+    yield routes, requested
+    for k in INTRANET:
+        DNS.pop(k, None)
+
+
+def _allow(monkeypatch, value):
+    monkeypatch.setenv(crawl_fetch.ALLOWED_PRIVATE_ENV, value)
+
+
+def test_private_sites_are_refused_by_default(intranet, monkeypatch):
+    monkeypatch.delenv(crawl_fetch.ALLOWED_PRIVATE_ENV, raising=False)
+    _, requested = intranet
+    result = crawl_fetch.fetch_html("http://wiki.corp/home")
+    assert result["skipped_reason"].startswith("unsafe url")
+    assert crawl_fetch.ALLOWED_PRIVATE_ENV in result["skipped_reason"]  # tells the admin how
+    assert requested == []
+
+
+def test_a_listed_range_can_be_crawled(intranet, monkeypatch):
+    _allow(monkeypatch, "10.20.0.0/16")
+    routes, requested = intranet
+    routes["http://wiki.corp/home"] = FakeResponse("http://wiki.corp/home", body=b"<html>wiki</html>")
+    assert crawl_fetch.fetch_html("http://wiki.corp/home")["html"] == "<html>wiki</html>"
+    assert crawl_fetch.validate_url("http://wiki.corp/x") == ("http", "wiki.corp")
+
+
+def test_redirect_into_an_unlisted_private_range_is_blocked(intranet, monkeypatch):
+    _allow(monkeypatch, "10.20.0.0/16")
+    routes, requested = intranet
+    routes["http://wiki.corp/a"] = FakeResponse("http://wiki.corp/a", 302, location="http://hr.corp/payroll")
+    result = crawl_fetch.fetch_html("http://wiki.corp/a")
+    assert result["skipped_reason"].startswith("unsafe url")
+    assert requested == ["http://wiki.corp/a"]
+
+
+@pytest.mark.parametrize("listed,target", [
+    ("169.254.0.0/16", "http://169.254.169.254/latest/meta-data/"),
+    ("127.0.0.0/8", "http://127.0.0.1:6333/collections"),
+    ("100.64.0.0/10", "http://100.100.100.200/latest/meta-data/"),
+    ("fd00::/8", "http://[fd00:ec2::254]/latest/meta-data/"),
+    ("::/1", "http://[::1]/"),
+    ("10.0.0.0/8", "http://[::ffff:127.0.0.1]/"),
+])
+def test_loopback_link_local_and_metadata_stay_blocked_even_when_listed(web, monkeypatch, listed, target):
+    _allow(monkeypatch, f"10.0.0.0/8,{listed}")
+    _, requested = web
+    result = crawl_fetch.fetch_html(target)
+    assert result["skipped_reason"].startswith("unsafe url")
+    assert crawl_fetch.ALLOWED_PRIVATE_ENV not in result["skipped_reason"]  # no hint: never allowed
+    assert requested == []
+
+
+def test_ipv4_mapped_addresses_follow_the_ipv4_rules(monkeypatch):
+    import ipaddress
+
+    monkeypatch.delenv(crawl_fetch.ALLOWED_PRIVATE_ENV, raising=False)
+    assert crawl_fetch._is_blocked(ipaddress.ip_address("::ffff:10.20.1.5"))
+    _allow(monkeypatch, "10.20.0.0/16")
+    assert not crawl_fetch._is_blocked(ipaddress.ip_address("::ffff:10.20.1.5"))
+    assert crawl_fetch._is_blocked(ipaddress.ip_address("::ffff:169.254.169.254"))
+
+
+def test_shared_address_space_is_blocked_unless_listed(monkeypatch):
+    """100.64.0.0/10 (carrier-grade NAT, Tailscale) isn't "private" to
+    Python, so it used to pass. It is internal: blocked unless listed."""
+    import ipaddress
+
+    monkeypatch.delenv(crawl_fetch.ALLOWED_PRIVATE_ENV, raising=False)
+    ip = ipaddress.ip_address("100.64.3.4")
+    assert crawl_fetch._is_blocked(ip)
+    _allow(monkeypatch, "100.64.0.0/10")
+    assert not crawl_fetch._is_blocked(ip)
+    assert not crawl_fetch._is_blocked(ipaddress.ip_address("93.184.216.34"))  # public is unaffected
+
+
+@pytest.mark.parametrize("value", ["10.20.0.0/16, intranet", "0.0.0.0/0", "::/0", "10.0.0.0/33"])
+def test_a_malformed_list_stops_start_up(monkeypatch, value):
+    _allow(monkeypatch, value)
+    with pytest.raises(crawl_fetch.CrawlSettingsError):
+        crawl_fetch.log_crawl_settings()
+
+
+def test_boot_logs_the_ranges_and_overlaps(monkeypatch, caplog):
+    import logging
+
+    _allow(monkeypatch, "10.20.0.0/16; 169.254.0.0/16")
+    with caplog.at_level(logging.INFO, logger="services.crawl_fetch"):
+        crawl_fetch.log_crawl_settings()
+    assert "admins may crawl 10.20.0.0/16, 169.254.0.0/16" in caplog.text
+    assert "169.254.0.0/16 overlaps" in caplog.text and "stay blocked" in caplog.text

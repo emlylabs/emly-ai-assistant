@@ -50,6 +50,7 @@ from models.emly_files import (
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_writer
 from services.bot_config import get_config_for_bot
+from services.upload_types import UploadRejected, check_upload
 from utils.utils import safe_filename
 
 log = logging.getLogger(__name__)
@@ -299,10 +300,12 @@ async def upload_file(
     _require_writer(admin, bot.id)
     _validate_document_type(document_type)
 
-    # Reject early at HTTP body limit, before reading the file.
+    # Reject before copying. ``file.size`` is the bytes Starlette received
+    # for this part; the request's Content-Length is only a fallback.
     content_length = request.headers.get("content-length")
     cl_int = int(content_length) if content_length and content_length.isdigit() else None
-    _enforce_upload_limits(bot, cl_int, file.content_type)
+    _enforce_upload_limits(bot, file.size if file.size is not None else cl_int, file.content_type)
+    max_bytes = get_config_for_bot(bot.id).limits.max_file_size_mb * 1024 * 1024
 
     file_id = str(uuid.uuid4())
     target_dir = _bot_uploads_dir(bot.id) / file_id
@@ -318,6 +321,8 @@ async def upload_file(
                 break
             sha.update(chunk)
             size += len(chunk)
+            if size > max_bytes:
+                break  # over the cap: stop copying; removed below
             out.write(chunk)
 
     if size == 0:
@@ -337,6 +342,17 @@ async def upload_file(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"File exceeds the {cfg.limits.max_file_size_mb} MB cap for this bot",
         )
+
+    # G13c: refuse programs, archives and files whose bytes aren't what
+    # their name and declared type say.
+    try:
+        with open(target_path, "rb") as fh:
+            check_upload(fh, file.filename, file.content_type)
+    except UploadRejected as exc:
+        target_path.unlink(missing_ok=True)
+        target_dir.rmdir()
+        log.warning("Upload refused bot=%s: %s", bot.id, exc)
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc))
 
     Emly_Files.insert_new_file(
         id=file_id,

@@ -89,44 +89,72 @@ def _format_expires(expires_at: Optional[datetime]) -> str:
 
 def schedule_invite_email(
     *,
-    token: str,
-    email: str,
-    inviter_name: str,
-    inviter_email: str,
+    pending_id: str,
+    inviter_id: str,
     space_name: str,
     role: str,
-    expires_at: Optional[datetime],
 ) -> bool:
     """Enqueue an invitation email send.
+
+    N7: the job store is a file on disk (``actions.db``) that outlives
+    the request, so the job carries only ids, the space name and the
+    role. The invite token, the accept URL and both email addresses are
+    looked up when the job runs (``_send_invite``).
 
     Returns ``True`` if the job was scheduled, ``False`` if it was
     dropped (e.g. ``PUBLIC_BASE_URL`` unset). The caller can surface
     that to the UI so the operator knows email isn't going out.
     """
-    accept_url = build_accept_url(token)
-    if accept_url is None:
+    if _public_base_url() is None:
         log.warning(
-            "Skipping invite email to %s: PUBLIC_BASE_URL / APP_BASE_URL unset; "
+            "Skipping invite email for pending=%s: PUBLIC_BASE_URL / APP_BASE_URL unset; "
             "set one of them so invitees receive a clickable link.",
-            email,
+            pending_id,
         )
         return False
-    payload = {
-        "email": email,
-        "inviter_name": inviter_name or inviter_email,
+    scheduler.add_job(_send_invite, args=[pending_id, inviter_id, space_name, role])
+    log.info("Queued invite email for pending=%s space=%s role=%s", pending_id, space_name, role)
+    return True
+
+
+def _send_invite(pending_id: str, inviter_id: str, space_name: str, role: str) -> None:
+    """Scheduler job: send the email for an invite that is still open."""
+    from models.admin_users import AdminUsers
+    from models.pending_admins import STATUS_PENDING, PendingAdmins
+
+    pending = PendingAdmins.get_by_id(pending_id)
+    if pending is None or pending.status != STATUS_PENDING or not pending.token:
+        log.info("Invite email for pending=%s not sent: invite no longer open", pending_id)
+        return
+    if pending.expires_at is not None and _as_utc(pending.expires_at) < datetime.now(timezone.utc):
+        log.info("Invite email for pending=%s not sent: invite expired", pending_id)
+        return
+    accept_url = build_accept_url(pending.token)
+    if accept_url is None:
+        log.warning("Invite email for pending=%s not sent: PUBLIC_BASE_URL / APP_BASE_URL unset", pending_id)
+        return
+    inviter = AdminUsers.get_by_id_including_deleted(inviter_id) if inviter_id else None
+    inviter_email = inviter.email if inviter else ""
+    _send_invite_email({
+        "email": pending.email,
+        "inviter_name": (inviter.name if inviter else None) or inviter_email or "An administrator",
         "inviter_email": inviter_email,
         "space_name": space_name,
         "role": role,
         "accept_url": accept_url,
-        "expires_human": _format_expires(expires_at),
-    }
-    scheduler.add_job(_send_invite_email, args=[payload])
-    log.info("Queued invite email to %s for space=%s role=%s", email, space_name, role)
-    return True
+        "expires_human": _format_expires(pending.expires_at),
+    }, ref=pending_id)
 
 
-def _send_invite_email(payload: dict) -> None:
-    """Render the template, build the MIME envelope, and send via SMTP."""
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _send_invite_email(payload: dict, ref: Optional[str] = None) -> None:
+    """Render the template, build the MIME envelope, and send via SMTP.
+
+    Also the target of invite jobs queued before N7, whose arguments are
+    the rendered payload; those drain on the next start."""
     template = _read_template()
     if not template:
         return
@@ -149,8 +177,8 @@ def _send_invite_email(payload: dict) -> None:
             username=EMAIL_USER,
             password=EMAIL_PASSWORD,
         ).send_email(msg)
-    except Exception:
-        log.exception("Invite email send failed (to=%s)", payload["email"])
+    except Exception as exc:
+        log.error("Invite email send failed (pending=%s): %s", ref or "legacy-job", type(exc).__name__)
 
 
 def sweep_expired_invites() -> int:

@@ -10,13 +10,11 @@ secrets. The Fernet key comes from ``BOT_SECRETS_KEY`` env (preferred) or
 is auto-generated and persisted to ``{DATA_DIR}/.bot_secrets_key`` on
 first boot, mirroring the JWT secret pattern in ``services/auth_service``.
 
-The same key is reused to encrypt the BFF refresh-token cookie payload
-(``encrypt_session_cookie`` / ``decrypt_session_cookie``) — the BFF path
-keeps the refresh_token out of the JavaScript surface by storing it
-encrypted in an httpOnly cookie. The encryption is symmetric AES-128
-in CBC mode with HMAC-SHA256 authentication (Fernet's standard
-construction); the key is process-local, so an attacker would need
-both the cookie and the on-disk key to recover the refresh_token.
+The BFF refresh-token cookie (``encrypt_refresh_cookie`` /
+``decrypt_refresh_cookie``) uses a Fernet key derived from it for that
+purpose only (G6b), as do one-time passcodes (``derive_key``) and widget
+tokens (``services/auth/widget_hmac.py``). Fernet is AES-128-CBC with
+HMAC-SHA256 authentication.
 
 This is "good enough for v1" — Fernet with a key on disk raises the bar
 above plaintext but is not real protection if an attacker has both the DB
@@ -33,6 +31,7 @@ from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from config import DATA_DIR
+from utils.private_files import write_private
 
 log = logging.getLogger(__name__)
 
@@ -56,11 +55,8 @@ def _load_or_create_key() -> bytes:
         "Set BOT_SECRETS_KEY in production so the key survives DATA_DIR rebuilds.",
         secret_path,
     )
-    os.makedirs(str(DATA_DIR), exist_ok=True)
     key = Fernet.generate_key()
-    with open(secret_path, "wb") as fh:
-        fh.write(key)
-    os.chmod(secret_path, 0o600)
+    write_private(secret_path, key)
     return key
 
 
@@ -115,8 +111,9 @@ def _get_fernet() -> MultiFernet:
 
 
 def reset_for_tests() -> None:
-    global _FERNET
+    global _FERNET, _COOKIE_FERNET
     _FERNET = None
+    _COOKIE_FERNET = None
 
 
 def rotate(ciphertext: Optional[str]) -> Optional[str]:
@@ -157,43 +154,92 @@ def derive_key(purpose: str) -> bytes:
     return hmac.new(_load_or_create_key(), f"emly:{purpose}".encode("utf-8"), hashlib.sha256).digest()
 
 
-# -------- BFF session-cookie helpers --------
+# -------- BFF refresh cookie --------
 #
-# The refresh_token issued by the IdP is too sensitive to put in a JS-readable
-# cookie. We store it in a separate httpOnly cookie, encrypted with the same
-# symmetric key as the per-bot secrets. The cookie name is configured
-# independently of the session cookie (env: AUTH_REFRESH_COOKIE_NAME), but the
-# value-format lives entirely in this module.
+# The IdP refresh token is too sensitive for a JS-readable cookie, so it
+# lives encrypted in an httpOnly cookie, together with the sign-in time
+# (G3a). G6b: the cookie has its own Fernet key, derived from each
+# configured root key, so a stored bot secret's ciphertext can't be
+# replayed as a cookie (the BFF would decrypt it and send the plaintext
+# API key to the IdP as a "refresh token"), and the two can't be
+# confused. Cookies encrypted with the root key before this change no
+# longer decrypt: those admins sign in again once.
 
-def encrypt_session_cookie(plaintext: Optional[str]) -> Optional[str]:
-    """Encrypt a refresh_token for the BFF refresh-cookie.
-
-    Returns ``None`` if the input is ``None`` / empty (so the caller can
-    skip setting the cookie in that case). The output is ASCII-safe
-    (Fernet ciphertext is base64url) so it round-trips through any
-    cookie spec.
-    """
-    return encrypt(plaintext)
+COOKIE_KEY_PURPOSE = "refresh-cookie-v1"
+_COOKIE_FERNET: Optional[MultiFernet] = None
 
 
-def decrypt_session_cookie(ciphertext: Optional[str]) -> Optional[str]:
-    """Decrypt a refresh_token cookie. Returns ``None`` on missing or
-    tampered input — never raises — so a corrupt cookie cleanly
-    degrades to "force a fresh login" rather than 500-ing the request.
-    """
+def _purpose_fernet_key(root: bytes, purpose: str) -> bytes:
+    import base64
+    import hashlib
+    import hmac
+
+    return base64.urlsafe_b64encode(hmac.new(root, f"emly:{purpose}".encode("utf-8"), hashlib.sha256).digest())
+
+
+def _cookie_fernet() -> MultiFernet:
+    """Encrypts with the current root key's cookie subkey; decrypts with
+    the subkey of the current or any previous root key."""
+    global _COOKIE_FERNET
+    if _COOKIE_FERNET is None:
+        _COOKIE_FERNET = MultiFernet([Fernet(_purpose_fernet_key(k, COOKIE_KEY_PURPOSE)) for k in root_keys()])
+    return _COOKIE_FERNET
+
+
+class RefreshCookie:
+    """What the BFF refresh cookie holds: the IdP refresh token and the
+    time (epoch seconds) the admin signed in (G3a)."""
+
+    __slots__ = ("refresh_token", "auth_time")
+
+    def __init__(self, refresh_token: str, auth_time: float):
+        self.refresh_token = refresh_token
+        self.auth_time = auth_time
+
+    def __repr__(self) -> str:  # never print the token
+        return f"RefreshCookie(auth_time={self.auth_time})"
+
+
+def encrypt_refresh_cookie(refresh_token: Optional[str], auth_time: float) -> Optional[str]:
+    """Encrypt the refresh token together with the sign-in time.
+    ``None`` for no token (the caller then sets no cookie)."""
+    if not refresh_token:
+        return None
+    import json
+
+    payload = json.dumps({"v": 1, "rt": refresh_token, "auth_time": int(auth_time)})
+    return _cookie_fernet().encrypt(payload.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_refresh_cookie(ciphertext: Optional[str]) -> Optional[RefreshCookie]:
+    """Decrypt a refresh cookie. ``None`` for missing, tampered or
+    unreadable input — never raises — so a bad cookie degrades to "sign
+    in again" rather than a 500."""
     if not ciphertext:
         return None
+    import json
+
     try:
-        return decrypt(ciphertext)
+        data = json.loads(_cookie_fernet().decrypt(ciphertext.encode("utf-8")))
     except InvalidToken:
-        log.warning("decrypt_session_cookie: invalid ciphertext — treating as missing")
+        log.warning("decrypt_refresh_cookie: invalid ciphertext — treating as missing")
         return None
+    except ValueError:
+        log.warning("decrypt_refresh_cookie: unreadable payload — treating as missing")
+        return None
+    if not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("rt"), str) \
+            or not data["rt"] or not isinstance(data.get("auth_time"), (int, float)):
+        log.warning("decrypt_refresh_cookie: unreadable payload — treating as missing")
+        return None
+    return RefreshCookie(data["rt"], float(data["auth_time"]))
 
 
 __all__ = [
     "encrypt",
     "decrypt",
-    "encrypt_session_cookie",
-    "decrypt_session_cookie",
+    "derive_key",
+    "RefreshCookie",
+    "encrypt_refresh_cookie",
+    "decrypt_refresh_cookie",
     "InvalidToken",
 ]

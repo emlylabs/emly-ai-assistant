@@ -605,6 +605,25 @@ function InstallRow({
     }
   }
 
+  // Q-N6: platforms that can tell Emly the sender's email address.
+  const offersEmail = install.type === "slack" || install.type === "google_chat";
+  const storesEmail = Boolean(install.config?.store_sender_email);
+
+  async function toggleStoreEmail() {
+    setBusy(true);
+    try {
+      await api.updateChannelConfig(slug, install.id, {
+        ...(install.config ?? {}),
+        store_sender_email: !storesEmail,
+      });
+      onChange();
+    } catch (e) {
+      onBanner({ kind: "err", message: errorMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function softDelete() {
     if (!confirm(`Disable this ${install.type} install?`)) return;
     setBusy(true);
@@ -707,6 +726,23 @@ function InstallRow({
           </div>
         )}
       </div>
+
+      {offersEmail && (
+        <div style={{ marginTop: 10 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <input type="checkbox" checked={storesEmail} onChange={toggleStoreEmail} disabled={busy} />
+            Store sender email addresses
+          </label>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Off: Emly keeps the sender&apos;s name only. On: it also keeps the email address{" "}
+            {install.type === "slack"
+              ? "Slack gives (needs the users:read.email scope)"
+              : "Google Chat sends with each message"}
+            , shown to everyone with access to this bot. Turning it off doesn&apos;t delete
+            addresses already stored.
+          </div>
+        </div>
+      )}
 
       {health && (
         <div className={health.ok ? "banner" : "banner warning"} style={{ marginTop: 10, marginBottom: 0 }}>
@@ -1593,7 +1629,8 @@ function SlackPanel({
           Open <em>OAuth &amp; Permissions</em> → <em>Bot Token Scopes</em> and add:{" "}
           <code>app_mentions:read</code>, <code>chat:write</code>, <code>im:history</code>,{" "}
           <code>im:read</code>, <code>im:write</code>, <code>channels:history</code>,{" "}
-          <code>users:read</code>.
+          <code>users:read</code>. <code>users:read</code> lets Emly show who asked by name.
+          Add <code>users:read.email</code> only if you want their email address stored as well, and then turn on <em>Store sender email addresses</em> on the installed channel.
         </li>
         <li>
           Click <em>Install to Workspace</em> at the top of the same page and authorize. Copy

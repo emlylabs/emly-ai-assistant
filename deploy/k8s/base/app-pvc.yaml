@@ -1,0 +1,12 @@
+# DATA_DIR: uploaded documents, chat attachments, the sign-in signing key
+# (auth_keys/) and the job store (actions.db). Back it up with Postgres and
+# Qdrant (README "Backup and restore").
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: emly-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi

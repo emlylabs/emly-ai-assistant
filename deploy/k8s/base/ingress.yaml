@@ -1,0 +1,22 @@
+# TLS is terminated here. For a staff-only assistant, use an ingress class
+# that is reachable only from your network or VPN (README "Who can use the
+# widget").
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: emly
+spec:
+  tls:
+    - hosts: ["emly.example.com"]
+      secretName: emly-tls
+  rules:
+    - host: emly.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: emly-app
+                port:
+                  name: http

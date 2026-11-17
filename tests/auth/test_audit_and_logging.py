@@ -128,5 +128,6 @@ def test_access_token_field_redacted(redaction_logger):
 
 def test_non_secret_text_unchanged(redaction_logger):
     logger, captured = redaction_logger
-    logger.info("Login attempted for alice@example.com")
-    assert captured[-1] == "Login attempted for alice@example.com"
+    # (Email addresses are masked since G13f: test_personal_data_in_logs.py.)
+    logger.info("Login attempted for admin adm-123 via https://idp.example.com/")
+    assert captured[-1] == "Login attempted for admin adm-123 via https://idp.example.com/"

@@ -1,0 +1,60 @@
+# Copy this overlay and fill in your values. Secrets are not in git:
+#
+#   kubectl -n emly create secret generic emly-secrets \
+#     --from-literal=BOT_SECRETS_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
+#     --from-literal=DATABASE_URL='postgresql://emly:...@db.internal:5432/emly?sslmode=verify-full' \
+#     --from-literal=OPENAI_API_KEY='...'
+#   kubectl -n emly create secret tls emly-tls --cert=tls.crt --key=tls.key
+#
+# Then: kubectl apply -k deploy/k8s/overlays/<yours>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: emly
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - egress-external.yaml
+
+# Uncomment to run Postgres in the cluster (also create the
+# "emly-postgres" Secret; see components/postgres).
+# components:
+#   - ../../components/postgres
+
+images:
+  - name: emly-ai-assistant
+    newName: registry.example.com/emly-ai-assistant
+    newTag: "1.0.0"
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: emly-config
+    patch: |-
+      - op: replace
+        path: /data/APP_BASE_URL
+        value: https://emly.example.com
+      - op: replace
+        path: /data/FORWARDED_ALLOW_IPS
+        value: 10.244.0.0/16
+  - target:
+      kind: Ingress
+      name: emly
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: emly.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: emly.example.com
+  # Secrets beyond the two the base needs, read from the same Secret.
+  - target:
+      kind: Deployment
+      name: emly-app
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OPENAI_API_KEY_FILE
+          value: /run/secrets/emly/OPENAI_API_KEY

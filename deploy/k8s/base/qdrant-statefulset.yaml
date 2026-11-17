@@ -1,0 +1,85 @@
+# Qdrant holds the text of every indexed passage. It stays inside the
+# namespace: only the app may reach it (networkpolicy.yaml), so it runs
+# without an API key, as in compose. Telemetry is off.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: emly-qdrant
+  labels:
+    app.kubernetes.io/name: emly-qdrant
+spec:
+  serviceName: emly-qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: emly-qdrant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: emly-qdrant
+    spec:
+      serviceAccountName: emly
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qdrant
+          # The "-unprivileged" image runs as uid 1000.
+          image: qdrant
+          env:
+            - name: QDRANT__TELEMETRY_DISABLED
+              value: "true"
+            # Qdrant writes an "initialised" marker into its working
+            # directory, which is read-only here; keep it on /tmp.
+            - name: QDRANT_INIT_FILE_PATH
+              value: /tmp/.qdrant-initialized
+          ports:
+            - name: http
+              containerPort: 6333
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+            - name: snapshots
+              mountPath: /qdrant/snapshots
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: snapshots
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

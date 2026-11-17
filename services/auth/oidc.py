@@ -27,6 +27,7 @@ from services.auth.base import (
     InvalidAudienceError,
     InvalidIssuerError,
     InvalidTokenError,
+    MfaRequired,
     MissingClaimError,
     OAuthState,
     Principal,
@@ -78,6 +79,9 @@ class OidcProvider:
         trust_email_unconditionally: bool = False,
         request_offline_access: bool = True,
         email_claims: tuple[str, ...] = ("email",),
+        trusted_email_claims: tuple[str, ...] = (),
+        required_acr: tuple[str, ...] = (),
+        required_amr: tuple[str, ...] = (),
         http_client: httpx.Client | None = None,
         # In-process injection used when the issuer is this same app's
         # embedded one — avoids a self-loopback HTTP call that DNS often
@@ -108,6 +112,15 @@ class OidcProvider:
         # Ordered claim names to read the admin's email from. Entra ID often
         # omits ``email``; e.g. ("email", "upn") falls back to the UPN.
         self._email_claims = tuple(email_claims) or ("email",)
+        # G3d: claims whose address this IdP vouches for even without
+        # ``email_verified`` (e.g. ``upn`` on a single-tenant Entra app,
+        # where the tenant owns every UPN domain). Narrower than
+        # trust_email_unconditionally, which trusts every claim.
+        self._trusted_email_claims = frozenset(trusted_email_claims)
+        # G3b: checked at sign-in only (exchange_code), not on every token
+        # verification: refreshed tokens don't always repeat acr/amr.
+        self._required_acr = tuple(required_acr)
+        self._required_amr = tuple(required_amr)
 
         self._http = http_client or httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT)
         self._jwt_codec = JsonWebToken(["RS256"])
@@ -191,7 +204,7 @@ class OidcProvider:
 
     # -------- token verification --------
 
-    def verify_token(self, token: str) -> Principal:
+    def verify_token(self, token: str, *, allow_expired: bool = False) -> Principal:
         if not token or not isinstance(token, str):
             raise InvalidTokenError("missing or non-string token")
 
@@ -210,10 +223,10 @@ class OidcProvider:
             raise InvalidTokenError(f"jwt decode failed: {e}") from e
 
         claims_dict = dict(claims)
-        self._validate_claims(claims_dict)
+        self._validate_claims(claims_dict, allow_expired=allow_expired)
         return self._principal_from_claims(claims_dict)
 
-    def _validate_claims(self, claims: dict[str, Any]) -> None:
+    def _validate_claims(self, claims: dict[str, Any], *, allow_expired: bool = False) -> None:
         now = _now()
 
         iss = claims.get("iss")
@@ -229,7 +242,7 @@ class OidcProvider:
             raise InvalidAudienceError(f"aud {aud!r} does not include any of {accepted!r}")
 
         exp = claims.get("exp")
-        if exp is None or int(exp) + self._leeway < now:
+        if exp is None or (not allow_expired and int(exp) + self._leeway < now):
             raise ExpiredTokenError(f"exp={exp} now={now} leeway={self._leeway}")
 
         nbf = claims.get("nbf")
@@ -259,7 +272,7 @@ class OidcProvider:
         # refuse activation if verification didn't happen at the IdP.
         # ``email_verified`` describes the ``email`` claim only, so an
         # address read from a fallback claim counts as unverified.
-        if self._trust_email_unconditionally:
+        if self._trust_email_unconditionally or source in self._trusted_email_claims:
             email_verified = True
         elif source == "email":
             email_verified = _coerce_email_verified(claims.get("email_verified"))
@@ -316,7 +329,22 @@ class OidcProvider:
             "code_challenge": _pkce_challenge(oauth_state.code_verifier),
             "code_challenge_method": "S256",
         }
+        if self._required_acr:
+            # Ask the IdP for the required level; the id_token is still checked.
+            params["acr_values"] = " ".join(self._required_acr)
         return f"{endpoint}?{urlencode(params)}"
+
+    def check_authentication_strength(self, principal: Principal) -> None:
+        """G3b: raise ``MfaRequired`` unless the id_token's ``acr`` is one of
+        the required values and its ``amr`` contains a required method."""
+        acr = principal.raw_claims.get("acr")
+        amr = principal.raw_claims.get("amr")
+        if self._required_acr and acr not in self._required_acr:
+            raise MfaRequired(acr, amr)
+        if self._required_amr:
+            methods = amr if isinstance(amr, list) else []
+            if not any(m in self._required_amr for m in methods):
+                raise MfaRequired(acr, amr)
 
     def exchange_code(
         self,
@@ -369,6 +397,7 @@ class OidcProvider:
         id_nonce = principal.raw_claims.get("nonce")
         if id_nonce != oauth_state.nonce:
             raise InvalidTokenError(f"id_token nonce mismatch: got {id_nonce!r}")
+        self.check_authentication_strength(principal)
 
         return (
             TokenSet(

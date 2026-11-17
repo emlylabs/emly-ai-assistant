@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime
+
+from utils.clock import utc_now
 from typing import List, Optional
 
 import peewee as pw
@@ -47,7 +49,7 @@ class BotImpressionsTable:
         self.db.create_tables([BotImpressions])
 
     def insert_impression(self, bot_id: str, impression_type: str) -> Optional[BotImpressionsModel]:
-        now = datetime.now()
+        now = utc_now()
         row = BotImpressions.create(
             id=str(uuid.uuid4()),
             bot=bot_id,

@@ -295,6 +295,7 @@ def issue_refresh_token(
     name: Optional[str] = None,
     scope: str = "openid email profile",
     ttl: Optional[timedelta] = None,
+    auth_time: Optional[datetime] = None,
 ) -> str:
     """Mint an opaque refresh token and persist it.
 
@@ -314,6 +315,7 @@ def issue_refresh_token(
     )
 
     token = generate_refresh_token()
+    now = datetime.now(timezone.utc)
     record = RefreshTokenRecord(
         token=token,
         admin_id=admin_id,
@@ -321,7 +323,8 @@ def issue_refresh_token(
         email_verified=email_verified,
         name=name,
         scope=scope,
-        issued_at=datetime.now(timezone.utc),
+        issued_at=now,
+        auth_time=auth_time or now,  # a new chain starts at sign-in
     )
     refresh_store.put(record, ttl=ttl or DEFAULT_REFRESH_TTL)
     return token
@@ -332,8 +335,10 @@ def consume_refresh_token(
     refresh_store: "RefreshTokenStoreLike",
     refresh_token: str,
 ) -> "RefreshTokenRecordLike":
-    """Pop the refresh token, return the record. Single-use."""
+    """Pop the refresh token, return the record. Single-use. Refused once
+    the session it belongs to has reached its maximum age (G3a)."""
     from services.auth.issuer.refresh_store import RefreshTokenRecord
+    from services.auth.session_limits import is_over
 
     if not refresh_token:
         raise CodeExchangeError("missing refresh_token")
@@ -344,6 +349,9 @@ def consume_refresh_token(
         # Defensive: if a custom store returns something else we
         # surface a clear error rather than silently mangling it.
         raise CodeExchangeError("refresh_token store returned unexpected type")
+    started = record.auth_time or record.issued_at
+    if is_over(started.timestamp() if started else None):
+        raise CodeExchangeError("session has reached its maximum age; sign in again")
     return record
 
 
