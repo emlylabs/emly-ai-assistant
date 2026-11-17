@@ -17,7 +17,7 @@ import pytest
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.testclient import TestClient
 
-from services.request_limits import WidgetBodyLimitMiddleware
+from services.request_limits import RequestBodyLimitMiddleware
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def limited_app(monkeypatch):
     async def other(request: Request):
         return {"len": len(await request.body())}
 
-    app.add_middleware(WidgetBodyLimitMiddleware)
+    app.add_middleware(RequestBodyLimitMiddleware)
     return TestClient(app), seen
 
 
@@ -68,9 +68,10 @@ def test_body_under_the_cap_passes(limited_app):
     assert seen == [1000]
 
 
-def test_other_paths_are_not_limited(limited_app):
+def test_other_paths_get_the_general_limit(limited_app):
     client, _ = limited_app
-    assert client.post("/api/admin/other", content=b"x" * (MB + 1)).json() == {"len": MB + 1}
+    assert client.post("/api/admin/other", content=b"x" * 1000).json() == {"len": 1000}
+    assert client.post("/api/admin/other", content=b"x" * (MB + 1)).status_code == 413
 
 
 def test_default_fits_two_default_size_files_and_the_form(monkeypatch):
@@ -85,7 +86,9 @@ def test_default_fits_two_default_size_files_and_the_form(monkeypatch):
 def test_app_installs_the_middleware():
     import main
 
-    assert any(m.cls is WidgetBodyLimitMiddleware for m in main.app.user_middleware)
+    # Innermost (added first): outside a BaseHTTPMiddleware its 413 would
+    # reach FastAPI inside an ExceptionGroup and come back as 400.
+    assert main.app.user_middleware[-1].cls is RequestBodyLimitMiddleware
 
 
 # ------------------------------------------------------------ widget attachments

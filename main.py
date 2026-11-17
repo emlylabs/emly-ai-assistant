@@ -1,4 +1,3 @@
-import json
 import logging
 import math
 import os
@@ -263,45 +262,10 @@ class CustomMiddleware(BaseHTTPMiddleware):
         try:
             user_id = request.headers.get("X-Emly-UserID")
             session_id = request.headers.get("X-Emly-SessionID")
-            page_id = request.headers.get("X-Emly-PageID")
             if user_id:
                 logging_context.user_id_var.set(user_id)
             if session_id:
                 logging_context.session_id_var.set(session_id)
-            # Body fallback for ``/widget/{ref}/chat`` only — fill the
-            # user/session ids from the body when the headers are absent,
-            # and mint a session id if neither has one. Response headers
-            # echo the resolved IDs so the widget can adopt them.
-            _path_parts = request.url.path.split("/")
-            _is_widget_chat = (
-                len(_path_parts) == 4
-                and _path_parts[1] == "widget"
-                and _path_parts[3] == "chat"
-            )
-            if _is_widget_chat:
-                body = await request.body()
-                body_str = body.decode("utf-8")
-                try:
-                    data = json.loads(body_str) if body_str else {}
-                except json.JSONDecodeError:
-                    return JSONResponse(status_code=400, content={"message": "Invalid JSON body"})
-                if not isinstance(data, dict):
-                    return JSONResponse(status_code=400, content={"message": "Body must be a JSON object"})
-
-                body_user = data.get("user_id") if isinstance(data.get("user_id"), str) else None
-                body_session = data.get("session_id") if isinstance(data.get("session_id"), str) else None
-                # No synthesized user id: the widget token (B2) names the
-                # user, and the chat route rejects a body user that differs.
-                user_id = user_id or body_user
-                session_id = session_id or body_session or f"session-{uuid.uuid4()}"
-
-                if user_id:
-                    data["user_id"] = user_id
-                data["session_id"] = session_id
-                data["timestamp"] = int(time.time())
-                data["page_id"] = page_id
-                request._body = json.dumps(data).encode("utf-8")
-
             response = await call_next(request)
             if user_id:
                 response.headers["X-Emly-UserID"] = user_id
@@ -330,6 +294,11 @@ from services.auth.ratelimit import limiter  # noqa: E402
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
 app.state.limiter = limiter
+# S2: the body cap sits innermost, directly around the routes. Outside a
+# BaseHTTPMiddleware (SlowAPI, CustomMiddleware) its 413 would reach FastAPI
+# wrapped in an ExceptionGroup and come back as a 400.
+from services.request_limits import RequestBodyLimitMiddleware  # noqa: E402
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(SlowAPIMiddleware)
 
 
@@ -406,8 +375,6 @@ app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=
 app.add_middleware(CustomMiddleware)
 # G13c: hard cap on widget request bodies, counted as bytes arrive. Inside
 # the CORS layers so the widget can read the 413.
-from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
-app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
 from services.audit import AuditRequestContextMiddleware, AuditUnavailable  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)

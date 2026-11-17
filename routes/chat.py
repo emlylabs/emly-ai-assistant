@@ -1,5 +1,7 @@
 import json
 import logging
+import time
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +27,14 @@ def _chat_principal(bot_slug: str, request: Request):
 logger = logging.getLogger(__name__)
 
 
+def _with_ids(response: StreamingResponse, request: AgentRequest) -> StreamingResponse:
+    """Echo the resolved ids so the widget can adopt a minted session id."""
+    if request.user_id:
+        response.headers["X-Emly-UserID"] = str(request.user_id)
+    response.headers["X-Emly-SessionID"] = str(request.session_id)
+    return response
+
+
 @router.post(
     "/widget/{bot_slug}/chat",
     summary="Web widget chat (path-scoped to bot)",
@@ -45,6 +55,15 @@ async def widget_chat(
     """
     from routes.widget import resolve_bot
     from services.auth.widget_auth import ensure_same_user
+
+    # Ids come from the X-Emly-* headers, else the body; a missing session
+    # id is minted here and echoed back in X-Emly-SessionID.
+    headers = http_request.headers
+    request.user_id = headers.get("X-Emly-UserID") or request.user_id
+    request.session_id = (headers.get("X-Emly-SessionID") or request.session_id
+                          or f"session-{uuid.uuid4()}")
+    request.page_id = headers.get("X-Emly-PageID")
+    request.timestamp = int(time.time())
 
     bot = resolve_bot(bot_slug)
     ensure_same_user(principal, request.user_id)
@@ -127,7 +146,7 @@ async def widget_chat(
                     "message_id": 123,
                 }) + "\n"
 
-            return StreamingResponse(stream_non_stream())
+            return _with_ids(StreamingResponse(stream_non_stream()), request)
 
         def stream_generator():
             for event in response:
@@ -147,7 +166,7 @@ async def widget_chat(
                         "message_id": event.get("message_id", None),
                     }) + "\n"
 
-        return StreamingResponse(stream_generator())
+        return _with_ids(StreamingResponse(stream_generator()), request)
 
     except HTTPException:
         raise
