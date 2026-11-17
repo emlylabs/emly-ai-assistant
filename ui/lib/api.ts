@@ -990,11 +990,12 @@ export type ReadyzResponse = {
   issues?: string[];
 };
 
-// readyz lives at /api/readyz (no /admin prefix); separate fetcher.
+// Deployment warnings for the banner. Superadmins only; others get 403
+// and see no banner. (The public /api/readyz carries status codes only.)
 export async function fetchReadyz(): Promise<ReadyzResponse | null> {
   try {
-    const res = await fetch("/api/readyz");
-    if (!res.ok && res.status !== 503) return null;
+    const res = await fetch("/api/admin/system/status", { credentials: "include" });
+    if (!res.ok) return null;
     return (await res.json()) as ReadyzResponse;
   } catch {
     return null;

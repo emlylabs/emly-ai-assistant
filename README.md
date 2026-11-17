@@ -171,7 +171,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production `/api/readyz` lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only (see [Who can use the widget](#who-can-use-the-widget)) |
+| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production the console's system banner (for superadmins) lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only (see [Who can use the widget](#who-can-use-the-widget)) |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
 | `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
 | `REQUEST_MAX_KB`, `WIDGET_MAX_REQUEST_MB` | `1024` and `110` (defaults), or your largest legitimate form upload | Visitors are anonymous; these cap what one request can send before anything checks it |
@@ -187,7 +187,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
 | `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
 | `REQUIRE_PER_BOT_LLM_KEY` | `true` | Each bot must have its own API key, so departments don't share one key's spend and data path. A bot without one refuses to answer and its config page says why |
-| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning on `/api/readyz` |
+| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning in the console's system banner |
 | `CRAWL_ALLOWED_PRIVATE_CIDRS` | Only the ranges that hold intranet sites you want indexed | Admins can then crawl those addresses, and only those. Leave unset if you crawl public sites only |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
 | `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
@@ -202,8 +202,8 @@ Checklist for a production deployment. Each variable is described in full under 
 
 - **TLS:** the app serves plain HTTP on port 8080, and the compose file publishes it on every interface. In production put a TLS-terminating reverse proxy or load balancer in front (Caddy, nginx, Traefik, or your cloud's), publish only the proxy, and bind the app's port to the proxy's network (e.g. `"127.0.0.1:8080:8080"` when the proxy runs on the host). Set `APP_BASE_URL` and `PUBLIC_BASE_URL` to the `https://` URL, which turns on HSTS and `Secure` cookies, and set `FORWARDED_ALLOW_IPS` to the proxy's address. TLS to Postgres and Qdrant: see below.
 - Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
-- A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and on `/api/readyz`.
-- Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and on `/api/readyz`. When `MODE=prod`, such a Qdrant without `QDRANT_API_KEY` stops start-up.
+- A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and in the console's system banner.
+- Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and in the console's system banner. When `MODE=prod`, such a Qdrant without `QDRANT_API_KEY` stops start-up.
 - Check the "Outbound destinations" block in the start-up log against the systems you expect (see [Outbound connections](#outbound-connections)).
 - Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.
 - The image runs as a non-root user and handles `SIGTERM` for clean shutdowns.
@@ -735,7 +735,8 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 | `/api/admin/audit/export` | Whole audit log as CSV (superadmins). Filters: `admin_id`, `bot_id`, `action`, `success`, `since`, `until` |
 | `/api/admin/bots/{slug}/audit/export` | One bot's audit log as CSV (owners of that bot) |
 | `/api/livez` | Health check (liveness) |
-| `/api/readyz` | Readiness check (waits for models + DB) |
+| `/api/readyz` | Readiness check (waits for models + DB). Public, so it returns only `status` and issue codes |
+| `/api/admin/system/status` | Readiness details and deployment warnings, for superadmins (the console's system banner) |
 | `/docs`, `/openapi.json` | Interactive API docs and schema. Off when `MODE=prod` unless `ENABLE_API_DOCS=true` |
 
 ---
@@ -768,7 +769,7 @@ So a staff-only assistant (an HR or IT helpdesk) is protected by where the app i
 
 - Publish the app only on your internal network or VPN: an internal load balancer or ingress, no public DNS record, or a reverse proxy that allows only your office and VPN address ranges.
 - If the admin UI must be reachable from outside, put the widget paths (`/widget/` and `/emly-widget.js`) behind the internal-only route and the admin paths behind your identity provider.
-- Set *Allowed widget origins* on every bot to your intranet's address. In production `/api/readyz` lists bots still open to any site.
+- Set *Allowed widget origins* on every bot to your intranet's address. In production the console's system banner lists bots still open to any site.
 - Visitors are told apart only by the token the widget stores in their browser. A form a visitor fills in records what they typed, not who they are.
 
 A public-facing assistant (customer support on your website) needs none of this: it is meant to be reachable by anyone.
@@ -895,7 +896,7 @@ Back these up together, from the same moment where possible:
    ```
 3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
 4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
-5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and on `/api/readyz`, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
+5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and in the console's system banner, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
 
 **Restoring at a different address** (a recovery site, a move, a test restore): set `APP_BASE_URL` to the new address. Admins who use the built-in sign-in are moved to it the first time they sign in (audited as `admin.relinked`, reason `built_in_issuer_moved`). With an external identity provider, add the new redirect URI (`<new address>/api/admin/auth/callback`) to the app registration first. Sessions from the old address end.
 
