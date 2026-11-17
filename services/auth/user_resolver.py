@@ -100,8 +100,9 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
         if not bot_id or role not in ROLES:
             log.warning("Skipping invalid pending bot assignment: %r", entry)
             continue
-        if Bots.get_by_id(bot_id) is None:
-            log.warning("Skipping pending bot assignment for nonexistent bot %s", bot_id)
+        bot = Bots.get_by_id(bot_id)
+        if bot is None or getattr(bot, "is_deleted", False):
+            log.warning("Skipping pending bot assignment for missing or deleted bot %s", bot_id)
             continue
         existing = AdminBotMemberships.get(admin_id, bot_id)
         if existing is not None:
@@ -117,6 +118,36 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
                 "Failed to apply pending bot assignment admin=%s bot=%s role=%s",
                 admin_id, bot_id, role,
             )
+
+
+def invite_authority_problem(pending) -> str | None:
+    """Why an invite may no longer be honoured, or None (S20).
+
+    An invite carries its inviter's authority at the time it was sent. At
+    acceptance the inviter must still hold it: not deleted or deactivated,
+    a superadmin for a superadmin invite, and an owner (or superadmin) of
+    every bot it grants. A space invite whose bot was deleted is void; a
+    legacy multi-bot invite just skips that grant. Invites with no inviter
+    come from the bootstrap."""
+
+    inviter = None
+    if pending.invited_by:
+        inviter = AdminUsers.get_by_id(pending.invited_by)
+        if inviter is None or not inviter.is_active:
+            return "inviter_gone"
+        if pending.is_superadmin and not inviter.is_superadmin:
+            return "inviter_not_superadmin"
+    for entry in pending.bot_assignments or []:
+        bot = Bots.get_by_id(entry.get("bot_id") or "")
+        if bot is None or getattr(bot, "is_deleted", False):
+            if pending.kind == KIND_SUPERADMIN_LEGACY:
+                continue  # that grant is skipped; the rest still apply
+            return "bot_gone"
+        if inviter is not None and not inviter.is_superadmin:
+            membership = AdminBotMemberships.get(inviter.id, bot.id)
+            if membership is None or membership.role != "owner":
+                return "inviter_not_owner"
+    return None
 
 
 def _email_to_sync(existing: AdminUserModel, principal: Principal) -> str | None:
@@ -232,7 +263,14 @@ def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) 
         #   ``/accept-invite`` page. The resolver does NOT consume these
         #   here; it just records that they exist so the callback can
         #   route the user to the picker.
-        all_pending = PendingAdmins.list_pending_for_email(principal.email)
+        all_pending = []
+        for pending in PendingAdmins.list_pending_for_email(principal.email):
+            problem = invite_authority_problem(pending)
+            if problem:
+                log.warning("Revoking invite %s at sign-in: %s", pending.id, problem)
+                PendingAdmins.mark_revoked(pending.id, None)
+                continue
+            all_pending.append(pending)
         legacy_pending = [p for p in all_pending if p.kind == KIND_SUPERADMIN_LEGACY]
         space_invites = [p for p in all_pending if p.kind != KIND_SUPERADMIN_LEGACY]
 

@@ -154,6 +154,10 @@ async def update_admin(
         AdminUsers.set_active(admin_id, payload.is_active)
     if payload.is_superadmin is not None:
         AdminUsers.set_superadmin(admin_id, payload.is_superadmin)
+    revoked = 0
+    if payload.is_active is False:
+        # S20: invites they sent or were sent don't outlive their access.
+        revoked = PendingAdmins.revoke_for_admin(admin_id, target.email, by_admin_id=admin.id)
 
     fresh = AdminUsers.get_by_id(admin_id)
     if fresh is None:
@@ -168,6 +172,7 @@ async def update_admin(
         payload={
             "is_active": payload.is_active,
             "is_superadmin": payload.is_superadmin,
+            "invites_revoked": revoked,
             # Before/after of the fields that actually changed.
             "changed": {
                 field: {"before": before[field], "after": getattr(fresh, field)}
@@ -202,6 +207,8 @@ async def delete_admin(
     # stays for forensic lookups via ``get_by_id_including_deleted``.
     if not AdminUsers.soft_delete(admin_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "admin_not_found"})
+    # S20: invites they sent or were sent don't outlive their access.
+    revoked = PendingAdmins.revoke_for_admin(admin_id, target.email, by_admin_id=admin.id)
     # Revoke memberships explicitly — they're decoupled from is_active and
     # would otherwise still grant access if the tombstone is ever cleared.
     from models.admin_bot_memberships import AdminBotMembership
@@ -212,7 +219,7 @@ async def delete_admin(
         admin_id=admin.id,
         target_type="admin",
         target_id=admin_id,
-        payload={"email": target.email},
+        payload={"email": target.email, "invites_revoked": revoked},
     )
 
 
@@ -938,7 +945,15 @@ async def accept_invite(
             detail={"code": "invite_expired"},
         )
 
-    from services.auth.user_resolver import _apply_pending_assignments
+    from services.auth.user_resolver import _apply_pending_assignments, invite_authority_problem
+
+    problem = invite_authority_problem(row)
+    if problem:
+        # S20: the inviter no longer holds the authority the invite grants.
+        PendingAdmins.mark_revoked(row.id, admin.id)
+        audit("invite.revoked", admin_id=admin.id, target_type="pending_admin", target_id=row.id,
+              payload={"reason": problem})
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail={"code": "invite_revoked"})
 
     with DB.atomic():
         _apply_pending_assignments(admin.id, row.bot_assignments)
