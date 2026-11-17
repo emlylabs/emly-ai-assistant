@@ -238,13 +238,20 @@ async def verify_google_chat_jwt(
 
         cache_key = f"google_chat:{iss}"
 
-    return await _verify(
+    claims = await _verify(
         token,
         cache_key=cache_key,
         fetcher=fetcher,
         issuer=iss,
         audience=audience,
     )
+    if iss == GOOGLE_OIDC_ISSUER:
+        # Any Google account can mint a Google-signed ID token for any
+        # audience, including our webhook URL. Only Chat's own service
+        # account may call us through this issuer.
+        if claims.get("email") != GOOGLE_SYSTEM_SA or claims.get("email_verified") is not True:
+            raise PermissionError("Google ID token is not from the Chat service account")
+    return claims
 
 
 async def _verify(token: str, cache_key: str, fetcher, issuer: str, audience: str) -> dict:
