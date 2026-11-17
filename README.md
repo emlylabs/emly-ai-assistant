@@ -110,7 +110,7 @@ kubectl -n emly create secret tls emly-tls --cert=tls.crt --key=tls.key
 kubectl apply -k deploy/k8s/overlays/<your-overlay>
 ```
 
-- **One replica only.** Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
+- **One replica, one worker.** `WEB_CONCURRENCY` must be 1 (any other value stops start-up). Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
 - **Secrets** are mounted from the `emly-secrets` Secret as files and read through `NAME_FILE` ([Secrets from files](#secrets-from-files)); none are in the manifests or the pod's environment. Add a `NAME_FILE` entry in your overlay for each optional secret you set.
 - **Network:** everything is denied by default. The app may reach DNS and Qdrant; Qdrant only accepts the app and reaches nothing. Your overlay lists, by address, the model endpoint, database, mail server and anything else in [Outbound connections](#outbound-connections) (`overlays/example/egress-external.yaml`), and names the ingress controller's namespace (`ingress-nginx` in the base).
 - **Pods** run as non-root with read-only root filesystems, no privilege escalation, all capabilities dropped and the default seccomp profile. Each writes only to its volumes and a `/tmp` emptyDir.
