@@ -67,11 +67,35 @@ export function plainTextForSpeech(input: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function wordLengthAt(plain: string, charIndex: number): number {
-  if (charIndex < 0 || charIndex >= plain.length) return 0;
-  const rest = plain.slice(charIndex);
-  const match = rest.match(/^\S+/);
-  return match ? match[0].length : 1;
+type WordSpan = { start: number; end: number };
+
+function buildWordSpans(plain: string): WordSpan[] {
+  const spans: WordSpan[] = [];
+  const re = /\S+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(plain)) !== null) {
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return spans;
+}
+
+/** Rough spoken duration — Chrome often skips `onboundary`, so we
+ * drive the highlight from elapsed time with this estimate. */
+function estimateDurationMs(plain: string, rate: number): number {
+  const words = plain.split(/\s+/).filter(Boolean).length || 1;
+  const wpm = 165 * (rate > 0 ? rate : 1);
+  return Math.max(800, (words / wpm) * 60 * 1000);
+}
+
+function wordIndexForChar(spans: WordSpan[], charIndex: number): number {
+  if (spans.length === 0) return 0;
+  for (let i = 0; i < spans.length; i += 1) {
+    if (charIndex >= spans[i].start && charIndex < spans[i].end) return i;
+  }
+  for (let i = spans.length - 1; i >= 0; i -= 1) {
+    if (charIndex >= spans[i].start) return i;
+  }
+  return 0;
 }
 
 export type SpeechProgress = {
@@ -90,6 +114,7 @@ type SpeakOptions = {
 
 let activeRecognition: SpeechRecognitionLike | null = null;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let progressTimer: number | null = null;
 let progress: SpeechProgress = {
   speakId: null,
   plainText: '',
@@ -104,13 +129,46 @@ function emitProgress(): void {
   progressListeners.forEach((listener) => listener(snapshot));
 }
 
+function stopProgressTimer(): void {
+  if (progressTimer !== null) {
+    window.clearInterval(progressTimer);
+    progressTimer = null;
+  }
+}
+
 function clearSpeechProgress(): void {
+  stopProgressTimer();
   progress = {
     speakId: null,
     plainText: '',
     charIndex: 0,
     charLength: 0,
     speaking: false,
+  };
+  emitProgress();
+}
+
+function applyWordHighlight(
+  speakId: string | null,
+  plain: string,
+  span: WordSpan,
+): void {
+  const nextIndex = span.start;
+  const nextLength = Math.max(1, span.end - span.start);
+  if (
+    progress.speaking &&
+    progress.speakId === speakId &&
+    progress.charIndex === nextIndex &&
+    progress.charLength === nextLength
+  ) {
+    return;
+  }
+  progress = {
+    speakId,
+    plainText: plain,
+    charIndex: nextIndex,
+    charLength: nextLength,
+    speaking: true,
   };
   emitProgress();
 }
@@ -214,6 +272,7 @@ export function isListening(): boolean {
 
 export function stopSpeaking(): void {
   activeUtterance = null;
+  stopProgressTimer();
   if (isSpeechSynthesisSupported()) {
     try {
       window.speechSynthesis.cancel();
@@ -237,33 +296,36 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
     utterance.lang = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
     activeUtterance = utterance;
 
-    progress = {
-      speakId: options.speakId ?? null,
-      plainText: plain,
-      charIndex: 0,
-      charLength: wordLengthAt(plain, 0),
-      speaking: true,
-    };
-    emitProgress();
+    const speakId = options.speakId ?? null;
+    const words = buildWordSpans(plain);
+    const first = words[0] ?? { start: 0, end: Math.min(1, plain.length) };
+    let startedAt = performance.now();
+    let durationMs = estimateDurationMs(plain, utterance.rate || 1);
 
+    applyWordHighlight(speakId, plain, first);
+
+    // Chrome/Edge on many Linux setups fire `onboundary` once (or never).
+    // Drive karaoke highlight from elapsed time; snap the clock when a
+    // real boundary arrives so it stays aligned with the voice.
     utterance.onboundary = (event: SpeechSynthesisEvent) => {
-      if (activeUtterance !== utterance) return;
-      // Prefer word boundaries; some engines only fire sentence.
+      if (activeUtterance !== utterance || words.length === 0) return;
       if (event.name && event.name !== 'word' && event.name !== 'sentence') return;
       const charIndex = typeof event.charIndex === 'number' ? event.charIndex : 0;
-      const reported =
-        typeof (event as SpeechSynthesisEvent & { charLength?: number }).charLength === 'number'
-          ? (event as SpeechSynthesisEvent & { charLength?: number }).charLength!
-          : 0;
-      const charLength = reported > 0 ? reported : wordLengthAt(plain, charIndex);
-      progress = {
-        ...progress,
-        charIndex,
-        charLength,
-        speaking: true,
-      };
-      emitProgress();
+      const wi = wordIndexForChar(words, charIndex);
+      const span = words[wi];
+      const targetT = (wi + 0.5) / words.length;
+      startedAt = performance.now() - targetT * durationMs;
+      applyWordHighlight(speakId, plain, span);
     };
+
+    progressTimer = window.setInterval(() => {
+      if (activeUtterance !== utterance || words.length === 0) return;
+      if (typeof window !== 'undefined' && window.speechSynthesis.paused) return;
+      const elapsed = performance.now() - startedAt;
+      const t = Math.min(0.999, Math.max(0, elapsed / durationMs));
+      const wi = Math.min(words.length - 1, Math.floor(t * words.length));
+      applyWordHighlight(speakId, plain, words[wi]);
+    }, 50);
 
     const finish = () => {
       if (activeUtterance !== utterance) return;
@@ -275,6 +337,8 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
     utterance.onend = finish;
     utterance.onerror = finish;
 
+    // Some engines report a usable rate only after construction.
+    durationMs = estimateDurationMs(plain, utterance.rate || 1);
     window.speechSynthesis.speak(utterance);
     return true;
   } catch {
