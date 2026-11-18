@@ -145,8 +145,13 @@ class SlackAdapter(ChannelAdapter):
         channel_kind = event.get("channel_type")  # "im" / "channel" / "group" / "mpim"
         thread_ts = event.get("thread_ts")
         ts = event.get("ts")
+        channel_external = event.get("channel") or ""
+        # Slack DM channel ids start with D. Events sometimes omit
+        # ``channel_type``; without this, each DM message was keyed on its
+        # own ``ts`` and became a new session.
+        is_dm = channel_kind == "im" or (not channel_kind and channel_external.startswith("D"))
         chat_type: ChatType
-        if channel_kind == "im":
+        if is_dm:
             chat_type = "dm"
         elif thread_ts and thread_ts != ts:
             chat_type = "thread"
@@ -158,7 +163,6 @@ class SlackAdapter(ChannelAdapter):
         if not text:
             return None
 
-        channel_external = event.get("channel")
         # DMs are one running conversation per user (every DM message is
         # top-level, so keying on ``ts`` split it into a session per
         # message). In channels each thread is its own conversation; a

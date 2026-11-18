@@ -2039,7 +2039,7 @@ function LLMSection({
         </div>
       </div>
       <div className="field">
-        <label htmlFor="cfg-report-prompt">Conversation summary prompt</label>
+        <label htmlFor="cfg-report-prompt">Prompt used for conversation reports</label>
         <textarea
           id="cfg-report-prompt"
           rows={6}

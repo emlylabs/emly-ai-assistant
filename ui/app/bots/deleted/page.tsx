@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, RotateCcw, Trash2 } from "lucide-react";
 import AdminShell from "@/components/AdminShell";
 import { ApiError, DeletedBot, api } from "@/lib/api";
+import { parseServerDate } from "@/lib/aggregations";
 
 export default function DeletedBotsPage() {
   return (
@@ -137,14 +138,14 @@ function DeletedBotsBody() {
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return parseServerDate(iso).toLocaleString();
   } catch {
     return iso;
   }
 }
 
 function PurgeCountdown({ at }: { at: string }) {
-  const target = new Date(at).getTime();
+  const target = parseServerDate(at).getTime();
   const now = Date.now();
   const ms = target - now;
   if (ms <= 0) {

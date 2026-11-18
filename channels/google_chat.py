@@ -150,10 +150,20 @@ class GoogleChatAdapter(ChannelAdapter):
         # that id once a session is resolved or idle. In rooms each thread
         # is its own conversation and keeps its session. The reply still
         # lands on the thread via ``reply_handle``.
-        is_dm = (
-            space.get("type") == "DM"
-            or space.get("spaceType") == "DIRECT_MESSAGE"
-            or bool(space.get("singleUserBotDm"))
+        # v1 uses ``type`` ("DM" / "ROOM"); v2 uses ``spaceType``
+        # ("DIRECT_MESSAGE"). Either can arrive in a different case, and a
+        # missed DM is keyed on the per-message thread, so each message
+        # becomes its own session.
+        def _kind(value: object) -> str:
+            return str(value or "").replace("-", "_").upper()
+
+        kinds = {
+            _kind(space.get("type")),
+            _kind(space.get("spaceType")),
+            _kind(space.get("space_type")),
+        }
+        is_dm = bool(kinds & {"DM", "DIRECT_MESSAGE"}) or bool(
+            space.get("singleUserBotDm") or space.get("single_user_bot_dm")
         )
         chat_type: ChatType = "dm" if is_dm or not thread.get("name") else "thread"
         # Earlier releases keyed DMs on the thread as well, so a DM

@@ -50,6 +50,12 @@ from config import EMBEDDING_MODEL_NAME, LATEST_N_MESSAGES, \
     EMBEDDING_MODEL_INSTANCE, TEMPERATURE, \
     INTENT_DETECTION_PROMPT, DEFAULT_MESSAGE
 
+from agents.intent_routing import (
+    OUT_OF_SCOPE_REPLY,
+    collects_contact_details,
+    prefer_answer_topic,
+    wants_to_be_contacted,
+)
 from agents.rag_manager import get_rag_manager
 from services.bot_config import BotConfigInvalid, get_config_for_bot
 from services.public_citations import citation_page
@@ -328,7 +334,8 @@ class IntentRouter:
             match = re.search(r'\{.*\}', content, re.DOTALL)
             if not match:
                 self.logger.error("No JSON object found in LLM response for intent detection.")
-                return IntentDetectionResult(intent=available_topics[0], confidence=0.5, is_definitive=False)
+                intent = self._routed_intent(available_topics[0], user_input, available_topics)
+                return IntentDetectionResult(intent=intent, confidence=0.5, is_definitive=False)
 
             result = json.loads(match.group())
             intent = result.get("intent", "general_chat")
@@ -336,11 +343,17 @@ class IntentRouter:
             
             if intent not in available_topics:
                 intent = available_topics[0]
+            intent = self._routed_intent(intent, user_input, available_topics)
             
             return IntentDetectionResult(intent=intent, confidence=confidence, is_definitive=confidence > 0.7)
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             self.logger.error(f"Error detecting intent: {e}")
-            return IntentDetectionResult(intent=available_topics[0], confidence=0.5, is_definitive=False)
+            intent = self._routed_intent(available_topics[0], user_input, available_topics)
+            return IntentDetectionResult(intent=intent, confidence=0.5, is_definitive=False)
+
+    def _routed_intent(self, intent: str, user_input: str, available_topics: List[str]) -> str:
+        """Don't open a contact form for a question the visitor didn't ask to start."""
+        return prefer_answer_topic(intent, user_input, self.topics, available_topics)
 
 class RAGManager:
     """Per-bot RAG facade.
@@ -559,7 +572,13 @@ class RouterAgent(BaseAgent):
             return state
         except Exception as e:
             self.logger.error(f"Error in router agent: {e}")
-            state["current_topic"] = self.available_topics[0] if self.available_topics else "general_chat"
+            fallback = self.available_topics[0] if self.available_topics else "general_chat"
+            state["current_topic"] = prefer_answer_topic(
+                fallback,
+                state.get("user_input") or "",
+                self.intent_router.topics,
+                self.available_topics,
+            )
             return state
 
 class TopicAgent(BaseAgent):
@@ -691,7 +710,35 @@ class TopicAgent(BaseAgent):
         """Handle topics that use slot filling."""
         stream = state.get("stream", False)
         slot_state = self.conversation_manager.get_slot_filling_state(self.topic_name)
-        
+
+        # An unrelated question must not open the form. "Do you sell air
+        # conditioners?" used to become "Could you share your full name?"
+        # because this topic was selected and the first missing slot was asked
+        # immediately. A quote or callback request still starts the form; a
+        # form already in progress keeps going.
+        if (
+            not slot_state["is_active"]
+            and collects_contact_details(self.config)
+            and not wants_to_be_contacted(user_input)
+        ):
+            self.slot_manager.reset_slots(self.topic_name)
+            self.conversation_manager.reset_slot_filling_state(self.topic_name)
+            response = OUT_OF_SCOPE_REPLY
+            if stream:
+                def on_stream():
+                    yield response
+                state["response"] = on_stream()
+            else:
+                state["response"] = response
+            state["conversation_complete"] = True
+            state["needs_slot_filling"] = False
+            state["filled_slots"] = {}
+            state["missing_slots"] = []
+            state["is_slot_filling_active"] = False
+            state["slot_filling_attempts"] = 0
+            state["skip_router"] = False
+            return state
+
         self.slot_manager.extract_slots(user_input, self.topic_name)
         current_slots = self.slot_manager.get_filled_slots(self.topic_name)
         missing_slots = self.slot_manager.get_missing_slots(self.topic_name)

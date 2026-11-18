@@ -785,22 +785,25 @@ function RAGSearchPanel({ slug }: { slug: string }) {
 
       {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
 
-      {hits !== null && hits.length === 0 && (
-        <div role="status" className="card" style={{ marginTop: 16, padding: 16, background: "var(--paper)" }}>
-          <strong>No matches</strong>
-          <p className="muted" style={{ fontSize: 13, margin: "6px 0 0" }}>
-            Nothing in this bot&apos;s knowledge is close enough to that query
-            {meta ? ` (threshold ${meta.threshold})` : ""}. The bot would answer
-            without a retrieved passage.
-          </p>
+      {hits !== null && (
+        <div
+          role="status"
+          className="muted"
+          style={{ fontSize: 12, marginTop: 16, marginBottom: 8 }}
+        >
+          {`${hits.length} hit${hits.length === 1 ? "" : "s"} returned (top_k=${meta?.top_k ?? "—"}, threshold=${meta?.threshold ?? "—"}).`}
         </div>
       )}
 
+      {hits !== null && hits.length === 0 && (
+        <p className="muted" style={{ fontSize: 13, margin: "0 0 8px" }}>
+          Nothing in this bot&apos;s knowledge is close enough to that query.
+          The bot would answer without a retrieved passage.
+        </p>
+      )}
+
       {hits !== null && hits.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            {`${hits.length} hit${hits.length === 1 ? "" : "s"} returned (top_k=${meta?.top_k}, threshold=${meta?.threshold}).`}
-          </div>
+        <div>
           {hits.map((h, i) => {
             const filename =
               (h.metadata?.filename as string) ||
