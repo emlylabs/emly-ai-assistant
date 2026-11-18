@@ -57,7 +57,9 @@ jobs:
 
       - name: Stamp build time
         id: build
-        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Harbor
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -80,7 +82,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           build-args: |
-            APP_VERSION=${{ github.sha }}
+            APP_VERSION=${{ steps.build.outputs.version }}
             GIT_SHA=${{ github.sha }}
             BUILT_AT=${{ steps.build.outputs.built_at }}
           cache-from: type=gha
