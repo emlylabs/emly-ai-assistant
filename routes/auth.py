@@ -267,11 +267,16 @@ def _post_login_default(request: Request | None = None) -> str:
 
 
 def _is_safe_return_to(target: str) -> bool:
-    """Only allow same-origin returns to prevent open-redirect."""
+    """Only allow same-origin returns to prevent open-redirect.
+
+    A path starting with a single "/". Browsers read "//host" and "/\\host"
+    as another origin, and strip control characters, so those are refused.
+    Mirrors ``safeReturnTo`` in ui/lib/return-to.ts (S10)."""
     if not target:
         return False
-    # Allow paths starting with /, but reject anything that could be a host.
-    return target.startswith("/") and not target.startswith("//")
+    if not target.startswith("/") or target.startswith("//"):
+        return False
+    return "\\" not in target and not any(ord(c) < 32 or ord(c) == 127 for c in target)
 
 
 _AUTH_ERROR_COPY = {
@@ -315,6 +320,44 @@ def _auth_error(request: Request, status_code: int, detail: dict):
         ("Sign-in failed", "Something went wrong while signing you in. Please try again."),
     )
     return error_page(title, message, status_code=status_code)
+
+
+# -------- sign-in bound to the browser that started it (S9) --------
+
+# Holds SHA-256 hashes of the states this browser started, newest last, so
+# a callback is accepted only in the browser that began the sign-in. A few
+# are kept so sign-ins started in several tabs all work.
+_STATE_COOKIE = "emly_auth_state"
+_STATE_COOKIE_PATH = "/api/admin/auth"
+_STATE_COOKIE_MAX = 5
+
+
+def _state_hash(state: str) -> str:
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def _state_hashes(request: Request) -> list[str]:
+    raw = request.cookies.get(_STATE_COOKIE) or ""
+    return [h for h in raw.split(".") if len(h) == 64][-_STATE_COOKIE_MAX:]
+
+
+def _set_state_cookie(response, request: Request, hashes: list[str]) -> None:
+    from services.auth.state_store import DEFAULT_TTL
+
+    if not hashes:
+        response.delete_cookie(_STATE_COOKIE, path=_STATE_COOKIE_PATH, secure=_cookie_secure(request),
+                               httponly=True, samesite="lax", domain=_cookie_domain())
+        return
+    # Always lax: the callback is a top-level navigation from the IdP.
+    response.set_cookie(_STATE_COOKIE, ".".join(hashes[-_STATE_COOKIE_MAX:]),
+                        max_age=int(DEFAULT_TTL.total_seconds()), path=_STATE_COOKIE_PATH,
+                        secure=_cookie_secure(request), httponly=True, samesite="lax",
+                        domain=_cookie_domain())
+
+
+def _state_started_here(request: Request, state: str) -> bool:
+    expected = _state_hash(state)
+    return any(hmac.compare_digest(expected, h) for h in _state_hashes(request))
 
 
 # -------- routes --------
@@ -366,7 +409,9 @@ async def login(
     except Exception:
         log.exception("Could not build the IdP authorize URL (sign-in server unreachable?)")
         return _auth_error(request, 502, {"code": "idp_unavailable"})
-    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url, status_code=status.HTTP_302_FOUND)
+    _set_state_cookie(response, request, _state_hashes(request) + [_state_hash(oauth_state.state)])
+    return response
 
 
 @router.get("/auth/callback", include_in_schema=False)
@@ -390,6 +435,11 @@ async def callback(
     oauth_state = get_state_store().pop(state_token)
     if oauth_state is None:
         audit("auth.callback_state_invalid", request=request, success=False)
+        return _auth_error(request, 400, {"code": "callback_state_invalid_or_expired"})
+    if not _state_started_here(request, state_token):
+        # S9: someone else's callback URL (login CSRF). The state is spent.
+        audit("auth.callback_state_invalid", request=request, success=False,
+              payload={"reason": "other_browser"})
         return _auth_error(request, 400, {"code": "callback_state_invalid_or_expired"})
 
     try:
@@ -485,6 +535,8 @@ async def callback(
         expires_at=token_set.expires_at,
         auth_time=time.time(),  # G3a: the session's clock starts at sign-in
     )
+    spent = _state_hash(state_token)
+    _set_state_cookie(response, request, [h for h in _state_hashes(request) if h != spent])
     log.info(
         "Admin %s signed in via %s (max_age=%ds, refresh_token=%s)",
         admin.id, principal.issuer, max_age,

@@ -40,6 +40,19 @@ export function shortDayLabel(isoDay: string): string {
   return `${months[m - 1]} ${padDay(d)}`;
 }
 
+/** Server timestamps are naive UTC. `new Date("2026-11-13T10:00:00")` reads
+ * that as browser-local time, so a visitor in India sees an event from
+ * seconds ago as about 5.5h old and a 7-day purge countdown as 6d 18h.
+ * A value that already carries `Z` or an offset is left alone. */
+export function parseServerDate(iso: string): Date {
+  const s = iso.trim();
+  if (!s) return new Date(NaN);
+  if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(s)) return new Date(s);
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s) ? s.replace(" ", "T") : s;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) return new Date(`${normalized}Z`);
+  return new Date(s);
+}
+
 /** Group ISO timestamps into per-UTC-day counts over the last `n` days.
  * Returns an array of length `n` aligned with `lastNDayKeys(n)`. */
 export function bucketByDay(
@@ -54,7 +67,7 @@ export function bucketByDay(
   const counts = new Array<number>(n).fill(0);
   for (const ts of timestamps) {
     if (!ts) continue;
-    const d = new Date(ts);
+    const d = parseServerDate(ts);
     if (Number.isNaN(d.getTime())) continue;
     const key = toIsoDay(d);
     const slot = index.get(key);
@@ -77,7 +90,7 @@ export function bucketDistinctByDay(
   const seenPerDay: Set<string>[] = keys.map(() => new Set<string>());
   for (const row of rows) {
     if (!row.ts || !row.key) continue;
-    const d = new Date(row.ts);
+    const d = parseServerDate(row.ts);
     if (Number.isNaN(d.getTime())) continue;
     const slot = index.get(toIsoDay(d));
     if (slot === undefined) continue;
@@ -91,7 +104,7 @@ export function bucketDistinctByDay(
  * `2w`, `Apr 26`. Mirrors the mockup's compact feed timestamps. */
 export function relativeTime(iso: string | null | undefined, now: Date = new Date()): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseServerDate(iso);
   if (Number.isNaN(d.getTime())) return "—";
   const ms = now.getTime() - d.getTime();
   if (ms < 0) return "just now";
@@ -111,7 +124,7 @@ export function relativeTime(iso: string | null | undefined, now: Date = new Dat
  * list to mirror the mockup's row times. */
 export function shortClock(iso: string | null | undefined): string {
   if (!iso) return "";
-  const d = new Date(iso);
+  const d = parseServerDate(iso);
   if (Number.isNaN(d.getTime())) return "";
   const h = padDay(d.getHours());
   const m = padDay(d.getMinutes());

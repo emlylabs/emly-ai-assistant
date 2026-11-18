@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any, Dict, List, Literal, Optional
@@ -27,9 +28,9 @@ from models.admin_users import AdminUserModel
 from models.bots import Bots
 from models.workspace_bot_templates import WorkspaceBotTemplates
 from models.workspace_settings import WorkspaceSettingsStore
-from services.audit import audit
+from services.audit import audit, audited_change
 from services.auth.dependencies import get_admin
-from services.authz import require_superadmin, require_writer, require_owner
+from services.authz import require_bot_creator, require_owner, require_superadmin, require_writer
 from services.config_gate import check_new_config
 
 log = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ def get_workspace_settings(_admin: AdminUserModel = Depends(get_admin)):
 
 
 @router.put("/workspace/settings", response_model=WorkspaceSettingsResponse)
+@audited_change
 def put_workspace_settings(
     payload: WorkspaceSettingsPayload,
     admin: AdminUserModel = Depends(get_admin),
@@ -209,8 +211,16 @@ def list_workspace_templates(_admin: AdminUserModel = Depends(get_admin)):
     ]
 
 
+# S14: a template is a full bot config (prompts, forms, alert recipients,
+# allowed origins), often snapshotted from a real bot. Only people who can
+# create bots from templates may read or add them.
+MAX_WORKSPACE_TEMPLATES = 200
+MAX_TEMPLATE_CONFIG_BYTES = 256 * 1024
+
+
 @router.get("/workspace/templates/{template_id}", response_model=WorkspaceTemplateDetail)
-def get_workspace_template(template_id: str, _admin: AdminUserModel = Depends(get_admin)):
+def get_workspace_template(template_id: str, admin: AdminUserModel = Depends(get_admin)):
+    require_bot_creator(admin)
     row = WorkspaceBotTemplates.get_by_id(template_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
@@ -230,13 +240,19 @@ def get_workspace_template(template_id: str, _admin: AdminUserModel = Depends(ge
     response_model=WorkspaceTemplateDetail,
     status_code=status.HTTP_201_CREATED,
 )
+@audited_change
 def create_workspace_template(
     payload: CreateWorkspaceTemplateRequest,
     admin: AdminUserModel = Depends(get_admin),
 ):
-    """Either snapshot from a source bot (caller must be a member) or
+    """Either snapshot from a source bot (caller must be a writer on it) or
     accept an explicit ``config_json``. Both paths land in the same
-    table; the source bot is just a convenience."""
+    table; the source bot is just a convenience. Only bot creators may
+    add templates (S14)."""
+    require_bot_creator(admin)
+    if len(WorkspaceBotTemplates.list()) >= MAX_WORKSPACE_TEMPLATES:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail={"code": "template_limit", "limit": MAX_WORKSPACE_TEMPLATES})
     config = payload.config_json
     copied_from = None
     if payload.source_bot_slug:
@@ -255,6 +271,9 @@ def create_workspace_template(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either source_bot_slug or config_json is required",
         )
+    if len(json.dumps(config, default=str)) > MAX_TEMPLATE_CONFIG_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail={"code": "template_too_large", "max_bytes": MAX_TEMPLATE_CONFIG_BYTES})
     # Bots created from this template store it as-is, so it must pass the
     # same checks as a config save (G1d/N4).
     check_new_config(config, copied_from=copied_from)
@@ -286,6 +305,7 @@ def create_workspace_template(
 
 
 @router.delete("/workspace/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 def delete_workspace_template(
     template_id: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -334,6 +354,7 @@ class BulkBotActionResponse(BaseModel):
 
 
 @router.post("/bots/bulk-action", response_model=BulkBotActionResponse)
+@audited_change
 def bulk_bot_action(
     payload: BulkBotActionRequest,
     admin: AdminUserModel = Depends(get_admin),

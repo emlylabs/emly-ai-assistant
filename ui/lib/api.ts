@@ -1,3 +1,5 @@
+import { safeReturnTo } from "./return-to";
+
 // Tiny fetch wrapper. Auth is cookie-based — every request sends
 // `credentials: "include"` so the httpOnly session cookie set by
 // `/api/admin/auth/callback` flows automatically. JS never reads or
@@ -644,7 +646,7 @@ export function setToken(_token: string | null): void {
 /** Build the URL the UI should redirect to in order to start the OIDC login flow. */
 export function loginUrl(returnTo?: string): string {
   const target = returnTo ?? (typeof window !== "undefined" ? window.location.pathname + window.location.search : "/");
-  const safe = target.startsWith("/") && !target.startsWith("//") ? target : "/";
+  const safe = safeReturnTo(target, "/");
   return `/api/admin/auth/login?return_to=${encodeURIComponent(safe)}`;
 }
 
@@ -988,11 +990,12 @@ export type ReadyzResponse = {
   issues?: string[];
 };
 
-// readyz lives at /api/readyz (no /admin prefix); separate fetcher.
+// Deployment warnings for the banner. Superadmins only; others get 403
+// and see no banner. (The public /api/readyz carries status codes only.)
 export async function fetchReadyz(): Promise<ReadyzResponse | null> {
   try {
-    const res = await fetch("/api/readyz");
-    if (!res.ok && res.status !== 503) return null;
+    const res = await fetch("/api/admin/system/status", { credentials: "include" });
+    if (!res.ok) return null;
     return (await res.json()) as ReadyzResponse;
   } catch {
     return null;

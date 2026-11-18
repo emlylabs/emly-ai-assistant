@@ -153,12 +153,9 @@ COPY --chown=emly:emly . .
 COPY --from=ui-builder --chown=emly:emly /ui/out ./ui/out
 
 # ---- Version stamp -----------------------------------------------------------
-# CI fills these from the git tag on a release build (.github/workflows/release.yml). Local
-# `docker build` without args produces a clearly-unversioned image so a stray
-# dev artifact never gets mistaken for a release. version.py reads APP_VERSION
-# / GIT_SHA / BUILT_AT at import time; the labels follow the OCI image spec so
-# `docker inspect` and registries (Harbor) show consistent provenance.
-ARG APP_VERSION=0.0.0-dev
+# CI supplies the version and provenance. Without a build argument, version.py
+# reads the project version from pyproject.toml at runtime.
+ARG APP_VERSION=""
 ARG GIT_SHA=unknown
 ARG BUILT_AT=unknown
 ENV APP_VERSION=${APP_VERSION} \

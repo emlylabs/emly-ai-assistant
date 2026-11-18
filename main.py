@@ -1,4 +1,3 @@
-import json
 import logging
 import math
 import os
@@ -80,52 +79,37 @@ print(logo)
 
 
 def _assert_runtime_topology() -> None:
-    """Refuse to boot in a configuration that we know is broken.
-
-    - Embedded Qdrant + multi-worker: the embedded client uses a local
-      file lock; the second worker silently fails to open the DB.
-    - SQLite + multi-worker: write contention will lock-storm under
-      chat traffic. This is a warning, not a hard fail — operators may
-      knowingly accept it for dev / staging.
-    - Embedded auth issuer + multi-worker: the keystore is on-disk; with
-      `WEB_CONCURRENCY > 1` and a non-shared filesystem each worker would
-      generate its own keypair on first boot. Until DB-backed key storage
-      lands (Phase 11), refuse to boot in this configuration unless the
-      operator has explicitly opted out by disabling the embedded issuer.
-    """
-    web_concurrency = int(os.environ.get("WEB_CONCURRENCY", "1"))
-    qdrant_url = os.environ.get("QDRANT_URL")
-    if web_concurrency > 1 and not qdrant_url:
+    """Refuse to boot in a configuration that we know is broken:
+    more than one worker (R2), or production without APP_BASE_URL."""
+    # R2: one worker per instance. Sign-in state, rate-limit counters, the
+    # schedulers, migrations, crawl and enrichment workers and the live
+    # admin feed all live in the process, so a second worker would break
+    # sign-in now and then, multiply every limit and run every job twice.
+    raw = (os.environ.get("WEB_CONCURRENCY") or "1").strip()
+    try:
+        web_concurrency = int(raw)
+    except ValueError:
+        raise RuntimeError(f"WEB_CONCURRENCY={raw!r} is not a number; set it to 1.") from None
+    if web_concurrency != 1:
         raise RuntimeError(
-            "WEB_CONCURRENCY > 1 with embedded Qdrant is not supported. "
-            "Set QDRANT_URL to a Qdrant server (docker-compose for staging, "
-            "cluster for prod) before scaling the worker count."
-        )
-    db_url = os.environ.get("DATABASE_URL", "")
-    if web_concurrency > 1 and (db_url.startswith("sqlite") or db_url == ""):
-        log.warning(
-            "WEB_CONCURRENCY=%d with SQLite — expect write contention "
-            "under load. Use Postgres for any production-like deploy.",
-            web_concurrency,
-        )
-    from services.auth.issuer.factory import is_local_issuer_enabled
-    if web_concurrency > 1 and is_local_issuer_enabled():
-        raise RuntimeError(
-            "WEB_CONCURRENCY > 1 with the embedded auth issuer (AUTH_LOCAL_ISSUER_ENABLED=true) "
-            "is not supported on a non-shared filesystem. Either point AUTH_LOCAL_KEYS_DIR at a "
-            "shared volume, set AUTH_LOCAL_ISSUER_ENABLED=false (delegate identity to an external "
-            "OIDC IdP), or stay single-replica. DB-backed key storage is Phase 11 future work."
+            f"WEB_CONCURRENCY={web_concurrency} is not supported: Emly runs one worker per "
+            "instance (sign-in state, rate limits and scheduled jobs are held in the process). "
+            "Set WEB_CONCURRENCY=1."
         )
     # Refuse to boot in production-like modes without an explicit APP_BASE_URL.
     # Falling back to ``request.url.netloc`` (Host header) for the OIDC redirect
     # / post-login normalization opens a Host-spoof window where return_to
     # could resolve to an attacker-controlled origin.
-    from utils.runtime import current_mode, is_prod_mode
+    from utils.runtime import current_mode, is_prod_mode, mode_warning
 
     mode = current_mode()
+    warning = mode_warning()
+    if warning:
+        logging.getLogger(__name__).warning(warning)
     if is_prod_mode() and not os.environ.get("APP_BASE_URL"):
         raise RuntimeError(
-            f"MODE={mode!r} requires APP_BASE_URL to be set (the public-facing origin of this app). "
+            f"Production mode (MODE={mode or 'unset'}) requires APP_BASE_URL to be set "
+            "(the public-facing origin of this app; set MODE=dev for local development). "
             "Without it the OIDC callback redirect derives from the Host header, which is "
             "user-controllable and unsafe for production deploys."
         )
@@ -263,45 +247,10 @@ class CustomMiddleware(BaseHTTPMiddleware):
         try:
             user_id = request.headers.get("X-Emly-UserID")
             session_id = request.headers.get("X-Emly-SessionID")
-            page_id = request.headers.get("X-Emly-PageID")
             if user_id:
                 logging_context.user_id_var.set(user_id)
             if session_id:
                 logging_context.session_id_var.set(session_id)
-            # Body fallback for ``/widget/{ref}/chat`` only — fill the
-            # user/session ids from the body when the headers are absent,
-            # and mint a session id if neither has one. Response headers
-            # echo the resolved IDs so the widget can adopt them.
-            _path_parts = request.url.path.split("/")
-            _is_widget_chat = (
-                len(_path_parts) == 4
-                and _path_parts[1] == "widget"
-                and _path_parts[3] == "chat"
-            )
-            if _is_widget_chat:
-                body = await request.body()
-                body_str = body.decode("utf-8")
-                try:
-                    data = json.loads(body_str) if body_str else {}
-                except json.JSONDecodeError:
-                    return JSONResponse(status_code=400, content={"message": "Invalid JSON body"})
-                if not isinstance(data, dict):
-                    return JSONResponse(status_code=400, content={"message": "Body must be a JSON object"})
-
-                body_user = data.get("user_id") if isinstance(data.get("user_id"), str) else None
-                body_session = data.get("session_id") if isinstance(data.get("session_id"), str) else None
-                # No synthesized user id: the widget token (B2) names the
-                # user, and the chat route rejects a body user that differs.
-                user_id = user_id or body_user
-                session_id = session_id or body_session or f"session-{uuid.uuid4()}"
-
-                if user_id:
-                    data["user_id"] = user_id
-                data["session_id"] = session_id
-                data["timestamp"] = int(time.time())
-                data["page_id"] = page_id
-                request._body = json.dumps(data).encode("utf-8")
-
             response = await call_next(request)
             if user_id:
                 response.headers["X-Emly-UserID"] = user_id
@@ -330,6 +279,11 @@ from services.auth.ratelimit import limiter  # noqa: E402
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
 app.state.limiter = limiter
+# S2: the body cap sits innermost, directly around the routes. Outside a
+# BaseHTTPMiddleware (SlowAPI, CustomMiddleware) its 413 would reach FastAPI
+# wrapped in an ExceptionGroup and come back as a 400.
+from services.request_limits import RequestBodyLimitMiddleware  # noqa: E402
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(SlowAPIMiddleware)
 
 
@@ -406,8 +360,6 @@ app.include_router(widget.router, prefix="", tags=["widget"], include_in_schema=
 app.add_middleware(CustomMiddleware)
 # G13c: hard cap on widget request bodies, counted as bytes arrive. Inside
 # the CORS layers so the widget can read the 413.
-from services.request_limits import WidgetBodyLimitMiddleware  # noqa: E402
-app.add_middleware(WidgetBodyLimitMiddleware)
 # Record caller IP / user agent for audit() calls made while handling a request.
 from services.audit import AuditRequestContextMiddleware, AuditUnavailable  # noqa: E402
 app.add_middleware(AuditRequestContextMiddleware)
@@ -594,50 +546,74 @@ async def livez():
     return JSONResponse(status_code=200, content={"status": "alive"})
 
 
-@app.get("/api/readyz")
-async def readyz():
-    """Readiness probe.
-
-    Returns 200 only when the worker can handle traffic — embedding
-    model loaded, Qdrant reachable, DB reachable. Cold-start typically
-    takes 5-30s; ``initialDelaySeconds`` should be ≥30 to avoid the
-    Kubernetes scheduler routing requests at a half-booted pod.
-
-    Tier 2 of multi-bot-ui plan: returns ``warnings`` alongside
-    ``issues`` so the admin UI can surface non-fatal deploy hazards
-    (embedded Qdrant + multi-worker, SQLite + multi-worker, wide-open
-    CORS) as a system banner.
-    """
-    issues: list[str] = []
-    warnings = _collect_runtime_warnings()
-
+def _readiness() -> list[tuple[str, str]]:
+    """``(code, detail)`` for each reason the worker can't take traffic."""
+    issues: list[tuple[str, str]] = []
     try:
         from config import EMBEDDING_MODEL_INSTANCE
         if EMBEDDING_MODEL_INSTANCE is None:
-            issues.append("embedding_model_not_loaded")
+            issues.append(("embedding_model_not_loaded", ""))
     except Exception as e:
-        issues.append(f"embedding_model_error: {e}")
+        issues.append(("embedding_model_error", str(e)))
 
     try:
         from agents.rag_manager import get_rag_manager
         get_rag_manager().client.get_collections()
     except Exception as e:
-        issues.append(f"qdrant_unreachable: {e}")
+        issues.append(("qdrant_unreachable", str(e)))
 
     try:
         from db.db import DB
         DB.execute_sql("SELECT 1")
     except Exception as e:
-        issues.append(f"db_unreachable: {e}")
+        issues.append(("db_unreachable", str(e)))
+    return issues
 
+
+_READYZ_CACHE: dict = {"at": 0.0, "issues": None}
+_READYZ_TTL_SECONDS = 5.0
+
+
+@app.get("/api/readyz")
+def readyz():
+    """Readiness probe: 200 when the worker can handle traffic (embedding
+    model loaded, Qdrant and the database reachable), else 503.
+
+    S18: it is public, so it says only ``status`` and stable issue codes,
+    never exception text, hosts or bot names; deployment warnings are at
+    ``/api/admin/system/status`` for superadmins. A plain ``def`` (runs in
+    the threadpool, not on the event loop), with the checks cached for a
+    few seconds so callers can't make it hammer Qdrant and the database.
+    """
+    now = time.monotonic()
+    if _READYZ_CACHE["issues"] is None or now - _READYZ_CACHE["at"] > _READYZ_TTL_SECONDS:
+        _READYZ_CACHE["issues"] = _readiness()
+        _READYZ_CACHE["at"] = now
+    issues = _READYZ_CACHE["issues"]
     if issues:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "issues": issues, "warnings": warnings},
-        )
-    return JSONResponse(
-        status_code=200, content={"status": "ready", "warnings": warnings}
-    )
+        return JSONResponse(status_code=503,
+                            content={"status": "not_ready", "issues": [code for code, _ in issues]})
+    return JSONResponse(status_code=200, content={"status": "ready"})
+
+
+from services.auth.dependencies import get_admin as _get_admin  # noqa: E402
+from fastapi import Depends as _Depends  # noqa: E402
+
+
+@app.get("/api/admin/system/status")
+def system_status(admin=_Depends(_get_admin)):
+    """Readiness with details plus non-fatal deployment warnings, for the
+    admin console's banner. Superadmins only: the messages name bots,
+    hosts and settings."""
+    from services.authz import require_superadmin
+
+    require_superadmin(admin)
+    issues = _readiness()
+    return {
+        "status": "not_ready" if issues else "ready",
+        "issues": [f"{code}: {detail}" if detail else code for code, detail in issues],
+        "warnings": _collect_runtime_warnings(),
+    }
 
 
 def _collect_runtime_warnings() -> list[dict[str, str]]:
@@ -645,24 +621,10 @@ def _collect_runtime_warnings() -> list[dict[str, str]]:
     — the code is a stable identifier for the UI to dismiss/render
     against; the message is operator-facing prose."""
     out: list[dict[str, str]] = []
-    web_concurrency = int(os.environ.get("WEB_CONCURRENCY", "1"))
-    qdrant_url = os.environ.get("QDRANT_URL")
-    db_url = os.environ.get("DATABASE_URL", "")
-
-    # Embedded Qdrant + multi-worker is *blocked* by the boot assertion
-    # in `_assert_runtime_topology` — reaching here means the assertion
-    # passed. Still surface a notice when single-worker so operators
-    # know they can't scale out without server Qdrant.
-    if not qdrant_url:
+    if not os.environ.get("QDRANT_URL"):
         out.append({
             "code": "embedded_qdrant",
-            "message": "Vector DB is in embedded mode. Set QDRANT_URL before scaling beyond one worker.",
-        })
-
-    if web_concurrency > 1 and (db_url.startswith("sqlite") or db_url == ""):
-        out.append({
-            "code": "sqlite_multi_worker",
-            "message": "Multi-worker deploy with SQLite — expect write contention. Use Postgres for production.",
+            "message": "Vector DB is in embedded mode. Set QDRANT_URL to a Qdrant server for production.",
         })
 
     from services.llm_settings import endpoint_policy_warnings

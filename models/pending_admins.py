@@ -364,6 +364,18 @@ class PendingAdminsTable:
         )
         return rows > 0
 
+    def revoke_for_admin(self, admin_id: str, email: Optional[str], *, by_admin_id: Optional[str]) -> int:
+        """Revoke every pending invite issued by ``admin_id`` or addressed
+        to ``email`` (S20). Returns the row count."""
+        cond = PendingAdmin.invited_by == admin_id
+        if email:
+            cond = cond | (PendingAdmin.email == email.lower())
+        return (
+            PendingAdmin.update(status=STATUS_REVOKED, responded_at=_now(), responded_by=by_admin_id)
+            .where((PendingAdmin.status == STATUS_PENDING) & cond)
+            .execute()
+        )
+
     def mark_expired_sweep(self) -> int:
         """Promote any ``pending`` row whose ``expires_at`` is in the past
         to ``status='expired'``. Idempotent. Returns the row count."""

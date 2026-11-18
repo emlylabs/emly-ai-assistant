@@ -220,7 +220,7 @@ HARDENING_VARS = (
     "EMAIL_SERVER", "MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
     "SENTENCE_TRANSFORMERS_HOME", "RE_RANKING_MODEL_HOME", "RAG_EMBEDDING_MODEL_REVISION",
     "RE_RANKING_MODEL_REVISION", "RAG_EMBEDDING_TRUST_REMOTE_CODE", "AUDIT_RETENTION_DAYS",
-    "WEBHOOK_DEDUPE_RETENTION_HOURS", "LLM_ENDPOINT_ALLOWLIST", "ALLOW_LANGSMITH_TRACING", "WIDGET_MAX_REQUEST_MB", "AUDIT_FAIL_CLOSED",
+    "WEBHOOK_DEDUPE_RETENTION_HOURS", "LLM_ENDPOINT_ALLOWLIST", "ALLOW_LANGSMITH_TRACING", "WIDGET_MAX_REQUEST_MB", "REQUEST_MAX_KB", "AUDIT_FAIL_CLOSED",
     "CRAWL_ALLOWED_PRIVATE_CIDRS", "WIDGET_ICON_HOSTS", "BOT_SECRETS_KEY_FILE",
     "REQUIRE_PER_BOT_LLM_KEY", "AUTH_OIDC_REQUIRED_AMR",
     "AUTH_SESSION_MAX_AGE_SECONDS", "AUDIT_DATA_ACCESS", "AUTH_ALLOW_BEARER", "AUDIT_LOG_STDOUT",
@@ -270,3 +270,14 @@ def test_qdrant_server_matches_the_client():
     assert compose_tag.split("-")[0] == k8s_tag.split("-")[0], "compose and Kubernetes run different Qdrant versions"
     (c_major, c_minor), (s_major, s_minor) = _minor(client), _minor(compose_tag)
     assert c_major == s_major and abs(c_minor - s_minor) <= 1, (client, compose_tag)
+
+
+def test_local_working_notes_never_reach_the_image():
+    """L27: the notes excluded from git describe unfixed weaknesses; a
+    local docker build must not copy them in."""
+    ignore = (REPO_ROOT / ".dockerignore").read_text().split()
+    exclude = (REPO_ROOT / ".git" / "info" / "exclude")
+    notes = [ln.strip().lstrip("/") for ln in exclude.read_text().splitlines()
+             if ln.strip().endswith(".md") and not ln.startswith("#")] if exclude.exists() else []
+    for note in notes or ["fable-audit.md", "claim-gaps.md"]:
+        assert note in ignore, note

@@ -22,6 +22,7 @@ deferred to Phase 2c (still in scope for Phase 2 but separately committed).
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
 from urllib.parse import urlencode
@@ -445,6 +446,9 @@ async def authorize_post(
         from models.pending_admins import PendingAdmins
         pending = PendingAdmins.get_active_by_email(email)
         if pending is None:
+            # S13: cost the same as a real password check, so response time
+            # doesn't say which addresses have an account.
+            verify_password(password, _dummy_password_hash())
             audit("auth.local.login_failed", success=False, request=request,
                   payload={"email": email.lower(), "reason": "unknown_account"})
             return _render_authorize_form(params=params, error="Invalid email or password")
@@ -518,6 +522,17 @@ async def authorize_post(
     redirect_url = f"{redirect_uri}?{urlencode({'code': code, 'state': state})}"
     return RedirectResponse(redirect_url, status_code=status.HTTP_302_FOUND)
 
+
+
+_DUMMY_HASH: str | None = None
+
+
+def _dummy_password_hash() -> str:
+    """A real Argon2 hash with the current parameters, made once."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+    return _DUMMY_HASH
 
 # -------- token --------
 

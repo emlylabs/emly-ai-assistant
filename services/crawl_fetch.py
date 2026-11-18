@@ -115,6 +115,13 @@ def _is_blocked(ip: ipaddress._BaseAddress) -> bool:
     return not any(ip in n for n in allowed_private_networks() if n.version == ip.version)
 
 
+def _is_public(ip_str: str) -> bool:
+    ip = ipaddress.ip_address(ip_str)
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global
+
+
 def log_crawl_settings() -> None:
     """Boot: refuse a malformed list, and say which ranges are open."""
     nets = allowed_private_networks()
@@ -240,8 +247,16 @@ def safe_get(url: str, *, headers: dict, stream: bool = False) -> requests.Respo
     ``CRAWL_FETCH_MAX_REDIRECTS``. The caller closes the returned response.
     """
     current = url
+    started_public = None
     for _ in range(CRAWL_FETCH_MAX_REDIRECTS + 1):
         _, addresses = _resolve_checked(current)
+        public = all(_is_public(a) for a in addresses)
+        if started_public is None:
+            started_public = public
+        elif started_public and not public:
+            # S19: a public page can't send the crawler into the intranet,
+            # even into a range CRAWL_ALLOWED_PRIVATE_CIDRS allows.
+            raise UnsafeUrlError("Refusing a redirect from a public site to a private address")
         resp = _pinned_get(current, addresses[0], headers=headers, stream=stream)
         location = resp.headers.get("Location") if resp.is_redirect else None
         if not location:

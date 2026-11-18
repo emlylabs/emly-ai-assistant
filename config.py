@@ -189,7 +189,14 @@ SESSION_TIMEOUT = timedelta(minutes=30)
 ############################################
 # Prompt related settings
 ############################################
-INTENT_DETECTION_PROMPT = os.getenv("INTENT_DETECTION_PROMPT", "You are an expert at routing user requests. Based on the conversation so far and the user's input, pick the most relevant topic.")
+INTENT_DETECTION_PROMPT = os.getenv(
+    "INTENT_DETECTION_PROMPT",
+    "You are an expert at routing user requests. Based on the conversation so far "
+    "and the user's input, pick the most relevant topic. Choose a topic that "
+    "collects contact details only when the visitor asks for a quote, a callback, "
+    "or to be contacted. A question about a product, a price, or whether something "
+    "is offered is not that — pick a topic that answers questions.",
+)
 
 
 DEFAULT_MESSAGE  = os.getenv("DEFAULT_MESSAGE", "Unfortunately, I cannot find this information. Please try a different query.")

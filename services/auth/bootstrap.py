@@ -65,8 +65,8 @@ def bootstrap_pending_superadmin(data_dir: Optional[Path] = None) -> None:
         reconcile the credential to match the env (operator's env wins).
       - Pending row exists, env password unset → leave the existing
         credential alone (don't churn the random one).
-      - Admin user exists (post-activation) → do nothing; password reset
-        goes through the proper change-password flow.
+      - Any admin row has ever existed (deleted ones included) → do
+        nothing (S12). Password resets go through the change-password flow.
     """
     from models.admin_users import AdminUsers
 
@@ -74,8 +74,10 @@ def bootstrap_pending_superadmin(data_dir: Optional[Path] = None) -> None:
     if not bootstrap_email:
         return
 
-    if AdminUsers.get_by_email(bootstrap_email) is not None:
-        # Already activated — env-based password reset isn't supported here.
+    if AdminUsers.any_ever_existed():
+        # S12: bootstrap only sets up an empty workspace. Once any admin
+        # exists (deleted ones included), the env var stays inert, so
+        # deleting the bootstrap superadmin isn't undone at the next boot.
         return
 
     from models.pending_admins import PendingAdmins

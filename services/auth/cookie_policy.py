@@ -22,7 +22,9 @@ def cookie_secure(request: Optional[Request] = None) -> bool:
        a TLS-terminating proxy the app sees plain http unless the proxy is
        trusted (``FORWARDED_ALLOW_IPS``), so the request scheme alone would
        leave production cookies without Secure.
-    3. Otherwise follow the request scheme (local development over http).
+    3. Otherwise Secure when ``X-Forwarded-Proto`` is https (TLS ended at a
+       proxy the app does not trust for ``request.url.scheme``).
+    4. Otherwise follow the request scheme (local development over http).
 
     Note: browsers accept Secure cookies on http://localhost (Chrome,
     Firefox), so local runs with an https APP_BASE_URL still work there;
@@ -35,9 +37,24 @@ def cookie_secure(request: Optional[Request] = None) -> bool:
 
     if is_prod_mode() or os.environ.get("APP_BASE_URL", "").strip().lower().startswith("https://"):
         return True
+    if request is not None and _forwarded_proto_https(request):
+        # TLS ends at the proxy and the app sees http. Secure is the
+        # stricter attribute: a client that spoofs this header only makes
+        # the cookie unusable over plain http.
+        return True
     if request is not None:
         return request.url.scheme.lower() == "https"
     return False
+
+
+def _forwarded_proto_https(request: Request) -> bool:
+    headers = getattr(request, "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return False
+    raw = headers.get("x-forwarded-proto")
+    if not raw:
+        return False
+    return raw.split(",")[0].strip().lower() == "https"
 
 
 def cookie_samesite() -> str:

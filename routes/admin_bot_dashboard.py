@@ -26,6 +26,7 @@ from models.bot_channels import DEFAULT_WIDGET_CHANNEL_ID, channel_filter
 from models.bots import BotModel, Bots
 from models.emly_messages import EMLYMessageModel, EMLYMessages
 from models.emly_users import EMLYUserModel, EMLYUsers
+from services.audit import audited_change
 from services.auth.dependencies import get_admin
 from services.authz import require_member, require_owner, require_writer
 from services.data_access_audit import record_read, used_filters
@@ -1283,6 +1284,7 @@ def bot_validate_config(
 
 
 @router.put("/bots/{slug}/config", response_model=ConfigResponse)
+@audited_change
 def bot_put_config(
     slug: str,
     payload: ConfigPayload,
@@ -1428,6 +1430,7 @@ def bot_put_config_draft(
 
 
 @router.delete("/bots/{slug}/config/draft", response_model=ConfigResponse)
+@audited_change
 def bot_discard_config_draft(
     slug: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -1521,6 +1524,7 @@ class ApiKeyPayload(BaseModel):
 
 
 @router.put("/bots/{slug}/api-key", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 def bot_put_api_key(
     slug: str,
     payload: ApiKeyPayload,

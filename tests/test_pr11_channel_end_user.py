@@ -351,6 +351,7 @@ def test_whatsapp_profile_from_contacts():
 
     secrets = WhatsAppCloudSecrets.model_construct(phone_number_id="P1")
     body = {"entry": [{"changes": [{"value": {
+        "metadata": {"phone_number_id": "P1"},
         "contacts": [{"wa_id": "15550100", "profile": {"name": "Ada Lovelace"}}],
         "messages": [{"from": "15550100", "id": "m1", "type": "text", "text": {"body": "hi"}}],
     }}]}]}

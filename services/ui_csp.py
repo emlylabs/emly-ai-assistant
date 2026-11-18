@@ -10,9 +10,12 @@ this origin, plus the inline scripts the export itself contains, allowed
 by their SHA-256 hashes, which are computed from each HTML file when it
 is served (and cached until the file changes). No ``'unsafe-inline'`` or
 ``'unsafe-eval'`` for scripts. Styles allow ``'unsafe-inline'``: React
-renders ``style`` attributes, which hashes can't cover. Images may come
-from any https host, because admins preview icons and link images set
-for their bots. Network requests (``connect-src``) go only to this origin.
+renders ``style`` attributes, which hashes can't cover. Images come from
+this origin and inline ``data:``/``blob:`` URIs, plus the hosts in
+``WIDGET_ICON_HOSTS`` (admins preview their bots' icons); with that unset,
+any https host, as icons may live anywhere. Bot answers never render
+images (S4), so this is defence in depth. Network requests
+(``connect-src``) go only to this origin.
 
 **Sign-in form and auth error pages** (server-rendered, no scripts):
 nothing may load except their inline styles.
@@ -37,7 +40,7 @@ UI_POLICY = (
     "default-src 'self'; "
     "script-src 'self'{hashes}; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob: https:; "
+    "img-src 'self' data: blob:{img_hosts}; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
     "frame-src 'self'; "
@@ -65,12 +68,23 @@ def inline_script_hashes(html: bytes) -> Tuple[str, ...]:
 
 
 @lru_cache(maxsize=1024)
-def _policy_for(path: str, mtime_ns: int, size: int) -> str:
-    hashes = inline_script_hashes(Path(path).read_bytes())
-    return UI_POLICY.format(hashes="".join(f" {h}" for h in hashes))
+def _hashes_for(path: str, mtime_ns: int, size: int) -> str:
+    return "".join(f" {h}" for h in inline_script_hashes(Path(path).read_bytes()))
+
+
+def image_sources() -> str:
+    """Extra ``img-src`` sources: the icon hosts, or any https host when
+    ``WIDGET_ICON_HOSTS`` is unset."""
+    from services.widget_icons import icon_hosts
+
+    entries = icon_hosts()
+    if entries is None:
+        return " https:"
+    return "".join(f" https://{e}" for e in entries)
 
 
 def ui_policy_for_file(path: Path) -> str:
     """The CSP for an exported UI HTML file."""
     st = path.stat()
-    return _policy_for(str(path), st.st_mtime_ns, st.st_size)
+    return UI_POLICY.format(hashes=_hashes_for(str(path), st.st_mtime_ns, st.st_size),
+                            img_hosts=image_sources())
