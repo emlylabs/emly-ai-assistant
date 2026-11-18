@@ -248,6 +248,9 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   // const [showThemeMenu, setShowThemeMenu] = useState(false);
   // const [themeId, setThemeId] = useState<string>(() => readStoredThemeId() ?? defaultThemeId);
   const sessionTransitionTimeoutRef = useRef<number | null>(null);
+  // Auto-speak the next bot reply only when the user spoke (mic), not
+  // when they typed. Text replies always stay visible either way.
+  const speakNextReplyRef = useRef(false);
   const dispatch = useDispatch();
   const { messages, sessions, activeSessionId } = useSelector((state: RootState) => state.messages);
   const firstSessionId = sessions[0]?.id ?? null;
@@ -794,7 +797,13 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       const { code, cleaned } = extractInternalCode(botResponse.text);
       if (cleaned) {
         const bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
-        if (botConfig?.enable_voice && isSpeechSynthesisSupported()) {
+        // Voice in → speak + show text. Typed in → text only (speaker
+        // button still lets the user play the reply on demand).
+        const shouldSpeak =
+          speakNextReplyRef.current &&
+          Boolean(botConfig?.enable_voice) &&
+          isSpeechSynthesisSupported();
+        if (shouldSpeak) {
           speak(cleaned, { speakId: bubbleId });
         }
       }
@@ -806,11 +815,12 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       console.error('Failed to fetch chatbot response:', error);
       addMessage('Unable to reach the chatbot service right now.', false);
     } finally {
+      speakNextReplyRef.current = false;
       setBotIsTyping(false);
     }
   };
 
-  const sendMessage = (text: string) => {
+  const sendMessage = (text: string, opts?: { fromVoice?: boolean }) => {
     const messageToSend = text.trim();
     if (messageToSend === '') return;
     // While the START_CHAT capture form is pending, swallow messages —
@@ -818,6 +828,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     // calls (nudge auto-send, post-limit chip) that bypass the input.
     if (pendingStartChat) return;
     stopSpeaking();
+    speakNextReplyRef.current = Boolean(opts?.fromVoice);
     // Auto-name the session from the first user query
     if (activeSessionId && messages.length === 0) {
       const sessionLabel = messageToSend.length > 30
@@ -1094,7 +1105,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             newMessage={newMessage}
             setNewMessage={setNewMessage}
             handleSendMessage={handleSendMessage}
-            onVoiceFinal={(transcript) => sendMessage(transcript)}
+            onVoiceFinal={(transcript) => sendMessage(transcript, { fromVoice: true })}
             placeholderMessage={pendingStartChat ? 'Please complete the form to start chatting…' : resolvedPlaceholder}
             botIsTyping={botIsTyping || pendingStartChat}
             enableVoice={Boolean(botConfig?.enable_voice)}
