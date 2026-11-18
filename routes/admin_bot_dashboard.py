@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from playhouse.shortcuts import model_to_dict
 from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
@@ -1603,6 +1605,44 @@ def bot_put_deepgram_api_key(
         target_type="bot",
         target_id=bot.id,
     )
+
+
+_VOICE_MODEL_RE = re.compile(r"^(?:aura(?:-2)?|flux)-[a-z0-9-]{2,40}$")
+_VOICE_SAMPLES = {
+    "hi": "नमस्ते। मैं आपकी मदद के लिए यहाँ हूँ। बताइए, मैं क्या करूँ?",
+    "en": "Hello. I can help with your questions. How would you like me to sound?",
+}
+
+
+class DeepgramPreviewPayload(BaseModel):
+    model: str = Field(..., min_length=3, max_length=64)
+
+
+@router.post("/bots/{slug}/deepgram/preview")
+def bot_deepgram_preview(
+    slug: str,
+    payload: DeepgramPreviewPayload,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Speak a short sample in the chosen Deepgram voice. The key stays server-side."""
+    from services import deepgram
+
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    model = payload.model.strip().lower()
+    if not _VOICE_MODEL_RE.match(model):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown voice")
+    if not deepgram.deepgram_configured(bot.id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Deepgram API key is not configured",
+        )
+    sample = _VOICE_SAMPLES["hi"] if model.endswith("-hi") else _VOICE_SAMPLES["en"]
+    try:
+        audio = deepgram.synthesize(sample, bot_id=bot.id, model=model)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 @router.get("/bots/{slug}/deepgram-api-key/status")

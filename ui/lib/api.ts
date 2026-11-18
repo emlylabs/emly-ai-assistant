@@ -1560,6 +1560,28 @@ export const api = {
       `/bots/${encodeURIComponent(slug)}/deepgram-api-key`,
       { api_key }
     ),
+  previewDeepgramVoice: async (slug: string, model: string): Promise<Blob> => {
+    const res = await fetch(
+      `/api/admin/bots/${encodeURIComponent(slug)}/deepgram/preview`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      },
+    );
+    if (!res.ok) {
+      let detail = `Preview failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === "string") detail = body.detail;
+      } catch {
+        /* audio or empty body */
+      }
+      throw new Error(detail);
+    }
+    return res.blob();
+  },
   ragSearch: (
     slug: string,
     payload: { query: string; top_k?: number; threshold?: number }

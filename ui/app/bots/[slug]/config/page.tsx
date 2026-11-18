@@ -1232,6 +1232,50 @@ function WidgetSection({
   const [dgDraft, setDgDraft] = useState("");
   const [dgMsg, setDgMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [dgSaving, setDgSaving] = useState(false);
+  const [voicePreviewing, setVoicePreviewing] = useState(false);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+  const usesDeepgram =
+    (config.stt_provider as string) === "deepgram" ||
+    (config.tts_provider as string) === "deepgram";
+
+  const stopVoicePreview = () => {
+    const audio = previewAudioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.src = "";
+      previewAudioRef.current = null;
+    }
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopVoicePreview(), []);
+
+  async function playVoiceSample() {
+    const model = (config.deepgram_tts_model as string) || "aura-2-thalia-en";
+    stopVoicePreview();
+    setVoicePreviewing(true);
+    setDgMsg(null);
+    try {
+      const blob = await api.previewDeepgramVoice(slug, model);
+      const url = URL.createObjectURL(blob);
+      previewUrlRef.current = url;
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => stopVoicePreview();
+      await audio.play();
+    } catch (err: unknown) {
+      setDgMsg({
+        ok: false,
+        text: err instanceof Error ? err.message : "Could not play this voice.",
+      });
+    } finally {
+      setVoicePreviewing(false);
+    }
+  }
 
   useEffect(() => {
     api
@@ -1626,9 +1670,95 @@ function WidgetSection({
                 disabled={!writable}
               >
                 <option value="browser">Browser (free, device voice)</option>
-                <option value="deepgram">Deepgram Aura (needs API key)</option>
+                <option value="deepgram">Deepgram (needs API key)</option>
               </select>
             </div>
+            {(config.stt_provider as string) === "deepgram" && (
+              <div className="field">
+                <label htmlFor="cfg-dg-stt-model">Deepgram speech model</label>
+                <select
+                  id="cfg-dg-stt-model"
+                  value={(config.deepgram_stt_model as string) || "nova-3"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    patchPath(["deepgram_stt_model"], v === "nova-3" ? undefined : v);
+                  }}
+                  disabled={!writable}
+                >
+                  <option value="nova-3">Nova 3 (latest)</option>
+                  <option value="nova-2">Nova 2</option>
+                  <option value="enhanced">Enhanced</option>
+                  <option value="base">Base</option>
+                </select>
+              </div>
+            )}
+            {(config.tts_provider as string) === "deepgram" && (
+              <div className="field">
+                <label htmlFor="cfg-dg-tts-voice">Deepgram voice</label>
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <select
+                    id="cfg-dg-tts-voice"
+                    value={(config.deepgram_tts_model as string) || "aura-2-thalia-en"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      patchPath(
+                        ["deepgram_tts_model"],
+                        v === "aura-2-thalia-en" ? undefined : v,
+                      );
+                    }}
+                    disabled={!writable}
+                    style={{ flex: 1 }}
+                  >
+                    <optgroup label="Indian English">
+                      <option value="flux-priya-en">Priya (female, Indian)</option>
+                      <option value="flux-meena-en">Meena (female, Indian)</option>
+                      <option value="flux-naveen-en">Naveen (male, Indian)</option>
+                    </optgroup>
+                    <optgroup label="Hindi">
+                      <option value="flux-anjali-hi">Anjali (female, Hindi)</option>
+                      <option value="flux-divya-hi">Divya (female, Hindi)</option>
+                      <option value="flux-ajay-hi">Ajay (male, Hindi)</option>
+                      <option value="flux-rahul-hi">Rahul (male, Hindi)</option>
+                    </optgroup>
+                    <optgroup label="American">
+                      <option value="aura-2-thalia-en">Thalia (female)</option>
+                      <option value="aura-2-asteria-en">Asteria (female)</option>
+                      <option value="aura-2-athena-en">Athena (female)</option>
+                      <option value="aura-2-luna-en">Luna (female)</option>
+                      <option value="aura-2-aurora-en">Aurora (female)</option>
+                      <option value="aura-2-hera-en">Hera (female)</option>
+                      <option value="aura-2-apollo-en">Apollo (male)</option>
+                      <option value="aura-2-arcas-en">Arcas (male)</option>
+                      <option value="aura-2-orion-en">Orion (male)</option>
+                      <option value="aura-2-orpheus-en">Orpheus (male)</option>
+                      <option value="aura-2-zeus-en">Zeus (male)</option>
+                    </optgroup>
+                    <optgroup label="British">
+                      <option value="aura-2-pandora-en">Pandora (female)</option>
+                      <option value="aura-2-draco-en">Draco (male)</option>
+                      <option value="aura-2-helios-en">Helios (male)</option>
+                    </optgroup>
+                    <optgroup label="Australian">
+                      <option value="aura-2-theia-en">Theia (female)</option>
+                      <option value="aura-2-hyperion-en">Hyperion (male)</option>
+                    </optgroup>
+                  </select>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void playVoiceSample()}
+                    disabled={!writable || voicePreviewing || !dgConfigured}
+                  >
+                    {voicePreviewing ? "Playing…" : "Play sample"}
+                  </button>
+                </div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Play a sample to hear the accent, then click <strong>Save</strong> so the chat uses this voice.
+                  {!dgConfigured ? " Add a Deepgram key before playing." : ""}
+                </div>
+              </div>
+            )}
+            {usesDeepgram && (
             <div className="field">
               <label>Deepgram API key</label>
               <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 8 }}>
@@ -1683,6 +1813,7 @@ function WidgetSection({
                 </button>
               </div>
             </div>
+            )}
           </div>
         )}
         <FlagToggle

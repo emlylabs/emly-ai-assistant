@@ -89,8 +89,15 @@ def synthesize(
     if len(plain) > MAX_TTS_CHARS:
         plain = plain[:MAX_TTS_CHARS].rstrip() + "…"
 
-    params = urlencode({"model": resolve_tts_model(model), "encoding": "mp3"})
-    url = f"https://api.deepgram.com/v1/speak?{params}"
+    chosen = resolve_tts_model(model)
+    # Flux voices (Indian English, Hindi, and newer accents) live on
+    # /v2/speak. Aura voices stay on /v1/speak.
+    if chosen.startswith("flux-"):
+        params = urlencode({"model": chosen})
+        url = f"https://api.deepgram.com/v2/speak?{params}"
+    else:
+        params = urlencode({"model": chosen, "encoding": "mp3"})
+        url = f"https://api.deepgram.com/v1/speak?{params}"
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.post(
