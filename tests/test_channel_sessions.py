@@ -71,6 +71,21 @@ def test_slack_dm_thread_reply_names_the_pre_upgrade_key():
     assert top.legacy_session_external_id is None
 
 
+def test_slack_dm_without_channel_type_shares_one_session():
+    """A DM channel id starts with D. Missing ``channel_type`` used to key
+    each message on its own ts."""
+    a = _slack({"channel": "D1", "ts": "100.1"})
+    b = _slack({"channel": "D1", "ts": "200.1"})
+    assert a.session_external_id == b.session_external_id == "D1:U1"
+    assert a.chat_type == "dm"
+
+
+def test_slack_channel_without_type_stays_per_message():
+    a = _slack({"channel": "C1", "ts": "100.1"})
+    b = _slack({"channel": "C1", "ts": "200.1"})
+    assert a.session_external_id != b.session_external_id
+
+
 def test_slack_channel_threads_have_no_legacy_key():
     reply = _slack({"channel": "C1", "channel_type": "channel", "ts": "150.1", "thread_ts": "100.1"})
     assert reply.legacy_session_external_id is None
@@ -100,6 +115,14 @@ def test_gchat_dm_names_the_pre_upgrade_thread_key():
     assert a.legacy_session_external_id == "spaces/DM1/threads/t1"
     room = _gchat({"name": "spaces/ROOM", "type": "ROOM"}, "spaces/ROOM/threads/t1")
     assert room.legacy_session_external_id is None
+
+
+def test_gchat_space_type_direct_message_is_one_session():
+    space = {"name": "spaces/DM1", "spaceType": "direct_message"}
+    a = _gchat(space, "spaces/DM1/threads/t1")
+    b = _gchat(space, "spaces/DM1/threads/t2")
+    assert a.session_external_id == b.session_external_id
+    assert a.chat_type == "dm"
 
 
 def test_gchat_room_threads_are_separate_sessions():

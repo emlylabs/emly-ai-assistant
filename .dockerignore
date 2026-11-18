@@ -31,6 +31,7 @@ requirements.txt
 scripts/*
 !scripts/__init__.py
 !scripts/rotate_bot_secrets.py
+!scripts/unlock_local_admin.py
 
 # UI artifacts (rebuilt inside the ui-builder stage)
 ui/node_modules/
@@ -59,3 +60,13 @@ widget/dist/
 test.py
 tests/
 deploy/
+
+# Local-only working notes (listed in .git/info/exclude). They describe
+# unfixed weaknesses and must never reach an image built from a local
+# checkout (L27).
+security-fixes.md
+claim-gaps.md
+copy-map.md
+handoff.md
+enterprise-connectors.md
+fable-audit.md

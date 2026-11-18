@@ -1222,8 +1222,11 @@ function TeamsPanel({
         app_password: appPassword.trim(),
         app_type: appType,
       };
-      if (appType === "SingleTenant" && tenantId.trim()) {
-        secrets.tenant_id = tenantId.trim();
+      if (tenantId.trim()) {
+        // Single-tenant apps sign in at this tenant; either way, only its
+        // users may message the bot.
+        if (appType === "SingleTenant") secrets.tenant_id = tenantId.trim();
+        secrets.allowed_tenant_ids = [tenantId.trim()];
       }
       await api.createChannel(slug, { type: "teams", secrets });
       onBanner({ kind: "ok", message: "Teams app credentials saved. Paste the webhook URL into your Teams app manifest." });
@@ -1323,9 +1326,7 @@ function TeamsPanel({
             <option value="MultiTenant">Multi-tenant</option>
             <option value="SingleTenant">Single-tenant</option>
           </select>
-          {appType === "SingleTenant" && (
-            <SecretField label="Tenant ID (single-tenant apps only)" value={tenantId} onChange={setTenantId} placeholder="aad-tenant-guid" />
-          )}
+          <SecretField label="Your Microsoft 365 tenant ID (only its users can message the bot)" value={tenantId} onChange={setTenantId} placeholder="aad-tenant-guid" />
           <div className="muted" style={{ fontSize: 12 }}>
             On save we mint a Bot Framework AAD token to validate the credentials. Inbound JWTs
             are verified against Bot Framework&apos;s JWKS; <code>serviceUrl</code> is allow-listed

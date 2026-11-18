@@ -62,6 +62,11 @@ const BotMessage: React.FC<BotMessageProps> = ({
                 </a>
             );
         },
+        // S4: never load an image from an answer. A document or crawled page
+        // can tell the model to add one whose URL carries the conversation,
+        // and it would load in the visitor's browser with no click. Show its
+        // alt text only.
+        img: ({ alt }: { alt?: string }) => (alt ? <span>[{alt}]</span> : null),
     };
 
     return (

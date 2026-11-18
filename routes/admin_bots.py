@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from models.admin_bot_memberships import AdminBotMemberships, ROLES
 from models.admin_users import AdminUserModel, AdminUsers
 from models.bots import BotModel, Bots
-from services.audit import audit
+from services.audit import audit, audited_change
 from services.auth.dependencies import get_admin
 from services.authz import require_bot_creator, require_member, require_owner, require_writer
 from services.bot_templates import get_template_config, list_templates
@@ -171,6 +171,7 @@ def _without_legacy_agent_config(config: dict) -> dict:
 
 
 @router.post("/bots", response_model=BotResponse, status_code=status.HTTP_201_CREATED)
+@audited_change
 def create_bot(
     payload: BotCreate,
     admin: AdminUserModel = Depends(get_admin),
@@ -534,6 +535,7 @@ def get_bot(
 
 
 @router.patch("/bots/{slug}", response_model=BotResponse)
+@audited_change
 def patch_bot(
     slug: str,
     payload: BotPatch,
@@ -632,6 +634,7 @@ def patch_bot(
 
 
 @router.delete("/bots/{slug}", status_code=status.HTTP_202_ACCEPTED)
+@audited_change
 def soft_delete_bot(
     slug: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -711,6 +714,7 @@ def list_deleted_bots(admin: AdminUserModel = Depends(get_admin)):
 
 
 @router.post("/bots/{slug}/restore", response_model=BotResponse)
+@audited_change
 def restore_bot(
     slug: str,
     admin: AdminUserModel = Depends(get_admin),
@@ -765,6 +769,7 @@ def list_bot_admins(
 
 
 @router.post("/bots/{slug}/admins", response_model=MembershipResponse, status_code=status.HTTP_201_CREATED)
+@audited_change
 def grant_membership(
     slug: str,
     payload: MembershipGrant,
@@ -803,6 +808,7 @@ def grant_membership(
 
 
 @router.patch("/bots/{slug}/admins/{admin_id}", response_model=MembershipResponse)
+@audited_change
 def update_membership_role(
     slug: str,
     admin_id: str,
@@ -844,6 +850,7 @@ def update_membership_role(
 
 
 @router.delete("/bots/{slug}/admins/{admin_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
 def revoke_membership(
     slug: str,
     admin_id: str,

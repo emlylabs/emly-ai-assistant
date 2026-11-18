@@ -48,6 +48,20 @@ def hsts_enabled() -> bool:
     return False
 
 
+def request_is_https(scope) -> bool:
+    """True when the browser used HTTPS, including via ``X-Forwarded-Proto``.
+
+    Browsers ignore ``Strict-Transport-Security`` on an http response, so
+    honouring a spoofed header here does not pin an http client to https.
+    """
+    if scope.get("scheme") == "https":
+        return True
+    for key, value in scope.get("headers") or []:
+        if key.lower() == b"x-forwarded-proto":
+            return value.split(b",", 1)[0].strip().lower() == b"https"
+    return False
+
+
 def _has(headers: Iterable[tuple[bytes, bytes]], name: bytes) -> bool:
     return any(k.lower() == name for k, _ in headers)
 
@@ -90,12 +104,13 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        hsts = self.hsts or request_is_https(scope)
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 message = dict(message)
                 message["headers"] = security_headers_for(
-                    path, list(message.get("headers", [])), hsts=self.hsts
+                    path, list(message.get("headers", [])), hsts=hsts
                 )
             await send(message)
 

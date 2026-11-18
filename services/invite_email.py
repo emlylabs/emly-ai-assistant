@@ -14,8 +14,10 @@ invitee can't reach.
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -146,6 +148,12 @@ def _send_invite(pending_id: str, inviter_id: str, space_name: str, role: str) -
     }, ref=pending_id)
 
 
+def _header_safe(value, limit: int = 120) -> str:
+    """One line of plain text for a mail header: no CR/LF or other control
+    characters, and not too long."""
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip()[:limit]
+
+
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
@@ -162,10 +170,11 @@ def _send_invite_email(payload: dict, ref: Optional[str] = None) -> None:
     for placeholder, value in payload.items():
         if placeholder == "email":
             continue
-        content = content.replace("{" + placeholder + "}", str(value or ""))
+        # S11: bot and inviter names are admin-controlled; never markup.
+        content = content.replace("{" + placeholder + "}", html.escape(str(value or "")))
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"You're invited to {payload['space_name']} on Emly Labs"
+    msg["Subject"] = f"You're invited to {_header_safe(payload['space_name'])} on Emly Labs"
     msg["From"] = EMAIL_FROM
     msg["To"] = payload["email"]
     msg.attach(MIMEText(content, "html"))

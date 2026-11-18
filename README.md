@@ -37,6 +37,9 @@ cd emly-ai-assistant
 cp .env.sample .env
 
 # 3. Open .env and fill in at minimum:
+#    - MODE=dev for a local trial on http://localhost:8080 (the sample
+#      says prod, which also needs APP_BASE_URL, PUBLIC_BASE_URL and
+#      BOT_SECRETS_KEY; see Production hardening)
 #    - AUTH_BOOTSTRAP_SUPERADMIN_EMAIL  (your admin login email)
 #    - AUTH_LOCAL_BOOTSTRAP_PASSWORD     (your admin login password)
 #    - POSTGRES_PASSWORD  (required; e.g. `openssl rand -hex 24`)
@@ -107,7 +110,7 @@ kubectl -n emly create secret tls emly-tls --cert=tls.crt --key=tls.key
 kubectl apply -k deploy/k8s/overlays/<your-overlay>
 ```
 
-- **One replica only.** Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
+- **One replica, one worker.** `WEB_CONCURRENCY` must be 1 (any other value stops start-up). Sign-in state, rate limits and the scheduler live in the app's memory and on its `ReadWriteOnce` data volume, so the Deployment runs one pod and replaces it on upgrade (`strategy: Recreate`): expect a short outage while the new pod loads its models (the readiness probe on `/api/readyz` holds traffic until then).
 - **Secrets** are mounted from the `emly-secrets` Secret as files and read through `NAME_FILE` ([Secrets from files](#secrets-from-files)); none are in the manifests or the pod's environment. Add a `NAME_FILE` entry in your overlay for each optional secret you set.
 - **Network:** everything is denied by default. The app may reach DNS and Qdrant; Qdrant only accepts the app and reaches nothing. Your overlay lists, by address, the model endpoint, database, mail server and anything else in [Outbound connections](#outbound-connections) (`overlays/example/egress-external.yaml`), and names the ingress controller's namespace (`ingress-nginx` in the base).
 - **Pods** run as non-root with read-only root filesystems, no privilege escalation, all capabilities dropped and the default seccomp profile. Each writes only to its volumes and a `/tmp` emptyDir.
@@ -141,7 +144,7 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| `MODE` | `prod` | Turns on the production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set |
+| `MODE` | `prod` (also the default when unset) | Production defaults below: API docs off, `Secure` cookies, `BOT_SECRETS_KEY` required, built-in sign-in off when an external IdP is set. Only `MODE=dev` turns them off |
 | `APP_BASE_URL`, `PUBLIC_BASE_URL` | Your public `https://` URL | Required with `MODE=prod`. An https URL also turns on HSTS and `Secure` cookies, and is the base for links in emails |
 | `BOT_SECRETS_KEY` | A Fernet key you generate and back up | Encrypts stored API keys and channel credentials, and signs widget tokens. The app refuses to start in prod without it. Rotate with `BOT_SECRETS_KEY_PREVIOUS` ([how](#rotating-the-secrets-key)). Prefer `BOT_SECRETS_KEY_FILE` and the other `*_FILE` variables ([secrets from files](#secrets-from-files)) |
 | `POSTGRES_PASSWORD` | A long random value | Docker Compose refuses to start without it; there is no default password |
@@ -154,7 +157,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `AUTH_OIDC_*` | Your IdP | With an external IdP set, built-in password sign-in is off in prod unless `AUTH_LOCAL_ISSUER_ENABLED=true` |
 | `AUTH_LOCAL_ISSUER_ENABLED` | Leave unset (or `false`) when you use an IdP | Avoids a second, password-based way in |
 | `AUTH_LOCAL_MIN_PASSWORD_LENGTH` | `12` or more | Applies when built-in sign-in is used; the first sign-in must replace the bootstrap password |
-| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in |
+| `AUTH_BOOTSTRAP_SUPERADMIN_EMAIL`, `AUTH_LOCAL_BOOTSTRAP_PASSWORD` | First boot only | A generated password is written to `$DATA_DIR/bootstrap_password.txt` (mode 0600), never to the log, and deleted after first sign-in. Once any admin exists they do nothing, so deleting the bootstrap superadmin is permanent |
 | `AUTH_OIDC_REQUEST_OFFLINE_ACCESS`, `AUTH_OIDC_EMAIL_CLAIMS`, `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` | Per your IdP (see [SSO](#external-identity-provider-sso)) | Keep `AUTH_OIDC_TRUST_EMAIL_UNCONDITIONALLY` `false`; for Entra ID set `AUTH_OIDC_TRUSTED_EMAIL_CLAIMS=upn` instead |
 | `AUTH_OIDC_REQUIRED_AMR` (or `AUTH_OIDC_REQUIRED_ACR`) | The value your IdP sends after MFA, e.g. `mfa` ([check first](#identity-provider-setup)) | Admins can't sign in without a second factor, even if a conditional-access policy is missed. Google: enforce 2-step verification at Google |
 | `AUTH_SESSION_MAX_AGE_SECONDS` | `43200` (12 h, the prod default) or your policy | Admin sessions end a fixed time after sign-in instead of refreshing for as long as a tab is open |
@@ -168,10 +171,10 @@ Checklist for a production deployment. Each variable is described in full under 
 
 | Setting | Production value | Why |
 |---------|------------------|-----|
-| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production `/api/readyz` lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only (see [Who can use the widget](#who-can-use-the-widget)) |
+| Each bot's *Allowed widget origins* | Your sites, e.g. `https://www.example.com` | New bots allow only this app's own pages. Bots that existed before were migrated to `*` (any site): in production the console's system banner (for superadmins) lists every bot still at `*`. This stops other websites embedding the widget; it doesn't stop direct requests, so also keep the app reachable only from your network if the assistant is staff-only (see [Who can use the widget](#who-can-use-the-widget)) |
 | `WIDGET_TOKEN_TTL_SECONDS`, `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS`, `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | Defaults | Widget requests need a short-lived token bound to the bot and visitor |
 | `WIDGET_ICON_HOSTS` | Your own image hosts, if any | Stops an icon URL sending every visitor's browser to a third-party host. Unset allows any host |
-| `WIDGET_MAX_REQUEST_MB` | `110` (default), or your largest legitimate form upload | Visitors are anonymous; this caps what one request can store before it is checked |
+| `REQUEST_MAX_KB`, `WIDGET_MAX_REQUEST_MB` | `1024` and `110` (defaults), or your largest legitimate form upload | Visitors are anonymous; these cap what one request can send before anything checks it |
 | `AUTH_RATE_*` | Defaults, or tighter | Limits for widget chat, uploads, OTP and sign-in. Counters are per process |
 | Each bot's *Data retention* | Your retention period (new bots start at 365 days; older bots may be empty, which keeps everything) | Conversations, submissions and attachments older than this are deleted nightly |
 | Each bot's *Alert emails contain* | *Only a link* (the default for new bots) | Keeps transcripts, visitor details and files out of mailboxes. Bots that existed before were migrated to the full alert: review them |
@@ -184,7 +187,7 @@ Checklist for a production deployment. Each variable is described in full under 
 | `EMAIL_SERVER` (+ port, user, password) | Your SMTP relay | Without it, OTP codes, invites and alerts are not sent (logged at boot). TLS certificates are verified |
 | `MODEL`, `OPENAI_BASE_URL`, `OPENAI_API_KEY` | Optional deployment defaults | There is no built-in model or endpoint; a bot without them refuses to answer |
 | `REQUIRE_PER_BOT_LLM_KEY` | `true` | Each bot must have its own API key, so departments don't share one key's spend and data path. A bot without one refuses to answer and its config page says why |
-| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning on `/api/readyz` |
+| `LLM_ENDPOINT_ALLOWLIST` | The model endpoints you have approved | Bot owners can't send conversations anywhere else. Unset allows any endpoint and shows a warning in the console's system banner |
 | `CRAWL_ALLOWED_PRIVATE_CIDRS` | Only the ranges that hold intranet sites you want indexed | Admins can then crawl those addresses, and only those. Leave unset if you crawl public sites only |
 | `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` | `1` (set by the image) | The image ships pinned models and never downloads at runtime |
 | `SENTENCE_TRANSFORMERS_HOME`, `RE_RANKING_MODEL_HOME` | Leave unset in Docker | The models live in `/opt/models`. An old `.env` pointing these into `/app/data` should be cleaned up |
@@ -199,8 +202,8 @@ Checklist for a production deployment. Each variable is described in full under 
 
 - **TLS:** the app serves plain HTTP on port 8080, and the compose file publishes it on every interface. In production put a TLS-terminating reverse proxy or load balancer in front (Caddy, nginx, Traefik, or your cloud's), publish only the proxy, and bind the app's port to the proxy's network (e.g. `"127.0.0.1:8080:8080"` when the proxy runs on the host). Set `APP_BASE_URL` and `PUBLIC_BASE_URL` to the `https://` URL, which turns on HSTS and `Secure` cookies, and set `FORWARDED_ALLOW_IPS` to the proxy's address. TLS to Postgres and Qdrant: see below.
 - Keep Qdrant and Postgres off the public network. The compose file doesn't publish their ports.
-- A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and on `/api/readyz`.
-- Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and on `/api/readyz`. When `MODE=prod`, such a Qdrant without `QDRANT_API_KEY` stops start-up.
+- A Postgres outside the private network must be reached over TLS: add `?sslmode=verify-full&sslrootcert=/path/to/ca.pem` (or at least `sslmode=require`) to `DATABASE_URL`. Options in the URL are passed to the driver unchanged. In production, a remote `DATABASE_URL` without it is flagged at boot and in the console's system banner.
+- Qdrant holds the text of every indexed passage. Outside compose, run it with `QDRANT__TELEMETRY_DISABLED=true` (compose sets this) and, if it isn't on the same private network, with https and `QDRANT_API_KEY`. A `QDRANT_URL` that isn't a private address or an internal name is flagged at boot and in the console's system banner. When `MODE=prod`, such a Qdrant without `QDRANT_API_KEY` stops start-up.
 - Check the "Outbound destinations" block in the start-up log against the systems you expect (see [Outbound connections](#outbound-connections)).
 - Telegram bots installed before webhook secrets were generated must be re-installed: updates without the secret are now rejected.
 - The image runs as a non-root user and handles `SIGTERM` for clean shutdowns.
@@ -236,7 +239,7 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 
 | Variable | What it does | Default |
 |----------|-------------|---------|
-| `MODE` | `dev` for local development. `prod` (or `production`, `preprod`, `stage`, `staging`) switches on production-safe defaults and requires `APP_BASE_URL` | `dev` |
+| `MODE` | `prod` (or `production`, `preprod`, `stage`, `staging`): production-safe defaults, which require `APP_BASE_URL` and `BOT_SECRETS_KEY`. `dev` (or `development`, `local`, `test`) for local development only. Unset or any other value also means production, with a warning at start-up | unset (production) |
 | `ENABLE_API_DOCS` | Serve the interactive API docs at `/docs`, `/redoc` and `/openapi.json` | `true` in dev, `false` when `MODE=prod` |
 | `ALLOW_LANGSMITH_TRACING` | Allow LangSmith tracing, which sends every prompt and reply (conversation text included) to LangSmith's cloud. Unless this is `true`, a `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` (or alias) set to `true` stops the app starting when `MODE=prod`; in development it is removed with a warning | `false` |
 | `BOT_SECRETS_KEY` | Fernet key that encrypts stored bot API keys and channel credentials. Separate keys derived from it encrypt the admin refresh cookie, sign widget tokens and hash one-time passcodes, so none of these can be used in place of another. **Required when `MODE=prod`**; in development it is generated into `$DATA_DIR/.bot_secrets_key`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | dev: generated |
@@ -248,13 +251,16 @@ Each bot has its own model, endpoint and API key, set in the setup wizard or the
 | `WEBHOOK_DEDUPE_RETENTION_HOURS` | Hours to keep the per-event rows that stop Slack, Teams and Google Chat retries being processed twice. Deleted by the nightly data job (03:45), which also removes OTP rows a day after they expire | `24` |
 | `BOT_CREATION` | Who can create (or duplicate) bots in the workspace. `writers`: superadmins, plus anyone who is owner or admin of at least one bot (viewer-only members can't). `any`: every admin. `superadmin`: superadmins only | `writers` |
 | `WIDGET_TOKEN_TTL_SECONDS` | Lifetime of the widget token that `/widget/{ref}/init` issues | `86400` (24 h) |
-| `WIDGET_MAX_REQUEST_MB` | Largest widget request body (a form submission with all its files), counted as it arrives; bigger requests get 413 before they are stored. Each file is also checked against the bot's *Max file size*. Raise it if a bot's forms take more or larger files | `110` (two 50 MB files plus the form) |
-| `WIDGET_ICON_HOSTS` | Hosts the widget's logo, avatar and launcher icons may load from, comma-separated: `cdn.example.com`, `assets.internal:8443` or `*.example.com`. Visitors' browsers fetch these images, which tells the host their IP address and the page they're on. When set, an icon on any other host can't be saved, and one stored earlier isn't served (the widget shows its default). This app's own host, paths on the embedding site (`/logo.png`) and inline `data:image/` icons are always allowed | unset (any host) |
+| `REQUEST_MAX_KB` | Largest request body for every route that doesn't take files (widget chat, configs, chat-platform webhooks), counted as it arrives; bigger requests get 413 before anything parses them, signed in or not. A chat message is also limited to 8,000 characters | `1024` |
+| `WIDGET_MAX_REQUEST_MB` | Largest widget form submission (`/widget/{ref}/action`, the form with all its files), counted as it arrives; bigger requests get 413 before they are stored. Each file is also checked against the bot's *Max file size*. Raise it if a bot's forms take more or larger files | `110` (two 50 MB files plus the form) |
+| `ADMIN_UPLOAD_MAX_MB` | Largest admin document upload request, counted as it arrives. Each file is also checked against the bot's *Max file size* | `1024` |
+| `WIDGET_ATTACHMENT_QUOTA_MB` | Most visitor attachments one bot may store, in MB. Further uploads get 507 until retention or erasure frees space. Visitors can attach files only to a form that has a file field | `2048` |
+| `WIDGET_ICON_HOSTS` | Hosts the widget's logo, avatar and launcher icons may load from, comma-separated: `cdn.example.com`, `assets.internal:8443` or `*.example.com`. Visitors' browsers fetch these images, which tells the host their IP address and the page they're on. When set, an icon on any other host can't be saved, and one stored earlier isn't served (the widget shows its default). This app's own host, paths on the embedding site (`/logo.png`) and inline `data:image/` icons are always allowed. The admin console's Content-Security-Policy then allows images only from this app and these hosts | unset (any host) |
 | `WIDGET_TOKEN_ROTATION_GRACE_SECONDS` | After a bot's widget signing secret is rotated, how long tokens signed with the previous secret are still accepted | `86400` (24 h) |
 | `WIDGET_TOKEN_RENEWAL_WINDOW_SECONDS` | How long after expiry a widget token still proves its visitor id to `/init`, so a returning visitor keeps their history. A visitor id that already has history is never issued without that proof | `2592000` (30 days) |
 | `FORWARDED_ALLOW_IPS` | Proxy addresses (comma-separated IPs or CIDRs) trusted to set `X-Forwarded-For` / `X-Forwarded-Proto`. Client IPs from these headers feed rate limits and the audit log, so never use `*`. Exposed directly (the default compose stack): leave the default. Behind a reverse-proxy container in compose: the proxy container's IP or the compose network's subnet, e.g. `172.18.0.0/16` (see `docker network inspect`). Kubernetes: the range your ingress controller connects from, usually the pod CIDR, e.g. `10.244.0.0/16` | `127.0.0.1` |
-| `AUTH_RATE_*` | Per-client rate limits, in [`limits`](https://limits.readthedocs.io/) syntax such as `20/minute`. `WIDGET_INIT` (30/min), `WIDGET_CHAT` (20/min), `WIDGET_ACTION` (20/min) and `WIDGET_UPLOAD` (10/min) are per IP per bot. `OTP_SEND_TARGET` (5 per 10 min) is per bot and email address, `OTP_SEND_IP` (20/hour) and `OTP_VERIFY` (10 per 10 min) per IP per bot. `LOCAL_AUTHORIZE` (5/min) and `LOCAL_TOKEN` (10/min) are per IP. Counters are in memory, per process | see left |
-| `CRAWL_ALLOWED_PRIVATE_CIDRS` | Private address ranges admins may crawl, for intranet sites: comma-separated CIDRs such as `10.20.0.0/16`. Every redirect hop is checked against the list. Loopback, link-local (which holds cloud metadata), multicast and known metadata addresses are never crawled, even when a listed range covers them. A malformed value stops start-up | unset (public addresses only) |
+| `AUTH_RATE_*` | Per-client rate limits, in [`limits`](https://limits.readthedocs.io/) syntax such as `20/minute`. `WIDGET_INIT` (30/min), `WIDGET_CHAT` (20/min), `WIDGET_ACTION` (20/min) and `WIDGET_UPLOAD` (10/min) are per IP per bot. `OTP_SEND_TARGET` (5 per 10 min) is per bot and email address, `OTP_SEND_IP` (20/hour) and `OTP_VERIFY` (10 per 10 min) per IP per bot. `LOCAL_AUTHORIZE` (5/min) and `LOCAL_TOKEN` (10/min) are per IP. `ADMIN_INVITE` (30/hour) is per inviting admin. Counters are in memory, per process | see left |
+| `CRAWL_ALLOWED_PRIVATE_CIDRS` | Private address ranges admins may crawl, for intranet sites: comma-separated CIDRs such as `10.20.0.0/16`. Every redirect hop is checked against the list, a public site can't redirect into these ranges, and a page a redirect lands on is skipped unless it is inside the crawl's scope (host, path prefix, patterns). Loopback, link-local (which holds cloud metadata), multicast and known metadata addresses are never crawled, even when a listed range covers them. A malformed value stops start-up | unset (public addresses only) |
 | `EMAIL_SERVER` | Your SMTP relay for OTP codes, invites and form alerts. With no value, email is disabled and a line is logged at boot. Port 465 uses implicit TLS and 587 uses STARTTLS, both with certificate verification | unset (email off) |
 
 #### Visitor data: retention and erasure
@@ -729,7 +735,8 @@ uv run uvicorn main:app --reload --host 0.0.0.0 --port 8080 --env-file .env
 | `/api/admin/audit/export` | Whole audit log as CSV (superadmins). Filters: `admin_id`, `bot_id`, `action`, `success`, `since`, `until` |
 | `/api/admin/bots/{slug}/audit/export` | One bot's audit log as CSV (owners of that bot) |
 | `/api/livez` | Health check (liveness) |
-| `/api/readyz` | Readiness check (waits for models + DB) |
+| `/api/readyz` | Readiness check (waits for models + DB). Public, so it returns only `status` and issue codes |
+| `/api/admin/system/status` | Readiness details and deployment warnings, for superadmins (the console's system banner) |
 | `/docs`, `/openapi.json` | Interactive API docs and schema. Off when `MODE=prod` unless `ENABLE_API_DOCS=true` |
 
 ---
@@ -762,7 +769,7 @@ So a staff-only assistant (an HR or IT helpdesk) is protected by where the app i
 
 - Publish the app only on your internal network or VPN: an internal load balancer or ingress, no public DNS record, or a reverse proxy that allows only your office and VPN address ranges.
 - If the admin UI must be reachable from outside, put the widget paths (`/widget/` and `/emly-widget.js`) behind the internal-only route and the admin paths behind your identity provider.
-- Set *Allowed widget origins* on every bot to your intranet's address. In production `/api/readyz` lists bots still open to any site.
+- Set *Allowed widget origins* on every bot to your intranet's address. In production the console's system banner lists bots still open to any site.
 - Visitors are told apart only by the token the widget stores in their browser. A form a visitor fills in records what they typed, not who they are.
 
 A public-facing assistant (customer support on your website) needs none of this: it is meant to be reachable by anyone.
@@ -781,6 +788,10 @@ AUTH_LOCAL_BOOTSTRAP_PASSWORD=your-secure-password
 ```
 
 On first boot, the app creates an RSA keypair and seeds the admin account.
+
+Built-in sign-in is meant for one operator and for evaluation. It has no password reset, and admins you invite sign in through an identity provider. For a team, use an external identity provider (below), which turns built-in sign-in off in production.
+
+After `AUTH_LOCAL_LOCKOUT_THRESHOLD` (5) wrong passwords the account is locked for `AUTH_LOCAL_LOCKOUT_DURATION_SECONDS` (15 minutes); the count starts again once a lock runs out. Anyone who knows the address can trigger the lock, so keep the sign-in page off the public internet. To unlock early: `python -m scripts.unlock_local_admin admin@example.com` (Docker: `docker compose exec app python -m scripts.unlock_local_admin admin@example.com`). It is audited as `auth.local.unlocked`.
 
 ### External Identity Provider (SSO)
 
@@ -885,7 +896,7 @@ Back these up together, from the same moment where possible:
    ```
 3. Restore `./data/qdrant` (with Qdrant stopped), or plan to re-index.
 4. Restore `DATA_DIR` (uploads, attachments, `actions.db`, `auth_keys`).
-5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and on `/api/readyz`, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
+5. Start the app. Boot runs any pending migrations and checks every bot's config. A bot whose config no longer loads doesn't stop start-up: it is named in the start-up log and in the console's system banner, and answers "not available" until fixed. Then check `/api/readyz`, sign in, and ask one bot a question that its documents answer.
 
 **Restoring at a different address** (a recovery site, a move, a test restore): set `APP_BASE_URL` to the new address. Admins who use the built-in sign-in are moved to it the first time they sign in (audited as `admin.relinked`, reason `built_in_issuer_moved`). With an external identity provider, add the new redirect URI (`<new address>/api/admin/auth/callback`) to the app registration first. Sessions from the old address end.
 
@@ -919,7 +930,7 @@ Questions that ask for a missing detail come from templates and make no call.
 
 **Answer only from your documents** (*Config → Answer only from your documents*, `require_citation`; on for new bots): topics that answer directly also search the bot's documents, so they behave like knowledge topics: an answer is built from matching passages, and with no match the bot gives the fixed reply instead of answering from the model's general knowledge. Topics that collect details (forms) are unaffected. Existing bots keep it off until an owner turns it on.
 
-**Retrieved passages are data, not instructions.** Wherever an answer template puts `{context}`, the passages arrive between `### Reference passages start ###` and `### Reference passages end ###`, after a line telling the model to use them as information and to ignore any instructions inside them. A passage can't close that fence early (the markers are removed from passage text). This lowers, but can't remove, the risk that a document someone uploaded or a crawled page steers an answer. The model has no tools to call: the worst it can do is answer wrongly. Admins control which documents and sites a bot uses.
+**Retrieved passages are data, not instructions.** Wherever an answer template puts `{context}`, the passages arrive between `### Reference passages start ###` and `### Reference passages end ###`, after a line telling the model to use them as information and to ignore any instructions inside them. A passage can't close that fence early (the markers are removed from passage text). This lowers, but can't remove, the risk that a document someone uploaded or a crawled page steers an answer. The model has no tools to call: the worst it can do is answer wrongly. Answers never load images, in the widget, the admin console or alert emails: an image in an answer shows only as its description, so injected text can't make a browser fetch a URL that carries the conversation. Admins control which documents and sites a bot uses.
 
 **Other calls:**
 
@@ -957,7 +968,7 @@ For one bot, its *Settings* page shows the same as "Where this bot's data goes" 
 | Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused unless their range is in `CRAWL_ALLOWED_PRIVATE_CIDRS`, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
 | Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
 
-Teams and Google Chat check each incoming message's signature with keys fetched from Microsoft and Google, so those two channels need outbound access to them even when everything else runs inside your network. Slack, WhatsApp and Telegram also need to reach their platforms; only the web widget works with no outbound connection.
+Teams and Google Chat check each incoming message's signature with keys fetched from Microsoft and Google, so those two channels need outbound access to them even when everything else runs inside your network. A Teams channel with your Microsoft 365 tenant ID set (*Channels* page) refuses messages from every other tenant; without it, any tenant's users who know the app ID can reach the bot, and the log says so. Google Chat accepts only messages signed for Chat's own service account. Slack, WhatsApp and Telegram also need to reach their platforms; only the web widget works with no outbound connection.
 
 The browser loads the widget from this app. Logo, avatar and launcher icons set by an admin load from wherever their URLs point, unless `WIDGET_ICON_HOSTS` limits them.
 

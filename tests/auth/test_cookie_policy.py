@@ -40,6 +40,30 @@ def test_cookie_secure(monkeypatch, explicit, mode, base, scheme, expected):
     assert cookie_secure(_req(scheme)) is expected
 
 
+def test_forwarded_https_sets_secure_without_a_public_url(monkeypatch):
+    from fastapi import Request
+
+    from services.auth.cookie_policy import cookie_secure
+
+    monkeypatch.setenv("MODE", "dev")
+    monkeypatch.setenv("APP_BASE_URL", "")
+    monkeypatch.delenv("AUTH_COOKIE_SECURE", raising=False)
+    req = Request({
+        "type": "http",
+        "scheme": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/",
+        "raw_path": b"/",
+        "query_string": b"",
+        "headers": [(b"x-forwarded-proto", b"https, http")],
+        "client": ("203.0.113.5", 1234),
+        "server": ("app", 8080),
+    })
+    assert cookie_secure(req) is True
+    assert cookie_secure(_req("http")) is False
+
+
 def test_samesite_defaults_to_lax(monkeypatch):
     from services.auth.cookie_policy import cookie_samesite
 

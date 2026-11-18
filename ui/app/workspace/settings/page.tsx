@@ -333,7 +333,9 @@ export default function WorkspaceSettingsPage() {
           />
 
           <div className="card">
-            <h2 style={{ marginTop: 0 }}>Raw JSON</h2>
+            <h2 style={{ marginTop: 0 }}>
+              <label htmlFor="ws-raw-json">Raw JSON</label>
+            </h2>
             <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
               Everything else lives here. Keys you set in the form above
               are mirrored into this blob. The schema is intentionally
@@ -341,6 +343,7 @@ export default function WorkspaceSettingsPage() {
               per-bot editor when a matching field reads them.
             </p>
             <textarea
+              id="ws-raw-json"
               value={rawJson}
               onChange={(e) => onRawJsonChange(e.target.value)}
               rows={14}

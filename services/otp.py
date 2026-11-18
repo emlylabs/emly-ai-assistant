@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
@@ -32,6 +34,32 @@ DEFAULT_EXPIRES_IN_MINUTES = 5
 WORKSPACE_EXPIRY_KEY = "otp_expires_in_minutes"
 MIN_EXPIRES_IN_MINUTES = 1
 MAX_EXPIRES_IN_MINUTES = 30
+
+
+# S3: a code goes to exactly one plain address: no display name, no list,
+# no whitespace or header-breaking characters.
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+                       r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$")
+MAX_EMAIL_LENGTH = 254
+
+
+def normalize_otp_email(value) -> str | None:
+    """The single address a code may be sent to, lower-cased, or None."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > MAX_EMAIL_LENGTH or not _EMAIL_RE.match(candidate):
+        return None
+    return candidate.lower()
+
+
+def bot_verifies_email(cfg) -> bool:
+    """Whether any of the bot's forms asks for email verification."""
+    for entry in cfg.c_forms_selected or []:
+        for form in entry.values():
+            if form.trigger.get("verify_action"):
+                return True
+    return False
 
 
 def generate_otp() -> str:
@@ -135,13 +163,16 @@ def send_otp_in_email(payload_data: dict) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Emly Labs Verification Code"
     msg["From"] = EMAIL_FROM
-    msg["To"] = payload_data["user_id"]
+    address = normalize_otp_email(payload_data["user_id"])
+    if address is None:  # the route checks first; never send to anything else
+        raise ValueError("OTP recipient is not a single email address")
+    msg["To"] = address
 
     content = EMAIL_OTP_TEMPLATE
-    content = content.replace("{otp_code}", payload_data["otp"])
-    content = content.replace("{email}", payload_data["user_id"])
-    first_name, _, _ = payload_data["user_id"].partition("@")
-    content = content.replace("{first_name}", first_name)
+    content = content.replace("{otp_code}", html.escape(payload_data["otp"]))
+    content = content.replace("{email}", html.escape(address))
+    first_name, _, _ = address.partition("@")
+    content = content.replace("{first_name}", html.escape(first_name))
 
     msg.attach(MIMEText(content, "html"))
     EmailSender(

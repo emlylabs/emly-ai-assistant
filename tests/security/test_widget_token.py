@@ -69,11 +69,12 @@ def _chat_body(user="alice", session=None):
 
 
 def test_init_issues_token_bound_to_user(env):
-    r = env["client"].post(f"/widget/{env['bot'].id}/init", json={"user_id": "alice"})
+    visitor = f"emly-{uuid.uuid4()}"
+    r = env["client"].post(f"/widget/{env['bot'].id}/init", json={"user_id": visitor})
     assert r.status_code == 200
     body = r.json()
-    assert body["user_id"] == "alice"
-    r2 = env["client"].get(f"/widget/{env['bot'].id}/submissions/counts", headers=_auth(body["token"], "alice"))
+    assert body["user_id"] == visitor
+    r2 = env["client"].get(f"/widget/{env['bot'].id}/submissions/counts", headers=_auth(body["token"], visitor))
     assert r2.status_code == 200, r2.text
 
 
@@ -189,6 +190,7 @@ def test_action_otp_uses_email_but_checks_visitor(env, monkeypatch):
 
     monkeypatch.setattr(widget_routes, "create_otp", lambda payload, bot_id: None)
     monkeypatch.setattr(widget_routes, "email_enabled", lambda: True)
+    monkeypatch.setattr(widget_routes, "bot_verifies_email", lambda cfg: True)
     token = env["token_for"](env["bot"], "alice")
     ok = {"user_id": "alice@example.com", "form_title": "auth_authentication", "visitor_id": "alice"}
     r = env["client"].post(
@@ -259,7 +261,19 @@ def test_init_without_user_mints_fresh_id(env):
 
 def test_init_keeps_unclaimed_client_id(env):
     """First visit: the widget's own random id has no history yet."""
-    assert _init(env, user_id="emly-first-visit")["user_id"] == "emly-first-visit"
+    visitor = f"emly-{uuid.uuid4()}"
+    assert _init(env, user_id=visitor)["user_id"] == visitor
+
+
+@pytest.mark.parametrize("supplied", [
+    "0123456789abcdef0123456789abcdef",  # shape of a chat-platform user id (S7)
+    "..", ".", "alice", "emly-first-visit", "emly-../../etc",
+    "EMLY-0F8FAD5B-D9CB-469F-A165-70867728950E",
+])
+def test_init_never_hands_out_other_id_shapes(env, supplied):
+    """S7: only the widget's own ``emly-<uuid4>`` ids can be claimed."""
+    out = _init(env, user_id=supplied)
+    assert out["user_id"] != supplied and out["user_id"].startswith("emly-")
 
 
 def test_init_refuses_id_with_history_without_proof(env):

@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import os
 
-# MODE values that get production-safe defaults. Anything else (``dev``,
-# ``local``, unset) is treated as local development.
+# MODE values that switch production-safe defaults OFF. Production is the
+# default (S8): unset, ``prod`` and anything unrecognised (a typo such as
+# ``live``) all get the safe defaults, so only an explicit choice gets dev.
+DEV_MODES = frozenset({"dev", "development", "local", "test"})
+# Values that name a production-like deployment on purpose (no warning).
 PROD_LIKE_MODES = frozenset({"prod", "production", "preprod", "stage", "staging"})
 
 
@@ -18,8 +21,20 @@ def current_mode() -> str:
 
 
 def is_prod_mode() -> bool:
-    """True when ``MODE`` names a production-like deployment."""
-    return current_mode() in PROD_LIKE_MODES
+    """True unless ``MODE`` explicitly names a development mode."""
+    return current_mode() not in DEV_MODES
+
+
+def mode_warning() -> str | None:
+    """A boot warning when production defaults apply by default rather than
+    by choice: ``MODE`` unset or not a known value."""
+    mode = current_mode()
+    if mode in DEV_MODES or mode in PROD_LIKE_MODES:
+        return None
+    if not mode:
+        return "MODE is not set: using production defaults. Set MODE=prod, or MODE=dev for local development."
+    return (f"MODE={mode!r} is not a known value: using production defaults. "
+            "Set MODE=prod, or MODE=dev for local development.")
 
 
 def env_flag(name: str, default: bool) -> bool:

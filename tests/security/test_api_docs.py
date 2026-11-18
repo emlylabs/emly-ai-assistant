@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
     "mode, override, expected",
     [
         ("dev", None, True),
-        ("", None, True),
+        ("", None, False),  # unset means production (S8)
         ("prod", None, False),
         ("production", None, False),
         ("prod", "true", True),

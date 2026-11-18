@@ -31,6 +31,7 @@ from config import (
 from models.bots import Bots
 from models.emly_messages import FORM_SUBMISSION_MARKER, EMLYMessages, is_form_submission
 from models.emly_users import EMLYUsers
+from services.email_html import sanitize_email_html
 from services.email_service import EmailSender
 from services.scheduler import scheduler
 
@@ -63,9 +64,10 @@ def _normalize_summary_to_html(raw: str) -> str:
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*\n?", "", text)
         text = re.sub(r"\n?```\s*$", "", text).strip()
+    # S5: the summary is model output; keep only plain formatting.
     if text.startswith("<"):
-        return text
-    return mistune.create_markdown()(text)
+        return sanitize_email_html(text)
+    return sanitize_email_html(mistune.create_markdown()(text))
 
 
 def _render_user_details_rows(data: dict) -> tuple[str, str]:
@@ -112,7 +114,7 @@ def _render_transcript(messages) -> str:
         role = (getattr(m, "role", "") or "").lower()
         is_user = role == "user"
         body = getattr(m, "message", "") or ""
-        rendered = _html_escape(body) if is_user else md(body)
+        rendered = _html_escape(body) if is_user else sanitize_email_html(md(body))
         rendered = rendered.replace("\n", "<br>") if is_user else rendered
         label = "User" if is_user else "Assistant"
         bg = _EMAIL_USER_BG if is_user else _EMAIL_BOT_BG
@@ -433,30 +435,19 @@ def send_scheduled_email(
             form_title=form_title or "",
         )
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = email
-    msg.attach(MIMEText(content, "html"))
-
+    attachments = []
     for file in [] if link_only else uploaded_files:
         try:
             with open(file["path"], "rb") as f:
-                file_content = f.read()
-            attachment = MIMEApplication(file_content)
-            attachment.add_header(
-                "Content-Disposition", "attachment", filename=file["filename"]
-            )
-            msg.attach(attachment)
+                attachments.append((file["filename"], f.read()))
         except Exception:
             log.warning("Could not attach file %s", file.get("filename"), exc_info=True)
 
-    EmailSender(
-        smtp_server=EMAIL_SERVER,
-        port=EMAIL_PORT,
-        username=EMAIL_USER,
-        password=EMAIL_PASSWORD,
-    ).send_email(msg)
+    # S17: one job serves every recipient (older jobs carry one address),
+    # so the summary above is made once. Each recipient gets their own
+    # message, so the list of recipients isn't shared.
+    for recipient in ([email] if isinstance(email, str) else list(email or [])):
+        _send_one_alert(recipient, subject, content, attachments)
 
     EMLYMessages.insert_new_message(
         bot_id=bot_id,
@@ -481,8 +472,27 @@ def send_scheduled_email(
     )
 
 
+def _send_one_alert(recipient: str, subject: str, content: str, attachments) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_FROM
+    msg["To"] = recipient
+    msg.attach(MIMEText(content, "html"))
+    for filename, data in attachments:
+        attachment = MIMEApplication(data)
+        attachment.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(attachment)
+
+    EmailSender(
+        smtp_server=EMAIL_SERVER,
+        port=EMAIL_PORT,
+        username=EMAIL_USER,
+        password=EMAIL_PASSWORD,
+    ).send_email(msg)
+
+
 async def send_email_with_attachments(
-    email: str,
+    email,
     user,
     form_data,
     form_title,

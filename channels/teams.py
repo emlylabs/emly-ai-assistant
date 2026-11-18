@@ -58,6 +58,26 @@ class TeamsSecrets(BaseModel):
     tenant_id: Optional[str] = None  # Single-tenant only
     app_type: Literal["MultiTenant", "SingleTenant"] = "MultiTenant"
     valid_service_url_prefixes: List[str] = Field(default_factory=lambda: list(DEFAULT_SERVICE_URL_PREFIXES))
+    # S15: Microsoft 365 tenants whose users may message this bot. Empty
+    # falls back to ``tenant_id``; with neither, any tenant is accepted
+    # (logged once per channel), as before.
+    allowed_tenant_ids: List[str] = Field(default_factory=list)
+
+
+def allowed_tenants(secrets: TeamsSecrets) -> List[str]:
+    ids = [t.strip().lower() for t in secrets.allowed_tenant_ids if t and t.strip()]
+    if not ids and secrets.tenant_id and secrets.tenant_id.strip():
+        ids = [secrets.tenant_id.strip().lower()]
+    return ids
+
+
+def _activity_tenant(body: dict) -> str:
+    tenant = ((body.get("channelData") or {}).get("tenant") or {}).get("id") \
+        or (body.get("conversation") or {}).get("tenantId") or ""
+    return str(tenant).strip().lower()
+
+
+_UNRESTRICTED_WARNED: set = set()
 
 
 class _TeamsAuth(OAuth2ClientCredentials):
@@ -129,6 +149,15 @@ class TeamsAdapter(ChannelAdapter):
         if not _is_trusted_service_url(service_url, secrets.valid_service_url_prefixes):
             log.warning("Teams inbound has untrusted serviceUrl=%s", service_url)
             return False
+        allowed = allowed_tenants(secrets)
+        if allowed:
+            if _activity_tenant(body) not in allowed:
+                log.warning("Teams inbound from a tenant this channel doesn't allow; refused")
+                return False
+        elif secrets.app_id not in _UNRESTRICTED_WARNED:
+            _UNRESTRICTED_WARNED.add(secrets.app_id)
+            log.warning("Teams app %s accepts messages from any Microsoft 365 tenant: set its tenant ID "
+                        "on the Channels page to allow only yours", secrets.app_id)
         return True
 
     def extract_event_id(self, request: Request) -> Optional[str]:
@@ -275,7 +304,15 @@ def _mentions_us(body: dict, app_id: str) -> bool:
 
 
 def _is_trusted_service_url(url: str, prefixes: List[str]) -> bool:
-    return any(url.startswith(p) for p in prefixes if p)
+    """Prefix match on a whole host and path segment: a prefix without a
+    trailing slash (``https://smba.trafficmanager.net``) would otherwise
+    also match ``https://smba.trafficmanager.net.evil.example/`` (S15)."""
+    for p in prefixes:
+        if not p or not p.startswith("https://"):
+            continue
+        if url.startswith(p if p.endswith("/") else p + "/"):
+            return True
+    return False
 
 
 def _decrypt(channel: BotChannelModel) -> TeamsSecrets:

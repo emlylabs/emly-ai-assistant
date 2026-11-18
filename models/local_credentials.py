@@ -146,6 +146,12 @@ class LocalCredentialsTable:
             return None
         new_count = row.failed_attempts + 1
         new_locked = row.locked_until
+        expired = _as_naive_utc(new_locked)
+        if expired is not None and expired <= _now():
+            # S13: a lock that has run out starts a fresh count. Before, the
+            # counter stayed at the threshold, so one wrong password every
+            # lockout period kept the account locked for good.
+            new_count, new_locked = 1, None
         if new_count >= lockout_threshold:
             from datetime import timedelta
             new_locked = _now() + timedelta(seconds=lockout_duration_seconds)

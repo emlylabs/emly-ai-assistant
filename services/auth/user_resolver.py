@@ -100,8 +100,9 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
         if not bot_id or role not in ROLES:
             log.warning("Skipping invalid pending bot assignment: %r", entry)
             continue
-        if Bots.get_by_id(bot_id) is None:
-            log.warning("Skipping pending bot assignment for nonexistent bot %s", bot_id)
+        bot = Bots.get_by_id(bot_id)
+        if bot is None or getattr(bot, "is_deleted", False):
+            log.warning("Skipping pending bot assignment for missing or deleted bot %s", bot_id)
             continue
         existing = AdminBotMemberships.get(admin_id, bot_id)
         if existing is not None:
@@ -119,6 +120,60 @@ def _apply_pending_assignments(admin_id: str, assignments: list[dict]) -> None:
             )
 
 
+def invite_authority_problem(pending) -> str | None:
+    """Why an invite may no longer be honoured, or None (S20).
+
+    An invite carries its inviter's authority at the time it was sent. At
+    acceptance the inviter must still hold it: not deleted or deactivated,
+    a superadmin for a superadmin invite, and an owner (or superadmin) of
+    every bot it grants. A space invite whose bot was deleted is void; a
+    legacy multi-bot invite just skips that grant. Invites with no inviter
+    come from the bootstrap."""
+
+    inviter = None
+    if pending.invited_by:
+        inviter = AdminUsers.get_by_id(pending.invited_by)
+        if inviter is None or not inviter.is_active:
+            return "inviter_gone"
+        if pending.is_superadmin and not inviter.is_superadmin:
+            return "inviter_not_superadmin"
+    for entry in pending.bot_assignments or []:
+        bot = Bots.get_by_id(entry.get("bot_id") or "")
+        if bot is None or getattr(bot, "is_deleted", False):
+            if pending.kind == KIND_SUPERADMIN_LEGACY:
+                continue  # that grant is skipped; the rest still apply
+            return "bot_gone"
+        if inviter is not None and not inviter.is_superadmin:
+            membership = AdminBotMemberships.get(inviter.id, bot.id)
+            if membership is None or membership.role != "owner":
+                return "inviter_not_owner"
+    return None
+
+
+def _email_to_sync(existing: AdminUserModel, principal: Principal) -> str | None:
+    """The IdP email to store on an already-linked admin, or None to keep
+    the stored one (S6).
+
+    Invites are matched on the admin's stored email, so a linked identity
+    may take a new address only under the same rule a new admin gets
+    (step 3): the IdP reports it verified. It may never take an address
+    another admin already has (that also used to fail every request with a
+    unique-constraint error)."""
+    new = principal.email.lower() if principal.email else None
+    if new is None or new == (existing.email or "").lower():
+        return None
+    if not principal.email_verified:
+        log.warning("Not updating email for admin %s: the IdP reports the new address unverified",
+                    existing.id)
+        return None
+    other = AdminUsers.get_by_email(new)
+    if other is not None and other.id != existing.id:
+        log.warning("Not updating email for admin %s: the new address belongs to admin %s",
+                    existing.id, other.id)
+        return None
+    return new
+
+
 def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) -> AdminUserModel:
     """Map an authenticated ``Principal`` to a row in ``admin_user``.
 
@@ -131,10 +186,11 @@ def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) 
         # 1) Existing OIDC link.
         existing = AdminUsers.get_by_issuer_subject(principal.issuer, principal.subject)
         if existing is not None:
+            synced_email = _email_to_sync(existing, principal)
             if record_login:
-                AdminUsers.touch_login(existing.id, email=principal.email, name=principal.name)
+                AdminUsers.touch_login(existing.id, email=synced_email, name=principal.name)
                 return _refetch(existing.id)
-            email = principal.email.lower() if principal.email else None
+            email = synced_email
             changed = {}
             if email is not None and email != (existing.email or ""):
                 changed["email"] = email
@@ -207,7 +263,14 @@ def resolve_or_create_admin(principal: Principal, *, record_login: bool = True) 
         #   ``/accept-invite`` page. The resolver does NOT consume these
         #   here; it just records that they exist so the callback can
         #   route the user to the picker.
-        all_pending = PendingAdmins.list_pending_for_email(principal.email)
+        all_pending = []
+        for pending in PendingAdmins.list_pending_for_email(principal.email):
+            problem = invite_authority_problem(pending)
+            if problem:
+                log.warning("Revoking invite %s at sign-in: %s", pending.id, problem)
+                PendingAdmins.mark_revoked(pending.id, None)
+                continue
+            all_pending.append(pending)
         legacy_pending = [p for p in all_pending if p.kind == KIND_SUPERADMIN_LEGACY]
         space_invites = [p for p in all_pending if p.kind != KIND_SUPERADMIN_LEGACY]
 

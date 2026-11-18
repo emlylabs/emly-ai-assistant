@@ -84,6 +84,15 @@ def test_hsts_only_when_public_url_is_https(client):
     assert r.headers["strict-transport-security"] == "max-age=31536000"
 
 
+def test_hsts_when_the_browser_used_https(client):
+    r = client(None).get("/api/admin/bots", headers={"x-forwarded-proto": "https"})
+    assert r.headers["strict-transport-security"] == "max-age=31536000"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    plain = client(None).get("/bots/x/config")
+    assert "strict-transport-security" not in plain.headers
+    assert plain.headers["x-content-type-options"] == "nosniff"
+
+
 def test_streaming_response_passes_through(client):
     r = client().get("/stream")
     assert r.text == "a\nb\n"

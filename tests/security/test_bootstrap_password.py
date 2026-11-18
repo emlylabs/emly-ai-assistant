@@ -77,3 +77,32 @@ def test_remove_bootstrap_password_file(bootstrap_env):
     assert not bootstrap_password_path(bootstrap_env).exists()
     # Idempotent.
     remove_bootstrap_password_file(bootstrap_env)
+
+
+
+# -------- S12: bootstrap only sets up an empty workspace --------
+
+
+def test_bootstrap_runs_on_an_empty_workspace(bootstrap_env):
+    from models.pending_admins import PendingAdmins
+    from services.auth.bootstrap import bootstrap_password_path, bootstrap_pending_superadmin
+
+    bootstrap_pending_superadmin(bootstrap_env)
+    pending = PendingAdmins.get_active_by_email("boot@example.com")
+    assert pending is not None and pending.is_superadmin
+    assert bootstrap_password_path(bootstrap_env).exists()
+
+
+def test_deleted_bootstrap_superadmin_is_not_recreated(bootstrap_env):
+    from models.admin_users import AdminUsers
+    from models.pending_admins import PendingAdmins
+    from services.auth.bootstrap import bootstrap_password_path, bootstrap_pending_superadmin
+
+    # The bootstrap admin was activated, then deleted by another superadmin.
+    AdminUsers.insert(id="adm-root", email="boot@example.com", is_active=True, is_superadmin=True)
+    AdminUsers.soft_delete("adm-root")
+
+    bootstrap_pending_superadmin(bootstrap_env)  # the next boot
+
+    assert PendingAdmins.get_active_by_email("boot@example.com") is None
+    assert not bootstrap_password_path(bootstrap_env).exists()

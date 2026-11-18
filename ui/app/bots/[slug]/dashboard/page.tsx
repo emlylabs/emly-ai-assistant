@@ -15,7 +15,7 @@ import {
   type DailyMessageBucket,
   type Message,
 } from "@/lib/api";
-import { bucketDistinctByDay, weekOverWeekDelta } from "@/lib/aggregations";
+import { bucketDistinctByDay, parseServerDate, weekOverWeekDelta } from "@/lib/aggregations";
 import { isSetupDismissed, markSetupDismissed } from "@/lib/setup-state";
 
 type Stats = {
@@ -102,7 +102,7 @@ export default function BotDashboardPage() {
     let count = 0;
     for (const f of files) {
       if (!f.created_at) continue;
-      const t = new Date(f.created_at).getTime();
+      const t = parseServerDate(f.created_at).getTime();
       if (Number.isFinite(t) && t >= cutoff) count += 1;
     }
     return count;
@@ -116,7 +116,7 @@ export default function BotDashboardPage() {
     if (!crawlJobs || crawlJobs.length === 0) return null;
     const tsOf = (j: typeof crawlJobs[number]) => {
       const t = j.completed_at ?? j.updated_at ?? j.created_at;
-      return t ? new Date(t).getTime() : 0;
+      return t ? parseServerDate(t).getTime() : 0;
     };
     const sorted = [...crawlJobs].sort((a, b) => tsOf(b) - tsOf(a));
     return sorted[0];
@@ -126,7 +126,7 @@ export default function BotDashboardPage() {
     if (!lastCrawl) return null;
     const ts = lastCrawl.completed_at ?? lastCrawl.updated_at ?? lastCrawl.created_at;
     if (!ts) return null;
-    const elapsedMs = Date.now() - new Date(ts).getTime();
+    const elapsedMs = Date.now() - parseServerDate(ts).getTime();
     if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return null;
     const mins = Math.floor(elapsedMs / 60000);
     if (mins < 1) return "just now";

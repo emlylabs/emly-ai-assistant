@@ -18,6 +18,8 @@ from pathlib import Path
 _TEST_DATA_DIR = Path(tempfile.gettempdir()) / "ai-assistant-tests"
 _TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# Unset MODE means production (S8); tests opt into dev unless they set it.
+os.environ.setdefault("MODE", "dev")
 os.environ.setdefault("DATA_DIR", str(_TEST_DATA_DIR))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{_TEST_DATA_DIR}/test.db")
 os.environ.setdefault("JOB_ID", "test-bot")

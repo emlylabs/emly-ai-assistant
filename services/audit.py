@@ -282,3 +282,64 @@ def purge_expired_audit_rows() -> int:
         audit("audit.purged", payload={"removed": removed, "retention_days": days,
                                        "cutoff": cutoff.isoformat()})
     return removed
+
+
+# -------- change and audit row together (S21) --------
+
+def audited_change(fn):
+    """Run a route handler in one database transaction, so a security
+    change and its audit row are written together.
+
+    With fail-closed auditing, a route that changed something and then
+    failed to write its audit row used to answer 503 with the change
+    already made. Inside this transaction the change is rolled back
+    instead. An ``HTTPException`` (a refusal) commits, so the
+    ``authz.denied`` row a check wrote is kept.
+
+    Only for handlers that never ``await``: a transaction held across an
+    await on the event-loop thread would take in other requests' writes.
+    ``tests/security/test_audited_change.py`` checks that.
+    """
+    import functools
+    import inspect
+
+    from fastapi import HTTPException
+
+    from db.db import DB
+
+    def _finish(txn, exc):
+        if exc is None or isinstance(exc, HTTPException):
+            txn.__exit__(None, None, None)
+        else:
+            txn.__exit__(type(exc), exc, exc.__traceback__)
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args, **kwargs):
+            txn = DB.atomic()
+            txn.__enter__()
+            try:
+                result = await fn(*args, **kwargs)
+            except BaseException as exc:
+                _finish(txn, exc)
+                raise
+            _finish(txn, None)
+            return result
+
+        async_wrapper.__audited_change__ = True
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        txn = DB.atomic()
+        txn.__enter__()
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:
+            _finish(txn, exc)
+            raise
+        _finish(txn, None)
+        return result
+
+    wrapper.__audited_change__ = True
+    return wrapper

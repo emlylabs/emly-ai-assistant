@@ -228,24 +228,15 @@ class WhatsAppCloudAdapter(ChannelAdapter):
         body = _peek_or_read(request)
         if not body:
             return None
-        try:
-            messages = body["entry"][0]["changes"][0]["value"].get("messages") or []
-            if messages:
-                return messages[0].get("id")
-        except Exception:
-            return None
-        return None
+        found = _first_message(body, None)
+        return found[1].get("id") if found else None
 
     async def parse_inbound(self, request: Request, secrets: WhatsAppCloudSecrets) -> Optional[IncomingMessage]:
         body = _peek_or_read(request) or {}
-        try:
-            value = body["entry"][0]["changes"][0]["value"]
-        except Exception:
+        found = _first_message(body, secrets.phone_number_id)
+        if found is None:
             return None
-        messages = value.get("messages") or []
-        if not messages:
-            return None
-        msg = messages[0]
+        value, msg = found
         msg_type = msg.get("type")
         from_number = msg.get("from", "")
         # ``contacts`` carries the sender's WhatsApp profile name.
@@ -414,6 +405,34 @@ def _peek_or_read(request: Request) -> Optional[dict]:
 def _decrypt(channel: BotChannelModel) -> WhatsAppCloudSecrets:
     from channels.dispatcher import decrypt_secrets
     return decrypt_secrets(channel)  # type: ignore[return-value]
+
+
+def _first_message(body: dict, phone_number_id: Optional[str]):
+    """The first ``(value, message)`` in a webhook delivery, or None (S16).
+
+    The signature uses the deployment-wide ``META_APP_SECRET`` and the
+    channel comes from the URL, so with two bots on two numbers under one
+    Meta app a delivery for number B could reach bot A. Only changes whose
+    ``metadata.phone_number_id`` is this channel's number are used. Every
+    entry and change is looked at, not just the first; one message is
+    handled per delivery, and any others are logged as skipped.
+    """
+    matches = []
+    for entry in body.get("entry") or []:
+        for change in (entry or {}).get("changes") or []:
+            value = (change or {}).get("value") or {}
+            number = str((value.get("metadata") or {}).get("phone_number_id") or "")
+            if phone_number_id is not None and number != str(phone_number_id):
+                if value.get("messages"):
+                    log.warning("WhatsApp delivery for another phone number ignored by this channel")
+                continue
+            for msg in value.get("messages") or []:
+                matches.append((value, msg))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        log.warning("WhatsApp delivery carried %d messages; only the first was handled", len(matches))
+    return matches[0]
 
 
 register(WhatsAppCloudAdapter())
