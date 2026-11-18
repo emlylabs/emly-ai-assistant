@@ -3,6 +3,7 @@ import UserMessage from './UserMessage';
 import BotMessage from './BotMessage';
 import FormBubble from './forms/FormBubble';
 import type { Message } from '../utils/sessionManager';
+import type { TtsProvider } from '../utils/speech';
 
 export interface ActionChip {
     key: string;
@@ -48,6 +49,8 @@ interface ChatbotBodyProps {
     enableVoice?: boolean;
     /** Bot's BCP-47 voice language; falls back to the browser language. */
     voiceLanguage?: string | null;
+    ttsProvider?: TtsProvider;
+    fetchTtsAudio?: (plain: string) => Promise<Blob>;
 }
 
 const ChatbotBody: React.FC<ChatbotBodyProps> = ({
@@ -69,6 +72,8 @@ const ChatbotBody: React.FC<ChatbotBodyProps> = ({
     showCitations,
     enableVoice,
     voiceLanguage,
+    ttsProvider,
+    fetchTtsAudio,
 }) => {
     const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -137,6 +142,8 @@ const ChatbotBody: React.FC<ChatbotBodyProps> = ({
                                 showCitations={showCitations}
                                 enableVoice={enableVoice}
                                 voiceLanguage={voiceLanguage}
+                                ttsProvider={ttsProvider}
+                                fetchTtsAudio={fetchTtsAudio}
                             />
                             {(showLinkChips || showCardChips) && (
                                 <ul className="emw-action-chips" role="list">

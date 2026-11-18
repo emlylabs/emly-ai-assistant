@@ -98,3 +98,23 @@ def test_voice_language_round_trips():
 def test_voice_language_rejects_non_bcp47(bad):
     with pytest.raises(ValidationError):
         BotConfig.model_validate({"voice_language": bad})
+
+
+def test_tts_provider_deepgram_round_trips():
+    cfg = BotConfig.model_validate({
+        "enable_voice": True,
+        "stt_provider": "deepgram",
+        "tts_provider": "deepgram",
+        "deepgram_tts_model": "aura-2-thalia-en",
+        "deepgram_stt_model": "nova-3",
+    })
+    dumped = cfg.model_dump(mode="json", exclude_none=True)
+    assert dumped["stt_provider"] == "deepgram"
+    assert dumped["tts_provider"] == "deepgram"
+    assert dumped["deepgram_tts_model"] == "aura-2-thalia-en"
+    assert dumped["deepgram_stt_model"] == "nova-3"
+
+
+def test_tts_provider_invalid_rejected():
+    with pytest.raises(ValidationError):
+        BotConfig.model_validate({"tts_provider": "elevenlabs"})

@@ -127,15 +127,23 @@ class BotConfig(BaseModel):
     feedback: Optional[bool] = None
     show_citations: Optional[bool] = None
     # Widget: browser Web Speech API mic input + spoken replies
-    # (Chrome/Edge). Voice is processed by the visitor's browser vendor
-    # (e.g. Google for Chrome, Microsoft for Edge). Audio does not pass
-    # through Emly servers. The microphone needs HTTPS (or localhost).
+    # (Chrome/Edge). Browser voice is processed by the visitor's browser
+    # vendor (e.g. Google for Chrome, Microsoft for Edge) and does not pass
+    # through Emly servers. STT and TTS can each use Deepgram instead
+    # (``stt_provider`` / ``tts_provider``), with a server-side key
+    # (per-bot or DEEPGRAM_API_KEY). The microphone needs HTTPS (or localhost).
     enable_voice: Optional[bool] = None
     # BCP-47 tag (e.g. "es-MX") for mic input and spoken replies. None
     # means the widget uses the visitor's browser language.
     voice_language: Optional[str] = Field(
         default=None, pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
     )
+    # Mic STT: browser Web Speech (default) or Deepgram (server-side key).
+    stt_provider: Optional[Literal["browser", "deepgram"]] = None
+    # Spoken replies: browser speechSynthesis (default) or Deepgram Aura.
+    tts_provider: Optional[Literal["browser", "deepgram"]] = None
+    deepgram_tts_model: Optional[str] = None
+    deepgram_stt_model: Optional[str] = None
 
     # Conversational
     starter_messages: Optional[List[str]] = None

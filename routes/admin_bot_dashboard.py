@@ -1578,6 +1578,50 @@ def bot_get_api_key_status(
     }
 
 
+class DeepgramKeyPayload(BaseModel):
+    api_key: Optional[str] = None  # ``None`` / empty clears the stored key.
+
+
+@router.put("/bots/{slug}/deepgram-api-key", status_code=status.HTTP_204_NO_CONTENT)
+@audited_change
+def bot_put_deepgram_api_key(
+    slug: str,
+    payload: DeepgramKeyPayload,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Set or clear the per-bot Deepgram key used for widget STT/TTS."""
+    from services import deepgram
+    from services.audit import audit
+
+    bot = _resolve_bot(slug)
+    _require_writer(admin, bot.id)
+    deepgram.set_bot_api_key(bot.id, payload.api_key)
+    audit(
+        "bot.deepgram_api_key.cleared" if not (payload.api_key or "").strip() else "bot.deepgram_api_key.set",
+        admin_id=admin.id,
+        bot_id=bot.id,
+        target_type="bot",
+        target_id=bot.id,
+    )
+
+
+@router.get("/bots/{slug}/deepgram-api-key/status")
+def bot_get_deepgram_api_key_status(
+    slug: str,
+    admin: AdminUserModel = Depends(get_admin),
+):
+    """Whether a Deepgram key is available — never returns the value."""
+    from services import deepgram
+
+    bot = _resolve_bot(slug)
+    _require_member(admin, bot.id)
+    return {
+        "has_key": bool(bot.deepgram_api_key_encrypted),
+        "has_deployment_fallback": bool(deepgram.deployment_api_key()),
+        "configured": deepgram.deepgram_configured(bot.id),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Config history — snapshots are written on every save (see bot_put_config).
 # The list endpoint feeds the per-bot "History" tab; restore promotes an

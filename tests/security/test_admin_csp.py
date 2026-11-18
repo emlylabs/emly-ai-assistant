@@ -58,7 +58,8 @@ def test_ui_pages_get_a_strict_script_policy(ui_dir):
     for h in inline_script_hashes(PAGE):
         assert h in script
     assert "unsafe-inline" not in script and "unsafe-eval" not in script
-    for d in ("default-src 'self'", "connect-src 'self'", "object-src 'none'", "base-uri 'self'"):
+    for d in ("default-src 'self'", "connect-src 'self'", "object-src 'none'",
+              "base-uri 'self'", "media-src 'self' blob:"):
         assert d in policy
 
     # The middleware keeps it and adds the anti-framing directive.

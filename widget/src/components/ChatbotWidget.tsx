@@ -21,15 +21,17 @@ import type { MessageForm, Citation } from '../utils/sessionManager';
 import { buildCandidateSummary, extractCandidateArray } from '../utils/candidateData';
 import ChatSessionManager from './ChatSessionManager'; // Import ChatSessionManager
 // import { CHATBOT_THEMES, resolveChatbotTheme, type ChatbotTheme } from '../utils/chatbotThemes';
-import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, fetchBotConfig, recordImpression } from '../embed';
+import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, getTtsUrl, getSttUrl, fetchBotConfig, recordImpression } from '../embed';
 import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
 import {
-  isSpeechSynthesisSupported,
+  canSpeak,
   silenceVoice,
   speak,
   stopSpeaking,
+  type SttProvider,
+  type TtsProvider,
 } from '../utils/speech';
 
 /* Theme utility functions - hidden
@@ -253,6 +255,31 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   const speakNextReplyRef = useRef(false);
   const isOpenRef = useRef(false);
   const sendMessageRef = useRef<(text: string, opts?: { fromVoice?: boolean }) => void>(() => {});
+  const fetchTtsAudio = React.useCallback(async (plain: string): Promise<Blob> => {
+    const url = getTtsUrl();
+    if (!url) throw new Error('TTS URL is not configured');
+    const response = await widgetFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: plain }),
+    });
+    if (!response.ok) {
+      throw new Error(`TTS request failed (${response.status})`);
+    }
+    return response.blob();
+  }, []);
+  const transcribeAudio = React.useCallback(async (blob: Blob): Promise<string> => {
+    const url = getSttUrl();
+    if (!url) throw new Error('STT URL is not configured');
+    const body = new FormData();
+    body.append('audio', blob, 'recording.webm');
+    const response = await widgetFetch(url, { method: 'POST', body });
+    if (!response.ok) {
+      throw new Error(`STT request failed (${response.status})`);
+    }
+    const data = (await response.json()) as { transcript?: string };
+    return (data.transcript || '').trim();
+  }, []);
   const dispatch = useDispatch();
   const { messages, sessions, activeSessionId } = useSelector((state: RootState) => state.messages);
   const firstSessionId = sessions[0]?.id ?? null;
@@ -801,6 +828,8 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
         const bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
         // Voice in → speak + show text. Typed in → text only (speaker
         // button still lets the user play the reply on demand).
+        const ttsProvider: TtsProvider =
+          botConfig?.tts_provider === 'deepgram' ? 'deepgram' : 'browser';
         // iOS Safari ignores speak() outside a user gesture, so this
         // automatic read-aloud can fail silently there. The speaker
         // button on the bubble is the gesture that works.
@@ -808,9 +837,14 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
           speakNextReplyRef.current &&
           isOpenRef.current &&
           Boolean(botConfig?.enable_voice) &&
-          isSpeechSynthesisSupported();
+          canSpeak(ttsProvider);
         if (shouldSpeak) {
-          speak(cleaned, { speakId: bubbleId, lang: botConfig?.voice_language });
+          speak(cleaned, {
+            speakId: bubbleId,
+            lang: botConfig?.voice_language,
+            provider: ttsProvider,
+            fetchAudio: ttsProvider === 'deepgram' ? fetchTtsAudio : undefined,
+          });
         }
       }
       if (code) {
@@ -1116,6 +1150,8 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             showCitations={Boolean(botConfig?.show_citations)}
             enableVoice={Boolean(botConfig?.enable_voice)}
             voiceLanguage={botConfig?.voice_language}
+            ttsProvider={botConfig?.tts_provider === 'deepgram' ? 'deepgram' : 'browser'}
+            fetchTtsAudio={fetchTtsAudio}
           />
           <ChatbotFooter
             newMessage={newMessage}
@@ -1126,6 +1162,8 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             botIsTyping={botIsTyping || pendingStartChat}
             enableVoice={Boolean(botConfig?.enable_voice)}
             voiceLanguage={botConfig?.voice_language}
+            sttProvider={(botConfig?.stt_provider === 'deepgram' ? 'deepgram' : 'browser') as SttProvider}
+            transcribeAudio={transcribeAudio}
           />
           <div className="emly-attribution" aria-label="Branding">
             <span>Powered by</span>

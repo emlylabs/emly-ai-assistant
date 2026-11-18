@@ -1,8 +1,13 @@
 /**
- * Browser Web Speech API helpers for the embeddable widget.
+ * Voice helpers for the embeddable widget.
  *
- * Voice is processed by the visitor's browser vendor (e.g. Google for
- * Chrome, Microsoft for Edge). Audio does not pass through Emly servers.
+ * - STT (mic): browser Web Speech API (default) or Deepgram via the
+ *   backend STT endpoint.
+ * - TTS: browser ``speechSynthesis`` (default) or Deepgram via the
+ *   backend ``/widget/{bot}/tts`` endpoint (API key stays server-side).
+ *
+ * Browser voice is processed by the visitor's browser vendor (e.g. Google
+ * for Chrome, Microsoft for Edge) and does not pass through Emly servers.
  * Mic access needs a secure context (HTTPS or localhost).
  *
  * iOS Safari only speaks when `speak()` runs inside a user gesture, so
@@ -180,12 +185,19 @@ export type SpeechProgress = {
   speaking: boolean;
 };
 
+export type TtsProvider = 'browser' | 'deepgram';
+export type SttProvider = 'browser' | 'deepgram';
+
 type SpeakOptions = {
   /** Correlates progress with a chat message bubble. */
   speakId?: string;
   /** BCP-47 tag; falls back to the browser language. */
   lang?: string | null;
   onEnd?: () => void;
+  /** Default ``browser``. ``deepgram`` needs ``fetchAudio``. */
+  provider?: TtsProvider;
+  /** POST plain text to the backend and return an audio blob (MP3). */
+  fetchAudio?: (plain: string) => Promise<Blob>;
 };
 
 const WATCHDOG_INTERVAL_MS = 250;
@@ -196,6 +208,10 @@ let activeRecognition: SpeechRecognitionLike | null = null;
 let listening = false;
 const listeningListeners = new Set<(on: boolean) => void>();
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let activeAudio: HTMLAudioElement | null = null;
+let activeObjectUrl: string | null = null;
+/** Bumped on every speak/stop so a slow Deepgram fetch can tell it was superseded. */
+let speakGeneration = 0;
 let watchdogTimer: number | null = null;
 let progress: SpeechProgress = { speakId: null, speaking: false };
 const progressListeners = new Set<(next: SpeechProgress) => void>();
@@ -341,10 +357,35 @@ function cancelSynthesis(): void {
   }
 }
 
+function stopActiveAudio(): void {
+  if (activeAudio) {
+    try {
+      activeAudio.onended = null;
+      activeAudio.onerror = null;
+      activeAudio.pause();
+      activeAudio.removeAttribute('src');
+      activeAudio.load();
+    } catch {
+      // ignore
+    }
+    activeAudio = null;
+  }
+  if (activeObjectUrl) {
+    try {
+      URL.revokeObjectURL(activeObjectUrl);
+    } catch {
+      // ignore
+    }
+    activeObjectUrl = null;
+  }
+}
+
 export function stopSpeaking(): void {
+  speakGeneration += 1;
   const hadUtterance = activeUtterance !== null;
   activeUtterance = null;
   stopWatchdog();
+  stopActiveAudio();
   // Cancel only speech this widget started. The widget is mounted in the
   // host page, so an unconditional cancel would cut off the host's audio.
   if (hadUtterance && isSpeechSynthesisSupported()) {
@@ -355,15 +396,8 @@ export function stopSpeaking(): void {
   }
 }
 
-export function speak(text: string, options: SpeakOptions = {}): boolean {
+function speakBrowser(plain: string, options: SpeakOptions): boolean {
   if (!isSpeechSynthesisSupported()) return false;
-  const plain = plainTextForSpeech(text);
-  if (!plain) return false;
-
-  // The mic would otherwise transcribe the reply from the speakers and
-  // send it as the visitor's next message.
-  stopListening();
-  stopSpeaking();
   try {
     const utterance = new SpeechSynthesisUtterance(plain);
     utterance.lang = resolveVoiceLang(options.lang);
@@ -428,9 +462,74 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
   }
 }
 
+async function speakDeepgram(plain: string, options: SpeakOptions): Promise<void> {
+  const fetchAudio = options.fetchAudio;
+  if (!fetchAudio) {
+    speakBrowser(plain, options);
+    return;
+  }
+
+  const generation = speakGeneration;
+  const speakId = options.speakId ?? null;
+  setProgress({ speakId, speaking: true });
+
+  try {
+    const blob = await fetchAudio(plain);
+    // A newer speak/stop may have started while we awaited.
+    if (generation !== speakGeneration) return;
+
+    stopActiveAudio();
+    const objectUrl = URL.createObjectURL(blob);
+    activeObjectUrl = objectUrl;
+    const audio = new Audio(objectUrl);
+    activeAudio = audio;
+
+    const finish = () => {
+      if (activeAudio !== audio) return;
+      stopActiveAudio();
+      clearSpeechProgress();
+      options.onEnd?.();
+    };
+    audio.onended = finish;
+    audio.onerror = finish;
+
+    await audio.play();
+  } catch (err) {
+    console.warn('Deepgram TTS failed; falling back to browser speech', err);
+    if (generation === speakGeneration) {
+      stopActiveAudio();
+      if (!speakBrowser(plain, options)) clearSpeechProgress();
+    }
+  }
+}
+
+export function speak(text: string, options: SpeakOptions = {}): boolean {
+  const provider = options.provider === 'deepgram' ? 'deepgram' : 'browser';
+  if (!canSpeak(provider)) return false;
+  const plain = plainTextForSpeech(text);
+  if (!plain) return false;
+
+  // The mic would otherwise transcribe the reply from the speakers and
+  // send it as the visitor's next message.
+  stopListening();
+  stopSpeaking();
+  if (provider === 'deepgram') {
+    void speakDeepgram(plain, options);
+    return true;
+  }
+  return speakBrowser(plain, options);
+}
+
 export function isSpeaking(): boolean {
-  if (!isSpeechSynthesisSupported()) return false;
-  return window.speechSynthesis.speaking || progress.speaking;
+  if (activeAudio && !activeAudio.paused) return true;
+  if (isSpeechSynthesisSupported() && window.speechSynthesis.speaking) return true;
+  return progress.speaking;
+}
+
+/** True when any TTS path can run (browser synthesis and/or Deepgram fetch). */
+export function canSpeak(provider: TtsProvider = 'browser'): boolean {
+  if (provider === 'deepgram') return typeof Audio !== 'undefined';
+  return isSpeechSynthesisSupported();
 }
 
 /** Stop mic + TTS — use when the user leaves the chat surface. */

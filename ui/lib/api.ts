@@ -1548,6 +1548,18 @@ export const api = {
       `/bots/${encodeURIComponent(slug)}/api-key`,
       { api_key }
     ),
+  getBotDeepgramApiKeyStatus: (slug: string) =>
+    request<{
+      has_key: boolean;
+      has_deployment_fallback: boolean;
+      configured: boolean;
+    }>("GET", `/bots/${encodeURIComponent(slug)}/deepgram-api-key/status`),
+  putBotDeepgramApiKey: (slug: string, api_key: string | null) =>
+    request<void>(
+      "PUT",
+      `/bots/${encodeURIComponent(slug)}/deepgram-api-key`,
+      { api_key }
+    ),
   ragSearch: (
     slug: string,
     payload: { query: string; top_k?: number; threshold?: number }

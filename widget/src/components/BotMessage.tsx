@@ -7,11 +7,12 @@ import MessageFeedback from './MessageFeedback';
 import CitationPills from './CitationPills';
 import type { Citation } from '../utils/sessionManager';
 import {
-    isSpeechSynthesisSupported,
+    canSpeak,
     speak,
     stopSpeaking,
     subscribeSpeechProgress,
     type SpeechProgress,
+    type TtsProvider,
 } from '../utils/speech';
 
 interface BotMessageProps {
@@ -39,6 +40,8 @@ interface BotMessageProps {
     enableVoice?: boolean;
     /** Bot's BCP-47 voice language; falls back to the browser language. */
     voiceLanguage?: string | null;
+    ttsProvider?: TtsProvider;
+    fetchTtsAudio?: (plain: string) => Promise<Blob>;
 }
 
 const BotMessage: React.FC<BotMessageProps> = ({
@@ -57,6 +60,8 @@ const BotMessage: React.FC<BotMessageProps> = ({
     showCitations,
     enableVoice,
     voiceLanguage,
+    ttsProvider = 'browser',
+    fetchTtsAudio,
 }) => {
     // Renders bot replies as markdown (GFM). Mirrors the
     // your-assistant/src/Utility/MarkdownRenderer.js pattern but stays
@@ -90,7 +95,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
 
     const showSpeak =
         Boolean(enableVoice) &&
-        isSpeechSynthesisSupported() &&
+        canSpeak(ttsProvider) &&
         !isLoading &&
         Boolean(text?.trim());
 
@@ -99,7 +104,12 @@ const BotMessage: React.FC<BotMessageProps> = ({
             stopSpeaking();
             return;
         }
-        speak(text, { speakId: messageKey, lang: voiceLanguage });
+        speak(text, {
+            speakId: messageKey,
+            lang: voiceLanguage,
+            provider: ttsProvider,
+            fetchAudio: ttsProvider === 'deepgram' ? fetchTtsAudio : undefined,
+        });
     };
 
     const linkTarget = openLinkInSameTab ? undefined : '_blank';

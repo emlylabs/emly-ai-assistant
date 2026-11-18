@@ -43,6 +43,8 @@ class Bot(Model):
     config_schema_version = IntegerField(default=1)
     config_version = IntegerField(default=0)
     api_key_encrypted = TextField(null=True)
+    # Per-bot Deepgram key for widget STT/TTS (falls back to DEEPGRAM_API_KEY).
+    deepgram_api_key_encrypted = TextField(null=True)
     embed_model_id = CharField(max_length=255, null=True)
     current_owner_count = IntegerField(default=0)
     # Widget HMAC key versioning. Bumped via ``Bots.rotate_widget_key`` to
@@ -88,6 +90,7 @@ class BotModel(BaseModel):
     config_schema_version: int
     config_version: int = 0
     api_key_encrypted: Optional[str] = None
+    deepgram_api_key_encrypted: Optional[str] = None
     embed_model_id: Optional[str] = None
     current_owner_count: int
     widget_key_version: int = 1
@@ -276,6 +279,17 @@ class BotsTable:
     def update_api_key(self, id: str, api_key_encrypted: Optional[str]) -> bool:
         rows = (
             Bot.update(api_key_encrypted=api_key_encrypted, updated_at=datetime.utcnow())
+            .where(Bot.id == id)
+            .execute()
+        )
+        return rows > 0
+
+    def update_deepgram_api_key(self, id: str, deepgram_api_key_encrypted: Optional[str]) -> bool:
+        rows = (
+            Bot.update(
+                deepgram_api_key_encrypted=deepgram_api_key_encrypted,
+                updated_at=datetime.utcnow(),
+            )
             .where(Bot.id == id)
             .execute()
         )

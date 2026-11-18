@@ -50,6 +50,20 @@ export const getChatUrl = (): string => {
   return `${baseUrl}/widget/${encodeURIComponent(botId)}/chat`;
 };
 
+/** Deepgram TTS proxy — API key stays on the server. */
+export const getTtsUrl = (): string => {
+  const { baseUrl, botId } = chatbotConfig;
+  if (!botId) return '';
+  return `${baseUrl}/widget/${encodeURIComponent(botId)}/tts`;
+};
+
+/** Deepgram STT proxy — upload a short mic recording. */
+export const getSttUrl = (): string => {
+  const { baseUrl, botId } = chatbotConfig;
+  if (!botId) return '';
+  return `${baseUrl}/widget/${encodeURIComponent(botId)}/stt`;
+};
+
 /** Returns the public widget config endpoint URL. Empty `baseUrl` yields a same-origin relative URL. */
 export const getConfigUrl = (): string => {
   const { baseUrl, botId } = chatbotConfig;
@@ -184,10 +198,14 @@ export interface WidgetBotConfig {
   open_link_in_same_tab?: boolean | null;
   feedback?: boolean | null;
   show_citations?: boolean | null;
-  /** Browser Web Speech API mic + spoken replies (Chrome/Edge). */
+  /** Mic STT + spoken replies. */
   enable_voice?: boolean | null;
   /** BCP-47 tag for mic + spoken replies; null means the browser language. */
   voice_language?: string | null;
+  /** ``browser`` (default) or ``deepgram`` for mic STT. */
+  stt_provider?: 'browser' | 'deepgram' | string | null;
+  /** ``browser`` (default) or ``deepgram`` for spoken replies. */
+  tts_provider?: 'browser' | 'deepgram' | string | null;
   starter_messages?: string[] | null;
   support_email?: string | null;
   whatsapp_link?: string | null;

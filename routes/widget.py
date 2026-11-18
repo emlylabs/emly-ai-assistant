@@ -27,8 +27,8 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 
 from models.bot_impressions import Bot_Impressions
 from models.bots import BotModel, Bots
@@ -158,6 +158,9 @@ class WidgetConfigResponse(BaseModel):
     show_citations: Optional[bool] = None
     enable_voice: Optional[bool] = None
     voice_language: Optional[str] = None
+    # ``browser`` (default) or ``deepgram``. Never includes the API key.
+    stt_provider: Optional[str] = None
+    tts_provider: Optional[str] = None
 
     starter_messages: Optional[List[str]] = None
     nudges: Optional[Dict[str, Any]] = None
@@ -257,6 +260,8 @@ def _build_widget_config(bot: BotModel) -> WidgetConfigResponse:
         show_citations=_opt(raw.get("show_citations"), bool),
         enable_voice=_opt(raw.get("enable_voice"), bool),
         voice_language=_opt(raw.get("voice_language"), str),
+        stt_provider=_opt(raw.get("stt_provider"), str),
+        tts_provider=_opt(raw.get("tts_provider"), str),
         starter_messages=_opt(raw.get("starter_messages"), list),
         nudges=_opt(raw.get("nudges"), dict),
         c_forms_selected=_scrub_cforms(raw.get("c_forms_selected")),
@@ -272,6 +277,122 @@ def _build_widget_config(bot: BotModel) -> WidgetConfigResponse:
 def widget_config(bot_ref: str):
     bot = _resolve_bot(bot_ref)
     return _build_widget_config(bot)
+
+
+# ---------------------------------------------------------------------------
+# POST /widget/{bot_ref}/tts — Deepgram spoken replies (API key server-side)
+# ---------------------------------------------------------------------------
+class WidgetTtsRequest(BaseModel):
+    """Plain text to speak. Markdown should already be stripped client-side;
+    the server still truncates to Deepgram's practical limit."""
+
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.post(
+    "/widget/{bot_ref}/tts",
+    dependencies=[Depends(rate_limit("widget_tts", per_path_param="bot_ref"))],
+)
+def widget_tts(
+    bot_ref: str,
+    payload: WidgetTtsRequest,
+    principal: WidgetPrincipal = Depends(widget_principal),
+):
+    """Synthesize speech for a widget reply via Deepgram.
+
+    The Deepgram key stays server-side (per-bot or deployment env).
+    """
+    from services import deepgram
+
+    bot = _resolve_bot(bot_ref)
+    if principal.bot_id != bot.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token bot mismatch")
+
+    try:
+        cfg = get_config_for_bot(bot.id)
+    except LookupError:
+        cfg = None
+
+    if not cfg or not cfg.enable_voice or (cfg.tts_provider or "browser") != "deepgram":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Deepgram TTS is not enabled for this bot",
+        )
+    if not deepgram.deepgram_configured(bot.id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Deepgram API key is not configured",
+        )
+
+    try:
+        audio = deepgram.synthesize(
+            payload.text, bot_id=bot.id, model=cfg.deepgram_tts_model
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@router.post(
+    "/widget/{bot_ref}/stt",
+    dependencies=[Depends(rate_limit("widget_stt", per_path_param="bot_ref"))],
+)
+async def widget_stt(
+    bot_ref: str,
+    principal: WidgetPrincipal = Depends(widget_principal),
+    audio: UploadFile = File(...),
+):
+    """Transcribe a short mic recording via Deepgram.
+
+    Browser STT stays available as an alternative; this path is used when
+    the bot's ``stt_provider`` is ``deepgram``.
+    """
+    from services import deepgram
+
+    bot = _resolve_bot(bot_ref)
+    if principal.bot_id != bot.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token bot mismatch")
+
+    try:
+        cfg = get_config_for_bot(bot.id)
+    except LookupError:
+        cfg = None
+
+    if not cfg or not cfg.enable_voice or (cfg.stt_provider or "browser") != "deepgram":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Deepgram STT is not enabled for this bot",
+        )
+    if not deepgram.deepgram_configured(bot.id):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Deepgram API key is not configured",
+        )
+
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio")
+    if len(raw) > deepgram.MAX_STT_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Audio too large")
+
+    try:
+        transcript = deepgram.transcribe(
+            raw,
+            content_type=audio.content_type or "audio/webm",
+            bot_id=bot.id,
+            model=cfg.deepgram_stt_model,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    return {"transcript": transcript}
 
 
 # ---------------------------------------------------------------------------

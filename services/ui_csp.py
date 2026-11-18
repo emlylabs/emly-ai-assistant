@@ -14,8 +14,9 @@ renders ``style`` attributes, which hashes can't cover. Images come from
 this origin and inline ``data:``/``blob:`` URIs, plus the hosts in
 ``WIDGET_ICON_HOSTS`` (admins preview their bots' icons); with that unset,
 any https host, as icons may live anywhere. Bot answers never render
-images (S4), so this is defence in depth. Network requests
-(``connect-src``) go only to this origin.
+images (S4), so this is defence in depth. Media (Deepgram TTS played via
+``blob:`` object URLs in the widget preview) is limited to this origin
+and ``blob:``. Network requests (``connect-src``) go only to this origin.
 
 **Sign-in form and auth error pages** (server-rendered, no scripts):
 nothing may load except their inline styles.
@@ -41,6 +42,7 @@ UI_POLICY = (
     "script-src 'self'{hashes}; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:{img_hosts}; "
+    "media-src 'self' blob:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
     "frame-src 'self'; "

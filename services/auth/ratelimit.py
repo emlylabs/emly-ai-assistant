@@ -47,6 +47,8 @@ _LIMITS = {
     "widget_chat": os.environ.get("AUTH_RATE_WIDGET_CHAT", "20/minute"),
     "widget_action": os.environ.get("AUTH_RATE_WIDGET_ACTION", "20/minute"),
     "widget_upload": os.environ.get("AUTH_RATE_WIDGET_UPLOAD", "10/minute"),
+    "widget_tts": os.environ.get("AUTH_RATE_WIDGET_TTS", "20/minute"),
+    "widget_stt": os.environ.get("AUTH_RATE_WIDGET_STT", "20/minute"),
     "otp_send_target": os.environ.get("AUTH_RATE_OTP_SEND_TARGET", "5/10minutes"),
     "otp_send_ip": os.environ.get("AUTH_RATE_OTP_SEND_IP", "20/hour"),
     "otp_verify": os.environ.get("AUTH_RATE_OTP_VERIFY", "10/10minutes"),

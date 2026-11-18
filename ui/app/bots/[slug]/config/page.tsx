@@ -680,7 +680,13 @@ export default function BotConfigPage() {
             <IdentitySection config={config} patchPath={patchPath} writable={writable} />
           )}
           {activeTab === "widget" && (
-            <WidgetSection config={config} patchPath={patchPath} writable={writable} />
+            <WidgetSection
+              slug={bot.slug}
+              config={config}
+              patchPath={patchPath}
+              writable={writable}
+              hasUnsavedEdits={hasUnsavedEdits}
+            />
           )}
           {activeTab === "topics" && (
             <TopicsSection config={config} patch={patch} writable={writable} />
@@ -1199,13 +1205,17 @@ function IdentitySection({
 // Widget tab — theme + launcher
 // ---------------------------------------------------------------------------
 function WidgetSection({
+  slug,
   config,
   patchPath,
   writable,
+  hasUnsavedEdits,
 }: {
+  slug: string;
   config: Cfg;
   patchPath: (path: string[], value: any) => void;
   writable: boolean;
+  hasUnsavedEdits?: boolean;
 }) {
   const widget = config.widget ?? {};
   const theme = widget.theme ?? {};
@@ -1216,6 +1226,66 @@ function WidgetSection({
     count?: number | string;
   };
   const nudgeList = Array.isArray(nudges.nudge) ? nudges.nudge : [];
+  const [dgHasKey, setDgHasKey] = useState<boolean | null>(null);
+  const [dgFallback, setDgFallback] = useState(false);
+  const [dgConfigured, setDgConfigured] = useState(false);
+  const [dgDraft, setDgDraft] = useState("");
+  const [dgMsg, setDgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [dgSaving, setDgSaving] = useState(false);
+
+  useEffect(() => {
+    api
+      .getBotDeepgramApiKeyStatus(slug)
+      .then((r) => {
+        setDgHasKey(r.has_key);
+        setDgFallback(r.has_deployment_fallback);
+        setDgConfigured(r.configured);
+      })
+      .catch(() => {
+        setDgHasKey(null);
+        setDgFallback(false);
+        setDgConfigured(false);
+      });
+  }, [slug]);
+
+  async function saveDeepgramKey(value: string | null) {
+    setDgMsg(null);
+    setDgSaving(true);
+    try {
+      await api.putBotDeepgramApiKey(slug, value);
+      const has = value !== null && value !== "";
+      setDgHasKey(has);
+      setDgConfigured(has || dgFallback);
+      setDgDraft("");
+      if (has) {
+        // Key alone doesn't turn Deepgram on — pick providers so the
+        // next Save publishes a working voice setup.
+        if ((config.stt_provider as string | undefined) !== "deepgram") {
+          patchPath(["stt_provider"], "deepgram");
+        }
+        if ((config.tts_provider as string | undefined) !== "deepgram") {
+          patchPath(["tts_provider"], "deepgram");
+        }
+        if (!config.enable_voice) {
+          patchPath(["enable_voice"], true);
+        }
+        setDgMsg({
+          ok: true,
+          text: "Deepgram key saved. STT/TTS set to Deepgram — click Save (top right) so the chat preview picks this up.",
+        });
+      } else {
+        setDgMsg({ ok: true, text: "Deepgram key cleared." });
+      }
+    } catch (err: unknown) {
+      setDgMsg({
+        ok: false,
+        text: err instanceof Error ? err.message : "Could not save Deepgram key.",
+      });
+    } finally {
+      setDgSaving(false);
+    }
+  }
+
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Theme</h2>
@@ -1494,18 +1564,127 @@ function WidgetSection({
           disabled={!writable}
         />
         <FlagToggle
-          label="Enable voice (browser mic + spoken replies)"
+          label="Enable voice (mic + spoken replies)"
           checked={Boolean(config.enable_voice)}
-          onChange={(v) => patchPath(["enable_voice"], v || undefined)}
+          onChange={(v) => {
+            patchPath(["enable_voice"], v || undefined);
+            // If a Deepgram key is already present, default both providers
+            // to Deepgram so enabling voice "just works" after Save.
+            if (v && dgConfigured) {
+              if ((config.stt_provider as string | undefined) !== "deepgram") {
+                patchPath(["stt_provider"], "deepgram");
+              }
+              if ((config.tts_provider as string | undefined) !== "deepgram") {
+                patchPath(["tts_provider"], "deepgram");
+              }
+            }
+          }}
           disabled={!writable}
         />
         <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
-          Uses the browser Web Speech API (best in Chrome/Edge). Voice is
-          processed by the visitor&rsquo;s browser vendor (e.g. Google for
-          Chrome, Microsoft for Edge). Audio does not pass through Emly
-          servers. The mic needs HTTPS or localhost. On iPhone Safari,
-          replies are spoken when the visitor taps the speaker button.
+          Uses the browser Web Speech API (best in Chrome/Edge) by default.
+          Browser voice is processed by the visitor&rsquo;s browser vendor
+          (e.g. Google for Chrome, Microsoft for Edge) and does not pass
+          through Emly servers. You can switch STT and TTS to Deepgram
+          independently. The mic needs HTTPS or localhost. On iPhone Safari,
+          replies are spoken when the visitor taps the speaker button. The
+          chat preview only sees published settings — click{" "}
+          <strong>Save</strong> after changing these.
         </div>
+        {Boolean(config.enable_voice) && hasUnsavedEdits && (
+          <div className="error" style={{ fontSize: 13, marginTop: 4 }}>
+            Voice changes are not live yet. Click <strong>Save</strong> (top
+            right) so the preview shows the mic and Deepgram audio.
+          </div>
+        )}
+        {Boolean(config.enable_voice) && (
+          <div style={{ display: "grid", gap: 12, marginTop: 8 }}>
+            <div className="field">
+              <label htmlFor="cfg-stt-provider">Mic input (STT)</label>
+              <select
+                id="cfg-stt-provider"
+                value={(config.stt_provider as string) || "browser"}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patchPath(["stt_provider"], v === "browser" ? undefined : v);
+                }}
+                disabled={!writable}
+              >
+                <option value="browser">Browser Web Speech (free)</option>
+                <option value="deepgram">Deepgram Nova (needs API key)</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="cfg-tts-provider">Spoken replies (TTS)</label>
+              <select
+                id="cfg-tts-provider"
+                value={(config.tts_provider as string) || "browser"}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patchPath(["tts_provider"], v === "browser" ? undefined : v);
+                }}
+                disabled={!writable}
+              >
+                <option value="browser">Browser (free, device voice)</option>
+                <option value="deepgram">Deepgram Aura (needs API key)</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Deepgram API key</label>
+              <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span className={dgConfigured ? "tag" : "tag muted"}>
+                  {dgHasKey === null
+                    ? "checking…"
+                    : dgHasKey
+                      ? "bot key configured"
+                      : dgFallback
+                        ? "using deployment DEEPGRAM_API_KEY"
+                        : "no key — Deepgram STT/TTS will fail"}
+                </span>
+              </div>
+              <input
+                type="password"
+                placeholder="Deepgram API key"
+                value={dgDraft}
+                onChange={(e) => setDgDraft(e.target.value)}
+                disabled={!writable || dgSaving}
+                autoComplete="off"
+              />
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                Stored encrypted for this bot. Optional fallback:{" "}
+                <code>DEEPGRAM_API_KEY</code> in the deployment env.
+              </div>
+              {dgMsg && (
+                <div className={dgMsg.ok ? "success" : "error"} style={{ marginTop: 6 }}>
+                  {dgMsg.text}
+                </div>
+              )}
+              <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                {dgHasKey && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      if (confirm("Remove this bot's Deepgram key?")) {
+                        void saveDeepgramKey(null);
+                      }
+                    }}
+                    disabled={!writable || dgSaving}
+                  >
+                    Clear key
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void saveDeepgramKey(dgDraft)}
+                  disabled={!writable || dgSaving || !dgDraft}
+                >
+                  {dgSaving ? "Saving…" : "Save Deepgram key"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <FlagToggle
           label="Answer only from your documents"
           checked={Boolean(config.require_citation)}
