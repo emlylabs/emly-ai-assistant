@@ -25,6 +25,12 @@ import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, fet
 import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
+import {
+  isSpeechSynthesisSupported,
+  silenceVoice,
+  speak,
+  stopSpeaking,
+} from '../utils/speech';
 
 /* Theme utility functions - hidden
 const readStoredThemeId = (): string | null => {
@@ -787,7 +793,10 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       // markdown was scanned for `internal_code` tags.
       const { code, cleaned } = extractInternalCode(botResponse.text);
       if (cleaned) {
-        addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
+        const bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
+        if (botConfig?.enable_voice && isSpeechSynthesisSupported()) {
+          speak(cleaned, { speakId: bubbleId });
+        }
       }
       if (code) {
         const matched = findFormByTriggerCode(cForms, code);
@@ -808,6 +817,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     // the footer is also disabled, but defend against programmatic
     // calls (nudge auto-send, post-limit chip) that bypass the input.
     if (pendingStartChat) return;
+    stopSpeaking();
     // Auto-name the session from the first user query
     if (activeSessionId && messages.length === 0) {
       const sessionLabel = messageToSend.length > 30
@@ -823,6 +833,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   const handleSendMessage = () => sendMessage(newMessage);
 
   const handleClose = () => {
+    silenceVoice();
     setIsOpen(false); // Close the chatbot immediately
     setIsMaximized(false);
     // setShowThemeMenu(false);
@@ -864,10 +875,12 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       if (sessionTransitionTimeoutRef.current) {
         window.clearTimeout(sessionTransitionTimeoutRef.current);
       }
+      silenceVoice();
     };
   }, []);
 
   const handleNewSession = () => {
+    silenceVoice();
     startSessionTransition();
     const newSession = createNewSessionUtil();
     dispatch(addSession(newSession));
@@ -876,12 +889,14 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   };
 
   const handleSwitchSession = (sessionId: string) => {
+    silenceVoice();
     startSessionTransition();
     dispatch(switchSession(sessionId));
     setShowSessionDropdown(false);
   };
 
   const handleDeleteSession = (sessionId: string) => {
+    silenceVoice();
     startSessionTransition();
     dispatch(deleteSession(sessionId));
     setShowSessionDropdown(false);
@@ -1073,13 +1088,16 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             sessionId={activeSessionId}
             userId={getEmlyUserId()}
             showCitations={Boolean(botConfig?.show_citations)}
+            enableVoice={Boolean(botConfig?.enable_voice)}
           />
           <ChatbotFooter
             newMessage={newMessage}
             setNewMessage={setNewMessage}
             handleSendMessage={handleSendMessage}
+            onVoiceFinal={(transcript) => sendMessage(transcript)}
             placeholderMessage={pendingStartChat ? 'Please complete the form to start chatting…' : resolvedPlaceholder}
             botIsTyping={botIsTyping || pendingStartChat}
+            enableVoice={Boolean(botConfig?.enable_voice)}
           />
           <div className="emly-attribution" aria-label="Branding">
             <span>Powered by</span>

@@ -74,3 +74,15 @@ def test_camel_case_inside_c_forms_entry_rejected():
     }
     with pytest.raises(ValidationError):
         BotConfig.model_validate(payload)
+
+
+def test_enable_voice_round_trips():
+    cfg = BotConfig.model_validate({"enable_voice": True, "show_citations": True})
+    dumped = cfg.model_dump(mode="json", exclude_none=True)
+    assert dumped["enable_voice"] is True
+    assert dumped["show_citations"] is True
+
+
+def test_enable_voice_camel_case_rejected():
+    with pytest.raises(ValidationError):
+        BotConfig.model_validate({"enableVoice": True})

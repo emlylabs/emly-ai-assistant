@@ -184,6 +184,8 @@ export interface WidgetBotConfig {
   open_link_in_same_tab?: boolean | null;
   feedback?: boolean | null;
   show_citations?: boolean | null;
+  /** Browser Web Speech API mic + spoken replies (Chrome/Edge). */
+  enable_voice?: boolean | null;
   starter_messages?: string[] | null;
   support_email?: string | null;
   whatsapp_link?: string | null;

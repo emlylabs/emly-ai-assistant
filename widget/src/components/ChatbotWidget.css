@@ -767,6 +767,66 @@
     margin-top: 2px;
 }
 
+.emls-chatbot-widget .body .emw-bot-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.emls-chatbot-widget .body .emw-bot-meta .emw-timestamp {
+    margin-top: 0;
+}
+
+.emls-chatbot-widget .body .emw-speak-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--cb-muted, #64748b);
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 6px;
+}
+
+.emls-chatbot-widget .body .emw-speak-btn:hover {
+    color: var(--cb-accent, #2563eb);
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.emls-chatbot-widget .body .emw-speak-btn--active {
+    color: var(--cb-accent, #2563eb);
+}
+
+.emls-chatbot-widget .body .emw-tts-text {
+    margin: 0;
+    white-space: pre-wrap;
+    line-height: 1.55;
+}
+
+.emls-chatbot-widget .body .emw-tts-read {
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .body .emw-tts-current {
+    background: rgba(250, 204, 21, 0.55);
+    color: var(--cb-ink, #0f172a);
+    border-radius: 3px;
+    padding: 0 1px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+
+.emls-chatbot-widget .body .emw-tts-upcoming {
+    color: var(--cb-muted, #64748b);
+}
+
+.emls-chatbot-widget .body .emw-markdown--speaking {
+    transition: color 0.15s ease;
+}
+
 .emls-chatbot-widget .body .emw-feedback {
     list-style: none;
     display: flex;
@@ -1035,7 +1095,8 @@
     opacity: 1;
 }
 
-.emls-chatbot-widget .footer .input-container .send-icon {
+.emls-chatbot-widget .footer .input-container .send-icon,
+.emls-chatbot-widget .footer .input-container .mic-icon {
     width: 32px;
     height: 32px;
     cursor: pointer;
@@ -1048,8 +1109,30 @@
     transition: background 0.15s ease, color 0.15s ease;
 }
 
-.emls-chatbot-widget .footer .input-container .send-icon:not(.send-icon--disabled):hover {
+.emls-chatbot-widget .footer .input-container .send-icon:not(.send-icon--disabled):hover,
+.emls-chatbot-widget .footer .input-container .mic-icon:not(.mic-icon--disabled):hover {
     background: rgba(37, 99, 235, 0.08);
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    padding: 6px;
+    margin-right: 2px;
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon--active {
+    color: #dc2626;
+    background: rgba(220, 38, 38, 0.08);
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon--disabled {
+    cursor: default;
+    opacity: 0.4;
 }
 
 

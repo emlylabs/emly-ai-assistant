@@ -1494,6 +1494,16 @@ function WidgetSection({
           disabled={!writable}
         />
         <FlagToggle
+          label="Enable voice (browser mic + spoken replies)"
+          checked={Boolean(config.enable_voice)}
+          onChange={(v) => patchPath(["enable_voice"], v || undefined)}
+          disabled={!writable}
+        />
+        <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          Uses the browser Web Speech API (best in Chrome/Edge). Mic needs
+          HTTPS or localhost; speech stays in the visitor&rsquo;s browser.
+        </div>
+        <FlagToggle
           label="Answer only from your documents"
           checked={Boolean(config.require_citation)}
           onChange={(v) => patchPath(["require_citation"], v)}

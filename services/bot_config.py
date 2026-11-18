@@ -126,6 +126,10 @@ class BotConfig(BaseModel):
     open_link_in_same_tab: Optional[bool] = None
     feedback: Optional[bool] = None
     show_citations: Optional[bool] = None
+    # Widget: browser Web Speech API mic input + spoken replies
+    # (Chrome/Edge). Client-side only; no audio leaves the visitor's
+    # browser. Needs HTTPS (or localhost) for the microphone.
+    enable_voice: Optional[bool] = None
 
     # Conversational
     starter_messages: Optional[List[str]] = None
