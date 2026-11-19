@@ -67,7 +67,27 @@ const BotMessage: React.FC<BotMessageProps> = ({
         speaking: false,
     });
 
-    React.useEffect(() => subscribeSpeechProgress(setSpeech), []);
+    React.useEffect(() => {
+        if (!enableVoice || !messageKey) return;
+        return subscribeSpeechProgress((next) => {
+            setSpeech((prev) => {
+                if (next.speakId === messageKey) {
+                    if (prev.speaking === next.speaking && prev.speakId === next.speakId) return prev;
+                    return next;
+                }
+                if (prev.speaking && prev.speakId === messageKey) {
+                    return {
+                        speakId: null,
+                        plainText: '',
+                        charIndex: 0,
+                        charLength: 0,
+                        speaking: false,
+                    };
+                }
+                return prev;
+            });
+        });
+    }, [enableVoice, messageKey]);
 
     const speakingThis =
         Boolean(messageKey) &&
@@ -111,12 +131,6 @@ const BotMessage: React.FC<BotMessageProps> = ({
         img: ({ alt }: { alt?: string }) => (alt ? <span>[{alt}]</span> : null),
     };
 
-    const highlightStart = Math.max(0, speech.charIndex);
-    const highlightEnd = Math.min(
-        speech.plainText.length,
-        highlightStart + Math.max(speech.charLength, 1),
-    );
-
     return (
         <div className="emw-message emw-bot">
             {chatIcon ? (
@@ -127,7 +141,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
                 </span>
             )}
             <div className="emw-content emw-bot-content">
-                <div className={`emw-message-bubble emw-bot-bubble ${isLoading ? 'emw-loading' : ''}`}>
+                <div className={`emw-message-bubble emw-bot-bubble ${isLoading ? 'emw-loading' : ''} ${speakingThis ? 'emw-bot-bubble--speaking' : ''}`}>
                     {isLoading ? (
                         <>
                             <div className="emw-loader-container">
@@ -138,27 +152,13 @@ const BotMessage: React.FC<BotMessageProps> = ({
                         </>
                     ) : (
                         <>
-                            <div className={`emw-markdown ${speakingThis ? 'emw-markdown--speaking' : ''}`}>
-                                {speakingThis ? (
-                                    <p className="emw-tts-text" aria-live="polite">
-                                        <span className="emw-tts-read">
-                                            {speech.plainText.slice(0, highlightStart)}
-                                        </span>
-                                        <mark className="emw-tts-current">
-                                            {speech.plainText.slice(highlightStart, highlightEnd)}
-                                        </mark>
-                                        <span className="emw-tts-upcoming">
-                                            {speech.plainText.slice(highlightEnd)}
-                                        </span>
-                                    </p>
-                                ) : (
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={markdownComponents}
-                                    >
-                                        {text}
-                                    </ReactMarkdown>
-                                )}
+                            <div className="emw-markdown">
+                                <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={markdownComponents}
+                                >
+                                    {text}
+                                </ReactMarkdown>
                             </div>
                             <DynamicDataRenderer data={data} />
                         </>

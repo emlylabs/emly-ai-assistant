@@ -24,6 +24,10 @@ gen-lang-client-0125099398-bd121e70f658.json
 # Editor backups (may hold secrets, e.g. .env~)
 *~
 
+# Dependencies. The widget installs its own copy under widget/node_modules.
+widget/node_modules/
+widget/dist/
+
 # Build outputs
 .next/
 *.tsbuildinfo

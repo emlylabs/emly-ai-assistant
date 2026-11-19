@@ -1,10 +1,12 @@
 import React from 'react';
 import { Mic, MicOff, Send } from 'lucide-react';
 import {
+    isSecureVoiceContext,
     isSpeechRecognitionSupported,
     startListening,
     stopListening,
     stopSpeaking,
+    subscribeListening,
 } from '../utils/speech';
 
 interface ChatbotFooterProps {
@@ -15,7 +17,7 @@ interface ChatbotFooterProps {
     onVoiceFinal?: (transcript: string) => void;
     placeholderMessage: string;
     botIsTyping: boolean;
-    /** When true and recognition is supported, show the mic control. */
+    /** When true, recognition is supported, and the page is HTTPS or localhost, show the mic. */
     enableVoice?: boolean;
 }
 
@@ -38,7 +40,10 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
 }) => {
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
     const [listening, setListening] = React.useState(false);
-    const showMic = Boolean(enableVoice) && isSpeechRecognitionSupported();
+    const [micError, setMicError] = React.useState<string | null>(null);
+    const showMic = Boolean(enableVoice) && isSpeechRecognitionSupported() && isSecureVoiceContext();
+
+    React.useEffect(() => subscribeListening(setListening), []);
 
     // Auto-focus when the bot finishes typing — but never on touch
     // devices, where focusing the textarea pops the on-screen keyboard
@@ -52,7 +57,6 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
     React.useEffect(() => {
         if (botIsTyping && listening) {
             stopListening();
-            setListening(false);
         }
     }, [botIsTyping, listening]);
 
@@ -66,7 +70,6 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
         if (newMessage?.trim() === '') return;
         if (listening) {
             stopListening();
-            setListening(false);
         }
         handleSendMessage?.();
         // On phones, dismiss the keyboard after send so the reply is
@@ -80,23 +83,28 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
         if (botIsTyping) return;
         if (listening) {
             stopListening();
-            setListening(false);
             return;
         }
         stopSpeaking();
-        const started = startListening({
+        setMicError(null);
+        startListening({
             onInterim: (transcript) => setNewMessage(transcript),
             onFinal: (transcript) => {
                 setNewMessage(transcript);
-                setListening(false);
                 if (transcript.trim()) {
                     onVoiceFinal?.(transcript);
                 }
             },
-            onEnd: () => setListening(false),
-            onError: () => setListening(false),
+            onError: (code) => {
+                if (code === 'not-allowed') {
+                    setMicError('Microphone permission was blocked.');
+                } else if (code === 'audio-capture') {
+                    setMicError('No microphone was found.');
+                } else if (code === 'network') {
+                    setMicError('Voice input needs a network connection.');
+                }
+            },
         });
-        setListening(started);
     };
 
     return (
@@ -143,6 +151,9 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
                     <Send size={18} aria-hidden="true" />
                 </button>
             </div>
+            {micError ? (
+                <p className="emw-mic-error" role="status">{micError}</p>
+            ) : null}
         </div>
     );
 };

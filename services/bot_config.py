@@ -127,8 +127,9 @@ class BotConfig(BaseModel):
     feedback: Optional[bool] = None
     show_citations: Optional[bool] = None
     # Widget: browser Web Speech API mic input + spoken replies
-    # (Chrome/Edge). Client-side only; no audio leaves the visitor's
-    # browser. Needs HTTPS (or localhost) for the microphone.
+    # (Chrome/Edge). Voice is processed by the visitor's browser vendor
+    # (e.g. Google for Chrome, Microsoft for Edge). Audio does not pass
+    # through Emly servers. The microphone needs HTTPS (or localhost).
     enable_voice: Optional[bool] = None
 
     # Conversational

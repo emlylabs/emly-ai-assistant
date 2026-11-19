@@ -1,9 +1,13 @@
 /**
  * Browser Web Speech API helpers for the embeddable widget.
  *
- * STT (SpeechRecognition / webkitSpeechRecognition) and TTS
- * (speechSynthesis) stay entirely in the visitor's browser — nothing
- * is uploaded. Mic access needs a secure context (HTTPS or localhost).
+ * Voice is processed by the visitor's browser vendor (e.g. Google for
+ * Chrome, Microsoft for Edge). Audio does not pass through Emly servers.
+ * Mic access needs a secure context (HTTPS or localhost).
+ *
+ * iOS Safari only speaks when `speak()` runs inside a user gesture, so
+ * automatic read-aloud after a voice question can fail silently there.
+ * The speaker button on a reply still works, because that click is a gesture.
  */
 
 type SpeechRecognitionLike = {
@@ -45,6 +49,11 @@ export function isSpeechSynthesisSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined';
 }
 
+/** The mic API exists on plain HTTP, but browsers refuse to start it there. */
+export function isSecureVoiceContext(): boolean {
+  return typeof window !== 'undefined' && window.isSecureContext === true;
+}
+
 /** Strip markdown / URLs so TTS does not read markup aloud. */
 export function plainTextForSpeech(input: string): string {
   let text = input ?? '';
@@ -56,13 +65,20 @@ export function plainTextForSpeech(input: string): string {
   text = text.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
   // Links [label](url) → label
   text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-  // Headings / emphasis / strikethrough markers
+  // Headings / emphasis / strikethrough markers.
+  // `*` and `_` count as emphasis only when they sit on a word boundary
+  // and touch the word, so `file_name` and `2 * 3 * 4` stay intact.
   text = text.replace(/^#{1,6}\s+/gm, '');
-  text = text.replace(/(\*\*|__)(.*?)\1/g, '$2');
-  text = text.replace(/(\*|_)(.*?)\1/g, '$2');
+  const boundary = '(?:^|[\\s([{"\'])';
+  const end = '(?=$|[\\s)\\].,!?:;"\'])';
+  text = text.replace(new RegExp(`(${boundary})(\\*\\*|__)(\\S(?:.*?\\S)?)\\2${end}`, 'g'), '$1$3');
+  text = text.replace(new RegExp(`(${boundary})(\\*|_)(\\S(?:.*?\\S)?)\\2${end}`, 'g'), '$1$3');
   text = text.replace(/~~(.*?)~~/g, '$1');
-  // Bare URLs
-  text = text.replace(/https?:\/\/\S+/g, ' ');
+  // Bare URLs are spoken as the word "link", with any trailing punctuation kept.
+  text = text.replace(/https?:\/\/[^\s]+/g, (url) => {
+    const core = url.replace(/[.,!?:;)]+$/g, '');
+    return `link${url.slice(core.length)}`;
+  });
   // Collapse whitespace
   return text.replace(/\s+/g, ' ').trim();
 }
@@ -87,7 +103,7 @@ function estimateDurationMs(plain: string, rate: number): number {
   return Math.max(800, (words / wpm) * 60 * 1000);
 }
 
-function wordIndexForChar(spans: WordSpan[], charIndex: number): number {
+export function wordIndexForChar(spans: WordSpan[], charIndex: number): number {
   if (spans.length === 0) return 0;
   for (let i = 0; i < spans.length; i += 1) {
     if (charIndex >= spans[i].start && charIndex < spans[i].end) return i;
@@ -113,6 +129,8 @@ type SpeakOptions = {
 };
 
 let activeRecognition: SpeechRecognitionLike | null = null;
+let listening = false;
+const listeningListeners = new Set<(on: boolean) => void>();
 let activeUtterance: SpeechSynthesisUtterance | null = null;
 let progressTimer: number | null = null;
 let progress: SpeechProgress = {
@@ -127,6 +145,21 @@ const progressListeners = new Set<(next: SpeechProgress) => void>();
 function emitProgress(): void {
   const snapshot = { ...progress };
   progressListeners.forEach((listener) => listener(snapshot));
+}
+
+function emitListening(next: boolean): void {
+  if (listening === next) return;
+  listening = next;
+  listeningListeners.forEach((listener) => listener(next));
+}
+
+/** `speech.ts` owns whether the mic is on. Returns unsubscribe. */
+export function subscribeListening(listener: (on: boolean) => void): () => void {
+  listeningListeners.add(listener);
+  listener(listening);
+  return () => {
+    listeningListeners.delete(listener);
+  };
 }
 
 function stopProgressTimer(): void {
@@ -232,18 +265,22 @@ export function startListening(handlers: ListenHandlers): boolean {
   };
 
   recognition.onend = () => {
-    if (activeRecognition === recognition) {
-      activeRecognition = null;
-    }
+    // A replaced recognizer also fires `onend`. Ignore it so a quick
+    // stop/start cannot report "not listening" for the new session.
+    if (activeRecognition !== recognition) return;
+    activeRecognition = null;
+    emitListening(false);
     handlers.onEnd?.();
   };
 
   try {
     activeRecognition = recognition;
     recognition.start();
+    emitListening(true);
     return true;
   } catch (err) {
     activeRecognition = null;
+    emitListening(false);
     handlers.onError?.(err instanceof Error ? err.message : 'start-failed');
     return false;
   }
@@ -253,6 +290,7 @@ export function stopListening(): void {
   if (!activeRecognition) return;
   const rec = activeRecognition;
   activeRecognition = null;
+  emitListening(false);
   try {
     rec.onresult = null;
     rec.onerror = null;
@@ -266,14 +304,13 @@ export function stopListening(): void {
   }
 }
 
-export function isListening(): boolean {
-  return activeRecognition !== null;
-}
-
 export function stopSpeaking(): void {
+  const hadUtterance = activeUtterance !== null;
   activeUtterance = null;
   stopProgressTimer();
-  if (isSpeechSynthesisSupported()) {
+  // Cancel only speech this widget started. The widget is mounted in the
+  // host page, so an unconditional cancel would cut off the host's audio.
+  if (hadUtterance && isSpeechSynthesisSupported()) {
     try {
       window.speechSynthesis.cancel();
     } catch {
@@ -290,6 +327,9 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
   const plain = plainTextForSpeech(text);
   if (!plain) return false;
 
+  // The mic would otherwise transcribe the reply from the speakers and
+  // send it as the visitor's next message.
+  stopListening();
   stopSpeaking();
   try {
     const utterance = new SpeechSynthesisUtterance(plain);
@@ -298,11 +338,29 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
 
     const speakId = options.speakId ?? null;
     const words = buildWordSpans(plain);
-    const first = words[0] ?? { start: 0, end: Math.min(1, plain.length) };
-    let startedAt = performance.now();
-    let durationMs = estimateDurationMs(plain, utterance.rate || 1);
+    const durationMs = estimateDurationMs(plain, utterance.rate || 1);
+    // Stay at 0 until `onstart`. Highlighting from speak() runs ahead of
+    // the voice, and Chrome often never fires `onend` if we cancel first.
+    let startedAt = 0;
+    const queuedAt = performance.now();
 
-    applyWordHighlight(speakId, plain, first);
+    progress = {
+      speakId,
+      plainText: plain,
+      charIndex: 0,
+      charLength: 0,
+      speaking: true,
+    };
+    emitProgress();
+
+    const markStarted = () => {
+      if (activeUtterance !== utterance || startedAt) return;
+      startedAt = performance.now();
+    };
+
+    utterance.onstart = () => {
+      markStarted();
+    };
 
     // Chrome/Edge on many Linux setups fire `onboundary` once (or never).
     // Drive karaoke highlight from elapsed time; snap the clock when a
@@ -313,19 +371,12 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
       const charIndex = typeof event.charIndex === 'number' ? event.charIndex : 0;
       const wi = wordIndexForChar(words, charIndex);
       const span = words[wi];
-      const targetT = (wi + 0.5) / words.length;
-      startedAt = performance.now() - targetT * durationMs;
+      if (!startedAt) {
+        const targetT = (wi + 0.5) / words.length;
+        startedAt = performance.now() - targetT * durationMs;
+      }
       applyWordHighlight(speakId, plain, span);
     };
-
-    progressTimer = window.setInterval(() => {
-      if (activeUtterance !== utterance || words.length === 0) return;
-      if (typeof window !== 'undefined' && window.speechSynthesis.paused) return;
-      const elapsed = performance.now() - startedAt;
-      const t = Math.min(0.999, Math.max(0, elapsed / durationMs));
-      const wi = Math.min(words.length - 1, Math.floor(t * words.length));
-      applyWordHighlight(speakId, plain, words[wi]);
-    }, 50);
 
     const finish = () => {
       if (activeUtterance !== utterance) return;
@@ -334,11 +385,32 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
       options.onEnd?.();
     };
 
+    progressTimer = window.setInterval(() => {
+      if (activeUtterance !== utterance || words.length === 0) return;
+      if (typeof window !== 'undefined' && window.speechSynthesis.paused) return;
+      const synthesis = window.speechSynthesis;
+      if (!startedAt) {
+        const waited = performance.now() - queuedAt;
+        if (waited > durationMs + 2000 && !synthesis.speaking && !synthesis.pending) {
+          finish();
+        }
+        return;
+      }
+      const elapsed = performance.now() - startedAt;
+      // `onend` does not fire for a cancelled utterance, a network-voice
+      // cutoff, or when voices are not loaded yet. Stop the highlight then.
+      if (elapsed > durationMs * 1.5 + 2000 && !synthesis.speaking) {
+        finish();
+        return;
+      }
+      const t = Math.min(0.999, Math.max(0, elapsed / durationMs));
+      const wi = Math.min(words.length - 1, Math.floor(t * words.length));
+      applyWordHighlight(speakId, plain, words[wi]);
+    }, 50);
+
     utterance.onend = finish;
     utterance.onerror = finish;
 
-    // Some engines report a usable rate only after construction.
-    durationMs = estimateDurationMs(plain, utterance.rate || 1);
     window.speechSynthesis.speak(utterance);
     return true;
   } catch {

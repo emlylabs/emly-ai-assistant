@@ -1500,8 +1500,11 @@ function WidgetSection({
           disabled={!writable}
         />
         <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
-          Uses the browser Web Speech API (best in Chrome/Edge). Mic needs
-          HTTPS or localhost; speech stays in the visitor&rsquo;s browser.
+          Uses the browser Web Speech API (best in Chrome/Edge). Voice is
+          processed by the visitor&rsquo;s browser vendor (e.g. Google for
+          Chrome, Microsoft for Edge). Audio does not pass through Emly
+          servers. The mic needs HTTPS or localhost. On iPhone Safari,
+          replies are spoken when the visitor taps the speaker button.
         </div>
         <FlagToggle
           label="Answer only from your documents"
