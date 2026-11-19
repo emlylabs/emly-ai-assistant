@@ -47,6 +47,7 @@ ALLOWED = {
         "channels/auth/service_account_jwt.py": "Google OAuth token endpoint",
         "channels/dispatcher.py": "chat platforms",
         "channels/telegram.py": "Telegram Bot API",
+        "crm/http.py": "Zoho CRM and HubSpot",
         "services/auth/oidc.py": "the external OIDC identity provider",
     },
     "requests": {

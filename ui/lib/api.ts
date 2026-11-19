@@ -500,6 +500,44 @@ export type ChannelHealth = {
   info: Record<string, unknown>;
 };
 
+export type CrmDataCenter = {
+  id: string;
+  label: string;
+  accounts_host: string;
+};
+
+export type CrmProviderInfo = {
+  id: string;
+  name: string;
+  redirect_url: string;
+  scopes: string[];
+  scope_help: string;
+  data_centers: CrmDataCenter[];
+  requirements: string[];
+  steps: string[];
+};
+
+export type CrmCatalog = {
+  public_base_url: string;
+  public_base_configured: boolean;
+  providers: CrmProviderInfo[];
+};
+
+export type CrmConnection = {
+  provider: string;
+  status: string;
+  client_id: string;
+  has_secret: boolean;
+  data_center: string | null;
+  expires_at: string | null;
+  token_issued_at: string | null;
+  expires_in: number | null;
+  hub_id: string | null;
+  scopes: string | null;
+  last_error: string | null;
+  api_domain: string | null;
+};
+
 export type DocumentType =
   | "web_page"
   | "document"
@@ -1761,6 +1799,33 @@ export const api = {
       "POST",
       `/bots/${encodeURIComponent(slug)}/channels/oauth-start`,
       payload
+    ),
+
+  // -------------------------------------------------------------------------
+  // CRM — per-bot Zoho and HubSpot. The secret is write-only.
+  // -------------------------------------------------------------------------
+  crmCatalog: () => request<CrmCatalog>("GET", "/crm/providers"),
+  listCrmConnections: (slug: string) =>
+    request<CrmConnection[]>("GET", `/bots/${encodeURIComponent(slug)}/crm`),
+  saveCrmCredentials: (
+    slug: string,
+    provider: string,
+    body: { client_id: string; client_secret?: string; data_center?: string }
+  ) =>
+    request<CrmConnection>(
+      "PUT",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}`,
+      body
+    ),
+  startCrmOAuth: (slug: string, provider: string) =>
+    request<{ authorize_url: string }>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}/oauth/start`
+    ),
+  disconnectCrm: (slug: string, provider: string) =>
+    request<{ status: string }>(
+      "DELETE",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}`
     ),
 };
 

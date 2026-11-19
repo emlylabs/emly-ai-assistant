@@ -677,6 +677,15 @@ async def widget_action(
         action_payload=payload_data.get("action_payload"),
     )
 
+    # The form is stored. Push the lead to each connected CRM without
+    # making the visitor wait, and without failing the form if a CRM is down.
+    try:
+        from crm.dispatch import schedule_widget_lead
+
+        schedule_widget_lead(bot.id, payload_data, user)
+    except Exception:
+        log.exception("CRM lead sync could not be scheduled bot=%s", bot.id)
+
     # Files are tagged with the URL-resolved bot.id, so admins of bot A
     # see them and admins of bot B don't.
     uploaded_files = await handle_file_uploads(files, user.id, bot_id=bot.id)

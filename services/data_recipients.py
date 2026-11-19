@@ -116,6 +116,33 @@ def alert_recipients(cfg) -> List[str]:
     return recipients
 
 
+def _crm_rows(bot_id: str) -> List[Dict[str, Any]]:
+    """Connected CRMs. Pending credentials have not authorized a host yet."""
+    from models.crm_connections import CrmConnection
+
+    rows = []
+    query = CrmConnection.select().where(
+        (CrmConnection.bot_id == bot_id) & (CrmConnection.status.in_(("connected", "error")))
+    )
+    for conn in query:
+        if conn.provider == "zoho":
+            host = host_of(conn.api_domain) if conn.api_domain else "zohoapis.com"
+            rows.append(_row(
+                "Zoho CRM",
+                host or "zohoapis.com",
+                "When a visitor leaves an email, their name, email, phone and the capture text are sent.",
+                scope="external",
+            ))
+        elif conn.provider == "hubspot":
+            rows.append(_row(
+                "HubSpot",
+                "api.hubapi.com",
+                "When a visitor leaves an email, their name, email, phone and a note on the lead are sent.",
+                scope="external",
+            ))
+    return rows
+
+
 def _alert_rows(cfg) -> List[Dict[str, Any]]:
     recipients = alert_recipients(cfg)
     if not recipients:
@@ -150,6 +177,7 @@ def for_bot(bot_id: str) -> List[Dict[str, Any]]:
     rows = [_model_row(bot_id, raw_llm if isinstance(raw_llm, dict) else {}),
             _embeddings_row(), _index_row()]
     rows += _channel_rows(bot_id)
+    rows += _crm_rows(bot_id)
     rows += _alert_rows(cfg)
     tracing = _tracing_row()
     if tracing:
