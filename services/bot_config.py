@@ -131,6 +131,11 @@ class BotConfig(BaseModel):
     # (e.g. Google for Chrome, Microsoft for Edge). Audio does not pass
     # through Emly servers. The microphone needs HTTPS (or localhost).
     enable_voice: Optional[bool] = None
+    # BCP-47 tag (e.g. "es-MX") for mic input and spoken replies. None
+    # means the widget uses the visitor's browser language.
+    voice_language: Optional[str] = Field(
+        default=None, pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    )
 
     # Conversational
     starter_messages: Optional[List[str]] = None

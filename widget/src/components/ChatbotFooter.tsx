@@ -3,6 +3,7 @@ import { Mic, MicOff, Send } from 'lucide-react';
 import {
     isSecureVoiceContext,
     isSpeechRecognitionSupported,
+    micErrorMessage,
     startListening,
     stopListening,
     stopSpeaking,
@@ -19,6 +20,8 @@ interface ChatbotFooterProps {
     botIsTyping: boolean;
     /** When true, recognition is supported, and the page is HTTPS or localhost, show the mic. */
     enableVoice?: boolean;
+    /** Bot's BCP-47 voice language; falls back to the browser language. */
+    voiceLanguage?: string | null;
 }
 
 // `pointer: coarse` is true on touch devices (phones, most tablets).
@@ -37,6 +40,7 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
     placeholderMessage,
     botIsTyping,
     enableVoice,
+    voiceLanguage,
 }) => {
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
     const [listening, setListening] = React.useState(false);
@@ -68,6 +72,7 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
 
     const sendAndMaybeBlur = () => {
         if (newMessage?.trim() === '') return;
+        setMicError(null);
         if (listening) {
             stopListening();
         }
@@ -87,23 +92,21 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
         }
         stopSpeaking();
         setMicError(null);
+        // Speech is added after whatever the visitor already typed.
+        const draft = (newMessage ?? '').trim();
+        const withDraft = (transcript: string) =>
+            draft ? `${draft} ${transcript}` : transcript;
         startListening({
-            onInterim: (transcript) => setNewMessage(transcript),
+            lang: voiceLanguage,
+            onInterim: (transcript) => setNewMessage(withDraft(transcript)),
             onFinal: (transcript) => {
-                setNewMessage(transcript);
+                const combined = withDraft(transcript);
+                setNewMessage(combined);
                 if (transcript.trim()) {
-                    onVoiceFinal?.(transcript);
+                    onVoiceFinal?.(combined);
                 }
             },
-            onError: (code) => {
-                if (code === 'not-allowed') {
-                    setMicError('Microphone permission was blocked.');
-                } else if (code === 'audio-capture') {
-                    setMicError('No microphone was found.');
-                } else if (code === 'network') {
-                    setMicError('Voice input needs a network connection.');
-                }
-            },
+            onError: (code) => setMicError(micErrorMessage(code)),
         });
     };
 
@@ -114,7 +117,10 @@ const ChatbotFooter: React.FC<ChatbotFooterProps> = ({
                     ref={textareaRef}
                     placeholder={listening ? 'Listening…' : placeholderMessage}
                     value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
+                    onChange={(e) => {
+                        setNewMessage(e.target.value);
+                        if (micError) setMicError(null);
+                    }}
                     onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();

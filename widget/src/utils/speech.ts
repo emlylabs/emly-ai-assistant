@@ -54,6 +54,58 @@ export function isSecureVoiceContext(): boolean {
   return typeof window !== 'undefined' && window.isSecureContext === true;
 }
 
+/** The bot's configured voice language, else the browser's, else en-US. */
+export function resolveVoiceLang(override?: string | null): string {
+  const configured = override?.trim();
+  if (configured) return configured;
+  if (typeof navigator !== 'undefined' && navigator.language) return navigator.language;
+  return 'en-US';
+}
+
+/** A message for the visitor, or null when the error needs no message. */
+export function micErrorMessage(code: string): string | null {
+  switch (code) {
+    case 'aborted':
+    case 'no-speech':
+      return null;
+    case 'not-allowed':
+      return 'Microphone permission was blocked.';
+    case 'service-not-allowed':
+      return 'Voice input is turned off or blocked in this browser.';
+    case 'audio-capture':
+      return 'No microphone was found.';
+    case 'network':
+      return 'Voice input needs a network connection.';
+    case 'language-not-supported':
+      return "Voice input doesn't support this language.";
+    default:
+      return "Voice input couldn't start. Please type your message.";
+  }
+}
+
+/** Drop a URL's trailing punctuation, keeping a `)` that closes a `(` in the URL. */
+function splitUrlTrailer(url: string): [string, string] {
+  let end = url.length;
+  while (end > 0) {
+    const ch = url[end - 1];
+    if ('.,!?:;'.includes(ch)) {
+      end -= 1;
+      continue;
+    }
+    if (ch === ')') {
+      const core = url.slice(0, end);
+      const opens = (core.match(/\(/g) || []).length;
+      const closes = (core.match(/\)/g) || []).length;
+      if (closes > opens) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return [url.slice(0, end), url.slice(end)];
+}
+
 /** Strip markdown / URLs so TTS does not read markup aloud. */
 export function plainTextForSpeech(input: string): string {
   let text = input ?? '';
@@ -61,88 +113,81 @@ export function plainTextForSpeech(input: string): string {
   text = text.replace(/```[\s\S]*?```/g, ' ');
   // Inline code
   text = text.replace(/`([^`]+)`/g, '$1');
+  // Link targets may hold one level of balanced parens, e.g. `a_(b)`.
+  const target = '\\((?:[^()\\s]|\\([^()\\s]*\\))+\\)';
   // Images ![alt](url) → alt
-  text = text.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
+  text = text.replace(new RegExp(`!\\[([^\\]]*)\\]${target}`, 'g'), '$1');
+  // Footnote definitions lose their marker; inline refs are dropped.
+  text = text.replace(/^[ \t]*\[\^[^\]]+\]:[ \t]*/gm, '');
+  text = text.replace(/\[\^[^\]]+\]/g, '');
   // Links [label](url) → label
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  text = text.replace(new RegExp(`\\[([^\\]]+)\\]${target}`, 'g'), '$1');
+  // HTML tags
+  text = text.replace(/<\/?[A-Za-z][^>]*>/g, ' ');
+  // Line-level markup. Runs before emphasis so `* item` and `***` are
+  // not read as emphasis markers.
+  // Table delimiter rows: | --- | :---: |
+  text = text.replace(/^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$/gm, '');
+  // Horizontal rules: ---, ***, ___ (also spaced).
+  text = text.replace(/^[ \t]*([-*_])([ \t]*\1){2,}[ \t]*$/gm, '');
+  // Table rows: outer pipes dropped, inner pipes become pauses.
+  text = text.replace(/^[ \t]*\|(.*)\|[ \t]*$/gm, '$1');
+  text = text.replace(/[ \t]*\|[ \t]*/g, ', ');
+  // Blockquotes
+  text = text.replace(/^[ \t]*(>[ \t]?)+/gm, '');
+  // Bullet markers
+  text = text.replace(/^[ \t]*[-*+][ \t]+/gm, '');
   // Headings / emphasis / strikethrough markers.
   // `*` and `_` count as emphasis only when they sit on a word boundary
   // and touch the word, so `file_name` and `2 * 3 * 4` stay intact.
+  // The lazy `??` keeps `*a* and *b*` as two spans, not one.
   text = text.replace(/^#{1,6}\s+/gm, '');
   const boundary = '(?:^|[\\s([{"\'])';
   const end = '(?=$|[\\s)\\].,!?:;"\'])';
-  text = text.replace(new RegExp(`(${boundary})(\\*\\*|__)(\\S(?:.*?\\S)?)\\2${end}`, 'g'), '$1$3');
-  text = text.replace(new RegExp(`(${boundary})(\\*|_)(\\S(?:.*?\\S)?)\\2${end}`, 'g'), '$1$3');
+  text = text.replace(new RegExp(`(${boundary})(\\*\\*|__)(\\S(?:.*?\\S)??)\\2${end}`, 'gm'), '$1$3');
+  text = text.replace(new RegExp(`(${boundary})(\\*|_)(\\S(?:.*?\\S)??)\\2${end}`, 'gm'), '$1$3');
   text = text.replace(/~~(.*?)~~/g, '$1');
   // Bare URLs are spoken as the word "link", with any trailing punctuation kept.
-  text = text.replace(/https?:\/\/[^\s]+/g, (url) => {
-    const core = url.replace(/[.,!?:;)]+$/g, '');
-    return `link${url.slice(core.length)}`;
-  });
+  text = text.replace(/https?:\/\/[^\s]+/g, (url) => `link${splitUrlTrailer(url)[1]}`);
   // Collapse whitespace
   return text.replace(/\s+/g, ' ').trim();
 }
 
-type WordSpan = { start: number; end: number };
-
-function buildWordSpans(plain: string): WordSpan[] {
-  const spans: WordSpan[] = [];
-  const re = /\S+/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(plain)) !== null) {
-    spans.push({ start: match.index, end: match.index + match[0].length });
-  }
-  return spans;
-}
-
-/** Rough spoken duration — Chrome often skips `onboundary`, so we
- * drive the highlight from elapsed time with this estimate. */
+/** Rough spoken duration. The watchdog uses it as its time budget,
+ * because `onend` does not always fire. */
 function estimateDurationMs(plain: string, rate: number): number {
   const words = plain.split(/\s+/).filter(Boolean).length || 1;
   const wpm = 165 * (rate > 0 ? rate : 1);
   return Math.max(800, (words / wpm) * 60 * 1000);
 }
 
-export function wordIndexForChar(spans: WordSpan[], charIndex: number): number {
-  if (spans.length === 0) return 0;
-  for (let i = 0; i < spans.length; i += 1) {
-    if (charIndex >= spans[i].start && charIndex < spans[i].end) return i;
-  }
-  for (let i = spans.length - 1; i >= 0; i -= 1) {
-    if (charIndex >= spans[i].start) return i;
-  }
-  return 0;
-}
-
 export type SpeechProgress = {
   speakId: string | null;
-  plainText: string;
-  charIndex: number;
-  charLength: number;
   speaking: boolean;
 };
 
 type SpeakOptions = {
   /** Correlates progress with a chat message bubble. */
   speakId?: string;
+  /** BCP-47 tag; falls back to the browser language. */
+  lang?: string | null;
   onEnd?: () => void;
 };
+
+const WATCHDOG_INTERVAL_MS = 250;
+/** Longest wait for a queued utterance that never starts. */
+const MAX_START_WAIT_MS = 8000;
 
 let activeRecognition: SpeechRecognitionLike | null = null;
 let listening = false;
 const listeningListeners = new Set<(on: boolean) => void>();
 let activeUtterance: SpeechSynthesisUtterance | null = null;
-let progressTimer: number | null = null;
-let progress: SpeechProgress = {
-  speakId: null,
-  plainText: '',
-  charIndex: 0,
-  charLength: 0,
-  speaking: false,
-};
+let watchdogTimer: number | null = null;
+let progress: SpeechProgress = { speakId: null, speaking: false };
 const progressListeners = new Set<(next: SpeechProgress) => void>();
 
-function emitProgress(): void {
+function setProgress(next: SpeechProgress): void {
+  progress = next;
   const snapshot = { ...progress };
   progressListeners.forEach((listener) => listener(snapshot));
 }
@@ -162,51 +207,19 @@ export function subscribeListening(listener: (on: boolean) => void): () => void 
   };
 }
 
-function stopProgressTimer(): void {
-  if (progressTimer !== null) {
-    window.clearInterval(progressTimer);
-    progressTimer = null;
+function stopWatchdog(): void {
+  if (watchdogTimer !== null) {
+    window.clearInterval(watchdogTimer);
+    watchdogTimer = null;
   }
 }
 
 function clearSpeechProgress(): void {
-  stopProgressTimer();
-  progress = {
-    speakId: null,
-    plainText: '',
-    charIndex: 0,
-    charLength: 0,
-    speaking: false,
-  };
-  emitProgress();
+  stopWatchdog();
+  setProgress({ speakId: null, speaking: false });
 }
 
-function applyWordHighlight(
-  speakId: string | null,
-  plain: string,
-  span: WordSpan,
-): void {
-  const nextIndex = span.start;
-  const nextLength = Math.max(1, span.end - span.start);
-  if (
-    progress.speaking &&
-    progress.speakId === speakId &&
-    progress.charIndex === nextIndex &&
-    progress.charLength === nextLength
-  ) {
-    return;
-  }
-  progress = {
-    speakId,
-    plainText: plain,
-    charIndex: nextIndex,
-    charLength: nextLength,
-    speaking: true,
-  };
-  emitProgress();
-}
-
-/** Subscribe to TTS progress (word highlight). Returns unsubscribe. */
+/** Subscribe to which bubble is speaking. Returns unsubscribe. */
 export function subscribeSpeechProgress(
   listener: (next: SpeechProgress) => void,
 ): () => void {
@@ -222,7 +235,8 @@ export type ListenHandlers = {
   onFinal?: (transcript: string) => void;
   onEnd?: () => void;
   onError?: (error: string) => void;
-  lang?: string;
+  /** BCP-47 tag; falls back to the browser language. */
+  lang?: string | null;
 };
 
 export function startListening(handlers: ListenHandlers): boolean {
@@ -238,7 +252,7 @@ export function startListening(handlers: ListenHandlers): boolean {
   const recognition = new Ctor();
   recognition.continuous = false;
   recognition.interimResults = true;
-  recognition.lang = handlers.lang || (typeof navigator !== 'undefined' ? navigator.language : 'en-US');
+  recognition.lang = resolveVoiceLang(handlers.lang);
 
   recognition.onresult = (event) => {
     let interim = '';
@@ -278,10 +292,11 @@ export function startListening(handlers: ListenHandlers): boolean {
     recognition.start();
     emitListening(true);
     return true;
-  } catch (err) {
+  } catch {
     activeRecognition = null;
     emitListening(false);
-    handlers.onError?.(err instanceof Error ? err.message : 'start-failed');
+    // A stable code, so the footer can show a message for it.
+    handlers.onError?.('start-failed');
     return false;
   }
 }
@@ -304,18 +319,22 @@ export function stopListening(): void {
   }
 }
 
+function cancelSynthesis(): void {
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    // ignore
+  }
+}
+
 export function stopSpeaking(): void {
   const hadUtterance = activeUtterance !== null;
   activeUtterance = null;
-  stopProgressTimer();
+  stopWatchdog();
   // Cancel only speech this widget started. The widget is mounted in the
   // host page, so an unconditional cancel would cut off the host's audio.
   if (hadUtterance && isSpeechSynthesisSupported()) {
-    try {
-      window.speechSynthesis.cancel();
-    } catch {
-      // ignore
-    }
+    cancelSynthesis();
   }
   if (progress.speaking || progress.speakId) {
     clearSpeechProgress();
@@ -333,49 +352,24 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
   stopSpeaking();
   try {
     const utterance = new SpeechSynthesisUtterance(plain);
-    utterance.lang = typeof navigator !== 'undefined' ? navigator.language : 'en-US';
+    utterance.lang = resolveVoiceLang(options.lang);
     activeUtterance = utterance;
 
     const speakId = options.speakId ?? null;
-    const words = buildWordSpans(plain);
     const durationMs = estimateDurationMs(plain, utterance.rate || 1);
-    // Stay at 0 until `onstart`. Highlighting from speak() runs ahead of
-    // the voice, and Chrome often never fires `onend` if we cancel first.
+    // Past this, end no matter what the browser reports. Covers Chrome's
+    // stuck `speaking` after its ~15 s network-voice cutoff, speech left
+    // paused, and speech that never starts.
+    const hardCapMs = durationMs * 2 + 5000;
+    const startWaitMs = Math.min(durationMs + 2000, MAX_START_WAIT_MS);
     let startedAt = 0;
     const queuedAt = performance.now();
 
-    progress = {
-      speakId,
-      plainText: plain,
-      charIndex: 0,
-      charLength: 0,
-      speaking: true,
-    };
-    emitProgress();
-
-    const markStarted = () => {
-      if (activeUtterance !== utterance || startedAt) return;
-      startedAt = performance.now();
-    };
+    setProgress({ speakId, speaking: true });
 
     utterance.onstart = () => {
-      markStarted();
-    };
-
-    // Chrome/Edge on many Linux setups fire `onboundary` once (or never).
-    // Drive karaoke highlight from elapsed time; snap the clock when a
-    // real boundary arrives so it stays aligned with the voice.
-    utterance.onboundary = (event: SpeechSynthesisEvent) => {
-      if (activeUtterance !== utterance || words.length === 0) return;
-      if (event.name && event.name !== 'word' && event.name !== 'sentence') return;
-      const charIndex = typeof event.charIndex === 'number' ? event.charIndex : 0;
-      const wi = wordIndexForChar(words, charIndex);
-      const span = words[wi];
-      if (!startedAt) {
-        const targetT = (wi + 0.5) / words.length;
-        startedAt = performance.now() - targetT * durationMs;
-      }
-      applyWordHighlight(speakId, plain, span);
+      if (activeUtterance !== utterance || startedAt) return;
+      startedAt = performance.now();
     };
 
     const finish = () => {
@@ -385,28 +379,28 @@ export function speak(text: string, options: SpeakOptions = {}): boolean {
       options.onEnd?.();
     };
 
-    progressTimer = window.setInterval(() => {
-      if (activeUtterance !== utterance || words.length === 0) return;
-      if (typeof window !== 'undefined' && window.speechSynthesis.paused) return;
+    // Watchdog only: `onend` does not fire for a cancelled utterance, a
+    // network-voice cutoff, or when voices are not loaded yet.
+    watchdogTimer = window.setInterval(() => {
+      if (activeUtterance !== utterance) return;
       const synthesis = window.speechSynthesis;
+      const now = performance.now();
+      if (now - queuedAt > hardCapMs) {
+        cancelSynthesis();
+        finish();
+        return;
+      }
+      if (synthesis.paused) return;
       if (!startedAt) {
-        const waited = performance.now() - queuedAt;
-        if (waited > durationMs + 2000 && !synthesis.speaking && !synthesis.pending) {
+        if (now - queuedAt > startWaitMs && !synthesis.speaking && !synthesis.pending) {
           finish();
         }
         return;
       }
-      const elapsed = performance.now() - startedAt;
-      // `onend` does not fire for a cancelled utterance, a network-voice
-      // cutoff, or when voices are not loaded yet. Stop the highlight then.
-      if (elapsed > durationMs * 1.5 + 2000 && !synthesis.speaking) {
+      if (now - startedAt > durationMs * 1.5 + 2000 && !synthesis.speaking) {
         finish();
-        return;
       }
-      const t = Math.min(0.999, Math.max(0, elapsed / durationMs));
-      const wi = Math.min(words.length - 1, Math.floor(t * words.length));
-      applyWordHighlight(speakId, plain, words[wi]);
-    }, 50);
+    }, WATCHDOG_INTERVAL_MS);
 
     utterance.onend = finish;
     utterance.onerror = finish;

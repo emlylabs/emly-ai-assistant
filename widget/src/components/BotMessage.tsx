@@ -37,6 +37,8 @@ interface BotMessageProps {
     showCitations?: boolean;
     /** Mirrors the bot's `enable_voice` config flag. */
     enableVoice?: boolean;
+    /** Bot's BCP-47 voice language; falls back to the browser language. */
+    voiceLanguage?: string | null;
 }
 
 const BotMessage: React.FC<BotMessageProps> = ({
@@ -54,6 +56,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
     citations,
     showCitations,
     enableVoice,
+    voiceLanguage,
 }) => {
     // Renders bot replies as markdown (GFM). Mirrors the
     // your-assistant/src/Utility/MarkdownRenderer.js pattern but stays
@@ -61,9 +64,6 @@ const BotMessage: React.FC<BotMessageProps> = ({
     // keep the bundle small) and no link-card decoration.
     const [speech, setSpeech] = React.useState<SpeechProgress>({
         speakId: null,
-        plainText: '',
-        charIndex: 0,
-        charLength: 0,
         speaking: false,
     });
 
@@ -76,13 +76,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
                     return next;
                 }
                 if (prev.speaking && prev.speakId === messageKey) {
-                    return {
-                        speakId: null,
-                        plainText: '',
-                        charIndex: 0,
-                        charLength: 0,
-                        speaking: false,
-                    };
+                    return { speakId: null, speaking: false };
                 }
                 return prev;
             });
@@ -105,7 +99,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
             stopSpeaking();
             return;
         }
-        speak(text, { speakId: messageKey });
+        speak(text, { speakId: messageKey, lang: voiceLanguage });
     };
 
     const linkTarget = openLinkInSameTab ? undefined : '_blank';

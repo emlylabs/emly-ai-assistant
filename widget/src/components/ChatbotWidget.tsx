@@ -810,7 +810,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
           Boolean(botConfig?.enable_voice) &&
           isSpeechSynthesisSupported();
         if (shouldSpeak) {
-          speak(cleaned, { speakId: bubbleId });
+          speak(cleaned, { speakId: bubbleId, lang: botConfig?.voice_language });
         }
       }
       if (code) {
@@ -1115,6 +1115,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             userId={getEmlyUserId()}
             showCitations={Boolean(botConfig?.show_citations)}
             enableVoice={Boolean(botConfig?.enable_voice)}
+            voiceLanguage={botConfig?.voice_language}
           />
           <ChatbotFooter
             newMessage={newMessage}
@@ -1124,6 +1125,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             placeholderMessage={pendingStartChat ? 'Please complete the form to start chatting…' : resolvedPlaceholder}
             botIsTyping={botIsTyping || pendingStartChat}
             enableVoice={Boolean(botConfig?.enable_voice)}
+            voiceLanguage={botConfig?.voice_language}
           />
           <div className="emly-attribution" aria-label="Branding">
             <span>Powered by</span>

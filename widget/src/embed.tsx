@@ -186,6 +186,8 @@ export interface WidgetBotConfig {
   show_citations?: boolean | null;
   /** Browser Web Speech API mic + spoken replies (Chrome/Edge). */
   enable_voice?: boolean | null;
+  /** BCP-47 tag for mic + spoken replies; null means the browser language. */
+  voice_language?: string | null;
   starter_messages?: string[] | null;
   support_email?: string | null;
   whatsapp_link?: string | null;
