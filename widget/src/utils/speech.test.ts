@@ -182,7 +182,7 @@ function lastUtterance(): FakeUtterance {
 }
 
 describe('speak watchdog', () => {
-  // "hello world" → 2 words → 800 ms budget. Hard cap = 800 * 2 + 5000.
+  // "hi" → 1 unit → the 800 ms minimum budget. Hard cap = 800 * 2 + 5000.
   const HARD_CAP_MS = 6600;
   let updates: SpeechProgress[];
   let unsubscribe: () => void;
@@ -206,19 +206,19 @@ describe('speak watchdog', () => {
   const latest = () => updates[updates.length - 1];
 
   it('marks the bubble as speaking and uses the configured language', () => {
-    expect(speak('hello world', { speakId: 'm1', lang: 'es-MX' })).toBe(true);
+    expect(speak('hi', { speakId: 'm1', lang: 'es-MX' })).toBe(true);
     expect(latest()).toEqual({ speakId: 'm1', speaking: true });
     expect(lastUtterance().lang).toBe('es-MX');
   });
 
   it('falls back to the browser language', () => {
-    speak('hello world', { speakId: 'm1' });
+    speak('hi', { speakId: 'm1' });
     expect(lastUtterance().lang).toBe('en-GB');
   });
 
   it('finishes on a normal onend', () => {
     const onEnd = vi.fn();
-    speak('hello world', { speakId: 'm1', onEnd });
+    speak('hi', { speakId: 'm1', onEnd });
     lastUtterance().onstart?.();
     lastUtterance().onend?.();
     expect(onEnd).toHaveBeenCalledTimes(1);
@@ -228,7 +228,7 @@ describe('speak watchdog', () => {
 
   it('ends when Chrome leaves speaking stuck on true', () => {
     const onEnd = vi.fn();
-    speak('hello world', { speakId: 'm1', onEnd });
+    speak('hi', { speakId: 'm1', onEnd });
     synthesis.speaking = true;
     lastUtterance().onstart?.();
 
@@ -245,7 +245,7 @@ describe('speak watchdog', () => {
 
   it('ends when speech stays paused', () => {
     const onEnd = vi.fn();
-    speak('hello world', { speakId: 'm1', onEnd });
+    speak('hi', { speakId: 'm1', onEnd });
     synthesis.speaking = true;
     synthesis.paused = true;
     lastUtterance().onstart?.();
@@ -258,7 +258,7 @@ describe('speak watchdog', () => {
 
   it('ends when speech never starts but stays pending', () => {
     const onEnd = vi.fn();
-    speak('hello world', { speakId: 'm1', onEnd });
+    speak('hi', { speakId: 'm1', onEnd });
     synthesis.pending = true;
 
     vi.advanceTimersByTime(HARD_CAP_MS + 500);
@@ -269,12 +269,44 @@ describe('speak watchdog', () => {
 
   it('ends quickly when speech never starts and nothing is queued', () => {
     const onEnd = vi.fn();
-    speak('hello world', { speakId: 'm1', onEnd });
+    speak('hi', { speakId: 'm1', onEnd });
 
     vi.advanceTimersByTime(3000);
     expect(onEnd).toHaveBeenCalledTimes(1);
     expect(latest().speaking).toBe(false);
   });
+
+  // Each case: text, how long a slow voice takes to read it, and the
+  // most the watchdog may wait before it gives up on stuck speech.
+  const noSpaceCases: Array<[string, string, number, number]> = [
+    // 322 characters of Japanese, as in the review repro. Counted by
+    // spaces this was one word, and speech was stopped at about 7 s.
+    ['Japanese', 'これは音声読み上げのテストです。'.repeat(20) + 'あり', 60_000, 135_000],
+    // Mandarin voices read about 4 characters a second: 200 → 50 s.
+    ['Chinese', '语音'.repeat(100), 50_000, 85_000],
+    // Thai reads at about 12–15 characters a second: 210 → ~17 s.
+    ['Thai', 'ภาษาไทย'.repeat(30), 20_000, 50_000],
+  ];
+
+  it.each(noSpaceCases)(
+    'does not cut off a long %s reply written without spaces',
+    (_name, text, slowSpeechMs, maxWaitMs) => {
+      const onEnd = vi.fn();
+      speak(text, { speakId: 'm1', onEnd });
+      synthesis.speaking = true;
+      lastUtterance().onstart?.();
+
+      vi.advanceTimersByTime(slowSpeechMs);
+      expect(onEnd).not.toHaveBeenCalled();
+      expect(synthesis.cancel).not.toHaveBeenCalled();
+      expect(latest().speaking).toBe(true);
+
+      // Speech stuck on `speaking` still ends at the hard cap.
+      vi.advanceTimersByTime(maxWaitMs - slowSpeechMs);
+      expect(synthesis.cancel).toHaveBeenCalled();
+      expect(onEnd).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('caps the start wait at 8 s for a long reply', () => {
     const onEnd = vi.fn();
@@ -287,7 +319,7 @@ describe('speak watchdog', () => {
   });
 
   it('stopSpeaking cancels and clears the bubble', () => {
-    speak('hello world', { speakId: 'm1' });
+    speak('hi', { speakId: 'm1' });
     stopSpeaking();
     expect(synthesis.cancel).toHaveBeenCalled();
     expect(latest()).toEqual({ speakId: null, speaking: false });

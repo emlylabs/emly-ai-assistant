@@ -155,8 +155,22 @@ export function plainTextForSpeech(input: string): string {
 
 /** Rough spoken duration. The watchdog uses it as its time budget,
  * because `onend` does not always fire. */
+// Chinese characters and Japanese kana/kanji. Each is about one syllable,
+// and voices read them at roughly 4–8 per second.
+const CJK_CHAR = /[぀-ヿ㐀-䶿一-鿿豈-﫿]/g;
+
 function estimateDurationMs(plain: string, rate: number): number {
-  const words = plain.split(/\s+/).filter(Boolean).length || 1;
+  // Chinese, Japanese and Thai have no spaces between words, so a space
+  // count alone would treat a long reply as one word.
+  // - Each CJK character counts as half a word (5.5 per second at
+  //   165 wpm), so the 2x cap still covers speech at 2.75 per second.
+  // - Other text counts as its words, or one word per 4 characters,
+  //   whichever is more. This covers Thai.
+  const cjk = (plain.match(CJK_CHAR) || []).length;
+  const rest = plain.replace(CJK_CHAR, ' ');
+  const spaced = rest.split(/\s+/).filter(Boolean).length;
+  const restChars = rest.replace(/\s+/g, '').length;
+  const words = Math.max(cjk * 0.5 + Math.max(spaced, Math.ceil(restChars / 4)), 1);
   const wpm = 165 * (rate > 0 ? rate : 1);
   return Math.max(800, (words / wpm) * 60 * 1000);
 }
