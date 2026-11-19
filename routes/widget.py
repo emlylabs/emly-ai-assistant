@@ -156,6 +156,8 @@ class WidgetConfigResponse(BaseModel):
     open_link_in_same_tab: Optional[bool] = None
     feedback: Optional[bool] = None
     show_citations: Optional[bool] = None
+    enable_voice: Optional[bool] = None
+    voice_language: Optional[str] = None
 
     starter_messages: Optional[List[str]] = None
     nudges: Optional[Dict[str, Any]] = None
@@ -253,6 +255,8 @@ def _build_widget_config(bot: BotModel) -> WidgetConfigResponse:
         open_link_in_same_tab=_opt(raw.get("open_link_in_same_tab"), bool),
         feedback=_opt(raw.get("feedback"), bool),
         show_citations=_opt(raw.get("show_citations"), bool),
+        enable_voice=_opt(raw.get("enable_voice"), bool),
+        voice_language=_opt(raw.get("voice_language"), str),
         starter_messages=_opt(raw.get("starter_messages"), list),
         nudges=_opt(raw.get("nudges"), dict),
         c_forms_selected=_scrub_cforms(raw.get("c_forms_selected")),

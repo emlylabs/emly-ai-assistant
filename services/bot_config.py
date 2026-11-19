@@ -126,6 +126,16 @@ class BotConfig(BaseModel):
     open_link_in_same_tab: Optional[bool] = None
     feedback: Optional[bool] = None
     show_citations: Optional[bool] = None
+    # Widget: browser Web Speech API mic input + spoken replies
+    # (Chrome/Edge). Voice is processed by the visitor's browser vendor
+    # (e.g. Google for Chrome, Microsoft for Edge). Audio does not pass
+    # through Emly servers. The microphone needs HTTPS (or localhost).
+    enable_voice: Optional[bool] = None
+    # BCP-47 tag (e.g. "es-MX") for mic input and spoken replies. None
+    # means the widget uses the visitor's browser language.
+    voice_language: Optional[str] = Field(
+        default=None, pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    )
 
     # Conversational
     starter_messages: Optional[List[str]] = None

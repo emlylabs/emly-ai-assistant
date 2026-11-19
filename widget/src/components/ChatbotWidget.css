@@ -767,6 +767,43 @@
     margin-top: 2px;
 }
 
+.emls-chatbot-widget .body .emw-bot-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.emls-chatbot-widget .body .emw-bot-meta .emw-timestamp {
+    margin-top: 0;
+}
+
+.emls-chatbot-widget .body .emw-speak-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--cb-muted, #64748b);
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 6px;
+}
+
+.emls-chatbot-widget .body .emw-speak-btn:hover {
+    color: var(--cb-accent, #2563eb);
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.emls-chatbot-widget .body .emw-speak-btn--active {
+    color: var(--cb-accent, #2563eb);
+}
+
+.emls-chatbot-widget .body .emw-bot-bubble--speaking {
+    box-shadow: inset 3px 0 0 var(--cb-accent, #2563eb);
+}
+
 .emls-chatbot-widget .body .emw-feedback {
     list-style: none;
     display: flex;
@@ -1035,7 +1072,8 @@
     opacity: 1;
 }
 
-.emls-chatbot-widget .footer .input-container .send-icon {
+.emls-chatbot-widget .footer .input-container .send-icon,
+.emls-chatbot-widget .footer .input-container .mic-icon {
     width: 32px;
     height: 32px;
     cursor: pointer;
@@ -1048,8 +1086,38 @@
     transition: background 0.15s ease, color 0.15s ease;
 }
 
-.emls-chatbot-widget .footer .input-container .send-icon:not(.send-icon--disabled):hover {
+.emls-chatbot-widget .footer .input-container .send-icon:not(.send-icon--disabled):hover,
+.emls-chatbot-widget .footer .input-container .mic-icon:not(.mic-icon--disabled):hover {
     background: rgba(37, 99, 235, 0.08);
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    padding: 6px;
+    margin-right: 2px;
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon--active {
+    color: #dc2626;
+    background: rgba(220, 38, 38, 0.08);
+}
+
+.emls-chatbot-widget .footer .input-container .mic-icon--disabled {
+    cursor: default;
+    opacity: 0.4;
+}
+
+.emls-chatbot-widget .footer .emw-mic-error {
+    width: 100%;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #b91c1c;
 }
 
 

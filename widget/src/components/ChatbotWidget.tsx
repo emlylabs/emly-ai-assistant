@@ -25,6 +25,12 @@ import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, fet
 import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
+import {
+  isSpeechSynthesisSupported,
+  silenceVoice,
+  speak,
+  stopSpeaking,
+} from '../utils/speech';
 
 /* Theme utility functions - hidden
 const readStoredThemeId = (): string | null => {
@@ -242,6 +248,11 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   // const [showThemeMenu, setShowThemeMenu] = useState(false);
   // const [themeId, setThemeId] = useState<string>(() => readStoredThemeId() ?? defaultThemeId);
   const sessionTransitionTimeoutRef = useRef<number | null>(null);
+  // Auto-speak the next bot reply only when the user spoke (mic), not
+  // when they typed. Text replies always stay visible either way.
+  const speakNextReplyRef = useRef(false);
+  const isOpenRef = useRef(false);
+  const sendMessageRef = useRef<(text: string, opts?: { fromVoice?: boolean }) => void>(() => {});
   const dispatch = useDispatch();
   const { messages, sessions, activeSessionId } = useSelector((state: RootState) => state.messages);
   const firstSessionId = sessions[0]?.id ?? null;
@@ -787,7 +798,20 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       // markdown was scanned for `internal_code` tags.
       const { code, cleaned } = extractInternalCode(botResponse.text);
       if (cleaned) {
-        addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
+        const bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
+        // Voice in → speak + show text. Typed in → text only (speaker
+        // button still lets the user play the reply on demand).
+        // iOS Safari ignores speak() outside a user gesture, so this
+        // automatic read-aloud can fail silently there. The speaker
+        // button on the bubble is the gesture that works.
+        const shouldSpeak =
+          speakNextReplyRef.current &&
+          isOpenRef.current &&
+          Boolean(botConfig?.enable_voice) &&
+          isSpeechSynthesisSupported();
+        if (shouldSpeak) {
+          speak(cleaned, { speakId: bubbleId, lang: botConfig?.voice_language });
+        }
       }
       if (code) {
         const matched = findFormByTriggerCode(cForms, code);
@@ -797,17 +821,20 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       console.error('Failed to fetch chatbot response:', error);
       addMessage('Unable to reach the chatbot service right now.', false);
     } finally {
+      speakNextReplyRef.current = false;
       setBotIsTyping(false);
     }
   };
 
-  const sendMessage = (text: string) => {
+  const sendMessage = (text: string, opts?: { fromVoice?: boolean }) => {
     const messageToSend = text.trim();
     if (messageToSend === '') return;
     // While the START_CHAT capture form is pending, swallow messages —
     // the footer is also disabled, but defend against programmatic
     // calls (nudge auto-send, post-limit chip) that bypass the input.
     if (pendingStartChat) return;
+    stopSpeaking();
+    speakNextReplyRef.current = Boolean(opts?.fromVoice);
     // Auto-name the session from the first user query
     if (activeSessionId && messages.length === 0) {
       const sessionLabel = messageToSend.length > 30
@@ -819,10 +846,14 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     setNewMessage('');
     void getBotResponse(messageToSend);
   };
+  sendMessageRef.current = sendMessage;
 
   const handleSendMessage = () => sendMessage(newMessage);
 
   const handleClose = () => {
+    speakNextReplyRef.current = false;
+    isOpenRef.current = false;
+    silenceVoice();
     setIsOpen(false); // Close the chatbot immediately
     setIsMaximized(false);
     // setShowThemeMenu(false);
@@ -843,6 +874,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   };
 
   useEffect(() => {
+    isOpenRef.current = isOpen;
     if (isOpen) recordImpression('long');
   }, [isOpen]);
 
@@ -864,10 +896,15 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       if (sessionTransitionTimeoutRef.current) {
         window.clearTimeout(sessionTransitionTimeoutRef.current);
       }
+      speakNextReplyRef.current = false;
+      isOpenRef.current = false;
+      silenceVoice();
     };
   }, []);
 
   const handleNewSession = () => {
+    speakNextReplyRef.current = false;
+    silenceVoice();
     startSessionTransition();
     const newSession = createNewSessionUtil();
     dispatch(addSession(newSession));
@@ -876,12 +913,16 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   };
 
   const handleSwitchSession = (sessionId: string) => {
+    speakNextReplyRef.current = false;
+    silenceVoice();
     startSessionTransition();
     dispatch(switchSession(sessionId));
     setShowSessionDropdown(false);
   };
 
   const handleDeleteSession = (sessionId: string) => {
+    speakNextReplyRef.current = false;
+    silenceVoice();
     startSessionTransition();
     dispatch(deleteSession(sessionId));
     setShowSessionDropdown(false);
@@ -1073,13 +1114,18 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             sessionId={activeSessionId}
             userId={getEmlyUserId()}
             showCitations={Boolean(botConfig?.show_citations)}
+            enableVoice={Boolean(botConfig?.enable_voice)}
+            voiceLanguage={botConfig?.voice_language}
           />
           <ChatbotFooter
             newMessage={newMessage}
             setNewMessage={setNewMessage}
             handleSendMessage={handleSendMessage}
+            onVoiceFinal={(transcript) => sendMessageRef.current(transcript, { fromVoice: true })}
             placeholderMessage={pendingStartChat ? 'Please complete the form to start chatting…' : resolvedPlaceholder}
             botIsTyping={botIsTyping || pendingStartChat}
+            enableVoice={Boolean(botConfig?.enable_voice)}
+            voiceLanguage={botConfig?.voice_language}
           />
           <div className="emly-attribution" aria-label="Branding">
             <span>Powered by</span>
