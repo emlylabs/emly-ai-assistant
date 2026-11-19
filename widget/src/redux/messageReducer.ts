@@ -60,6 +60,32 @@ const messageSlice = createSlice({
         // Patch an existing message's `form` block — used to flip a
         // form bubble between confirm/pending/submitted/cancelled
         // without dropping the rest of the message (text, timestamp).
+        updateMessage: (
+            state,
+            action: PayloadAction<{
+                id: string;
+                text?: string;
+                data?: unknown;
+                messageId?: number;
+                citations?: Message['citations'];
+                persist?: boolean;
+            }>,
+        ) => {
+            const { id, persist = true, ...patch } = action.payload;
+            const target = state.messages.find(m => m.id === id);
+            if (!target) return;
+            if (patch.text !== undefined) target.text = patch.text;
+            if (patch.data !== undefined) target.data = patch.data;
+            if (patch.messageId !== undefined) target.messageId = patch.messageId;
+            if (patch.citations !== undefined) target.citations = patch.citations;
+            if (state.activeSessionId) {
+                const idx = state.sessions.findIndex(s => s.id === state.activeSessionId);
+                if (idx !== -1) {
+                    state.sessions[idx].messages = state.messages;
+                    if (persist) saveSessions(state.sessions);
+                }
+            }
+        },
         updateMessageForm: (
             state,
             action: PayloadAction<{ id: string; form: Partial<Message['form']> & object }>,
@@ -153,6 +179,7 @@ const messageSlice = createSlice({
 export const {
     rehydrateForBot,
     addMessage,
+    updateMessage,
     updateMessageForm,
     deleteMessageById,
     deleteAllMessages,

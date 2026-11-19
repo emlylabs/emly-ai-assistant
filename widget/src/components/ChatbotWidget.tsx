@@ -9,6 +9,7 @@ import ChatbotFooter from './ChatbotFooter';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addMessage as addMessageToStore,
+  updateMessage,
   updateMessageForm,
   addSession,
   switchSession,
@@ -26,7 +27,10 @@ import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widge
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
 import {
+  beginSpeechStream,
   canSpeak,
+  feedSpeechStream,
+  plainTextForSpeech,
   silenceVoice,
   speak,
   stopSpeaking,
@@ -131,6 +135,35 @@ const extractInternalCode = (text: string): { code: string | null; cleaned: stri
   const m = INTERNAL_CODE_RE.exec(text);
   if (!m) return { code: null, cleaned: text };
   return { code: m[1].trim(), cleaned: text.replace(INTERNAL_CODE_RE, '').trim() };
+};
+
+/** Hide an unfinished `<internal_code>` tag while the reply is streaming. */
+const visibleReply = (raw: string): string => {
+  const { cleaned } = extractInternalCode(raw);
+  return cleaned.replace(/<internal_code>[\s\S]*$/, '').trim();
+};
+
+/** Hold back an unclosed markdown construct so the spoken prefix stays stable. */
+const stableSpeechSource = (raw: string): string => {
+  let cut = raw.length;
+  if ((raw.split('```').length - 1) % 2 === 1) cut = Math.min(cut, raw.lastIndexOf('```'));
+  let head = raw.slice(0, cut);
+  if ((head.split('**').length - 1) % 2 === 1) {
+    cut = Math.min(cut, head.lastIndexOf('**'));
+    head = raw.slice(0, cut);
+  }
+  if ((head.split('__').length - 1) % 2 === 1) {
+    cut = Math.min(cut, head.lastIndexOf('__'));
+    head = raw.slice(0, cut);
+  }
+  if (head.lastIndexOf('[') > head.lastIndexOf(']')) {
+    cut = Math.min(cut, head.lastIndexOf('['));
+    head = raw.slice(0, cut);
+  }
+  if (head.lastIndexOf('<internal_code>') > head.lastIndexOf('</internal_code>')) {
+    cut = Math.min(cut, head.lastIndexOf('<internal_code>'));
+  }
+  return raw.slice(0, cut);
 };
 
 // `c_forms_selected` is a list of single-key entries — flatten to
@@ -255,6 +288,8 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   const speakNextReplyRef = useRef(false);
   const isOpenRef = useRef(false);
   const sendMessageRef = useRef<(text: string, opts?: { fromVoice?: boolean }) => void>(() => {});
+  const chatTurnRef = useRef(0);
+  const chatAbortRef = useRef<AbortController | null>(null);
   const fetchTtsAudio = React.useCallback(async (plain: string): Promise<Blob> => {
     const url = getTtsUrl();
     if (!url) throw new Error('TTS URL is not configured');
@@ -732,6 +767,10 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   );
 
   const getBotResponse = async (userMessage: string) => {
+    const turn = ++chatTurnRef.current;
+    chatAbortRef.current?.abort();
+    const abort = new AbortController();
+    chatAbortRef.current = abort;
     setBotIsTyping(true);
 
     const chatUrl = getChatUrl();
@@ -746,14 +785,25 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
 
     const userId = getEmlyUserId();
     const sessionId = activeSessionId || `session-${uuidv4()}`;
+    const ttsProvider: TtsProvider =
+      botConfig?.tts_provider === 'deepgram' ? 'deepgram' : 'browser';
+    // Voice in → speak + show text. Typed in → text only (speaker
+    // button still lets the user play the reply on demand).
+    // iOS Safari ignores speak() outside a user gesture, so this
+    // automatic read-aloud can fail silently there. The speaker
+    // button on the bubble is the gesture that works.
+    const shouldSpeak =
+      speakNextReplyRef.current &&
+      isOpenRef.current &&
+      Boolean(botConfig?.enable_voice) &&
+      canSpeak(ttsProvider);
+    const stale = () => chatTurnRef.current !== turn;
 
     try {
       // The backend (`POST /widget/{botId}/chat`) always returns NDJSON.
-      // We use `stream:true` so token chunks come through and the final
-      // `done` chunk carries the persisted `message_id` (the non-stream
-      // path returns a hardcoded placeholder). Tokens are accumulated
-      // before rendering — the widget UX is still single-shot, but the
-      // rating feature needs the real id from the done chunk.
+      // `stream:true` lets the first sentence start speaking while the
+      // rest of the answer is still being written. The final `done`
+      // chunk carries the persisted `message_id`.
       const response = await widgetFetch(chatUrl, {
         method: 'POST',
         headers: {
@@ -768,19 +818,41 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
           messages: [{ role: 'user', content: userMessage }],
           stream: true,
         }),
+        signal: abort.signal,
       });
 
+      if (stale()) return;
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
       }
 
-      const raw = await response.text();
       let accumulated = '';
       let messageId: number | undefined;
       let citations: Citation[] | undefined;
-      for (const line of raw.split('\n')) {
+      let bubbleId: string | null = null;
+      let speechStarted = false;
+
+      const speakPlainNow = (final: boolean) => {
+        // The visitor may close the widget mid-reply.
+        if (!shouldSpeak || !isOpenRef.current || !bubbleId || stale()) return;
+        if (/^\s*[\[{]/.test(accumulated)) return;
+        const plain = plainTextForSpeech(visibleReply(stableSpeechSource(accumulated)));
+        if (!plain) return;
+        if (!speechStarted) {
+          speechStarted = true;
+          beginSpeechStream({
+            speakId: bubbleId,
+            lang: botConfig?.voice_language,
+            provider: ttsProvider,
+            fetchAudio: ttsProvider === 'deepgram' ? fetchTtsAudio : undefined,
+          });
+        }
+        feedSpeechStream(plain, final);
+      };
+
+      const onLine = (line: string) => {
         const trimmed = line.trim();
-        if (!trimmed) continue;
+        if (!trimmed || stale()) return;
         try {
           const obj = JSON.parse(trimmed) as {
             message?: { content?: string };
@@ -803,10 +875,42 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
           // citation's `metadata.title` makes it look like a candidate
           // record — that path would dump citations into `Message.data`
           // and render them as a card regardless of `show_citations`.
+          const shown = visibleReply(accumulated);
+          if (shown) {
+            if (!bubbleId) {
+              bubbleId = addMessage(shown, false);
+              setBotIsTyping(false);
+            } else {
+              dispatch(updateMessage({ id: bubbleId, text: shown, persist: false }));
+            }
+            speakPlainNow(false);
+          }
         } catch {
           // Skip malformed lines; the next line may still be valid JSON.
         }
+      };
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        const raw = await response.text();
+        if (stale()) return;
+        raw.split('\n').forEach(onLine);
+      } else {
+        const decoder = new TextDecoder();
+        let pending = '';
+        while (!stale()) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          const lines = pending.split('\n');
+          pending = lines.pop() ?? '';
+          lines.forEach(onLine);
+        }
+        pending += decoder.decode();
+        if (pending.trim() && !stale()) onLine(pending);
       }
+
+      if (stale()) return;
 
       // Only run candidate-payload detection on the assembled assistant
       // reply — i.e. when the LLM returned a JSON-stringified candidate
@@ -824,39 +928,49 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
       // (cleaned) text. This is the fork in `Chat.js` where bot
       // markdown was scanned for `internal_code` tags.
       const { code, cleaned } = extractInternalCode(botResponse.text);
+      const structured = /^\s*[\[{]/.test(accumulated);
       if (cleaned) {
-        const bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
-        // Voice in → speak + show text. Typed in → text only (speaker
-        // button still lets the user play the reply on demand).
-        const ttsProvider: TtsProvider =
-          botConfig?.tts_provider === 'deepgram' ? 'deepgram' : 'browser';
-        // iOS Safari ignores speak() outside a user gesture, so this
-        // automatic read-aloud can fail silently there. The speaker
-        // button on the bubble is the gesture that works.
-        const shouldSpeak =
-          speakNextReplyRef.current &&
-          isOpenRef.current &&
-          Boolean(botConfig?.enable_voice) &&
-          canSpeak(ttsProvider);
-        if (shouldSpeak) {
-          speak(cleaned, {
-            speakId: bubbleId,
-            lang: botConfig?.voice_language,
-            provider: ttsProvider,
-            fetchAudio: ttsProvider === 'deepgram' ? fetchTtsAudio : undefined,
-          });
+        if (!bubbleId) {
+          bubbleId = addMessage(cleaned, false, botResponse.data, undefined, messageId, citations);
+        } else {
+          dispatch(updateMessage({
+            id: bubbleId,
+            text: cleaned,
+            data: botResponse.data,
+            messageId,
+            citations,
+            persist: true,
+          }));
         }
+        if (shouldSpeak && isOpenRef.current && bubbleId) {
+          if (structured || !speechStarted) {
+            speak(cleaned, {
+              speakId: bubbleId,
+              lang: botConfig?.voice_language,
+              provider: ttsProvider,
+              fetchAudio: ttsProvider === 'deepgram' ? fetchTtsAudio : undefined,
+            });
+          } else {
+            feedSpeechStream(plainTextForSpeech(cleaned), true);
+          }
+        }
+      } else if (speechStarted) {
+        feedSpeechStream(plainTextForSpeech(visibleReply(accumulated)), true);
       }
       if (code) {
         const matched = findFormByTriggerCode(cForms, code);
         if (matched) addFormMessage(matched);
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (stale()) return;
       console.error('Failed to fetch chatbot response:', error);
       addMessage('Unable to reach the chatbot service right now.', false);
     } finally {
-      speakNextReplyRef.current = false;
-      setBotIsTyping(false);
+      if (chatTurnRef.current === turn) {
+        speakNextReplyRef.current = false;
+        setBotIsTyping(false);
+      }
     }
   };
 
@@ -868,6 +982,7 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     // calls (nudge auto-send, post-limit chip) that bypass the input.
     if (pendingStartChat) return;
     stopSpeaking();
+    chatAbortRef.current?.abort();
     speakNextReplyRef.current = Boolean(opts?.fromVoice);
     // Auto-name the session from the first user query
     if (activeSessionId && messages.length === 0) {

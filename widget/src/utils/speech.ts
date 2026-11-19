@@ -214,6 +214,84 @@ let activeObjectUrl: string | null = null;
 let speakGeneration = 0;
 let watchdogTimer: number | null = null;
 let progress: SpeechProgress = { speakId: null, speaking: false };
+
+const SENTENCE_END = /[.!?।](?=\s|$)/;
+
+/** Pull finished sentences out of a growing plain-text reply.
+ * Short fragments stay buffered so "Hi." does not become its own clip.
+ * A long stretch with no punctuation is cut early so speech can start. */
+export function takeReadySentences(
+  plain: string,
+  from: number,
+  final: boolean,
+): { pieces: string[]; consumed: number } {
+  const pieces: string[] = [];
+  let start = Math.max(0, from);
+  let i = start;
+
+  const commit = (endExclusive: number) => {
+    const piece = plain.slice(start, endExclusive).trim();
+    if (piece) pieces.push(piece);
+    let next = endExclusive;
+    while (next < plain.length && /\s/.test(plain[next])) next += 1;
+    start = next;
+    i = next;
+  };
+
+  while (i < plain.length) {
+    const rel = plain.slice(i).search(SENTENCE_END);
+    if (rel === -1) break;
+    const end = i + rel + 1;
+    let next = end;
+    while (next < plain.length && /\s/.test(plain[next])) next += 1;
+    const piece = plain.slice(start, end).trim();
+    const words = piece.split(/\s+/).filter(Boolean).length;
+    const longEnough = piece.length >= 24 || words >= 5;
+    if (!longEnough) {
+      if (next >= plain.length) break;
+      i = next;
+      continue;
+    }
+    commit(end);
+  }
+
+  if (!final && plain.length - start >= 180) {
+    const window = plain.slice(start, Math.min(plain.length, start + 160));
+    let rel = window.lastIndexOf(',');
+    if (rel < 40) rel = window.lastIndexOf(' ');
+    if (rel >= 40) commit(start + rel);
+  }
+
+  if (final && start < plain.length) {
+    const piece = plain.slice(start).trim();
+    if (piece) pieces.push(piece);
+    start = plain.length;
+  }
+  return { pieces, consumed: start };
+}
+
+type SpeechClip = {
+  text: string;
+  blobPromise: Promise<Blob | null> | null;
+};
+
+type SpeechStream = {
+  generation: number;
+  speakId: string | null;
+  lang?: string | null;
+  provider: TtsProvider;
+  fetchAudio?: (plain: string) => Promise<Blob>;
+  accepted: string;
+  consumed: number;
+  clips: SpeechClip[];
+  nextPlay: number;
+  closed: boolean;
+  pumping: boolean;
+  notify: (() => void) | null;
+  cancelClip: (() => void) | null;
+};
+
+let speechStream: SpeechStream | null = null;
 const progressListeners = new Set<(next: SpeechProgress) => void>();
 
 function setProgress(next: SpeechProgress): void {
@@ -382,6 +460,9 @@ function stopActiveAudio(): void {
 
 export function stopSpeaking(): void {
   speakGeneration += 1;
+  const current = speechStream;
+  speechStream = null;
+  current?.cancelClip?.();
   const hadUtterance = activeUtterance !== null;
   activeUtterance = null;
   stopWatchdog();
@@ -396,64 +477,72 @@ export function stopSpeaking(): void {
   }
 }
 
+/** Speak one utterance under the watchdog. `onDone` runs once: on end,
+ * on error, or when the watchdog gives up. */
+function queueUtterance(plain: string, lang: string | null | undefined, onDone: () => void): void {
+  const utterance = new SpeechSynthesisUtterance(plain);
+  utterance.lang = resolveVoiceLang(lang);
+  activeUtterance = utterance;
+
+  const durationMs = estimateDurationMs(plain, utterance.rate || 1);
+  // Past this, end no matter what the browser reports. Covers Chrome's
+  // stuck `speaking` after its ~15 s network-voice cutoff, speech left
+  // paused, and speech that never starts.
+  const hardCapMs = durationMs * 2 + 5000;
+  const startWaitMs = Math.min(durationMs + 2000, MAX_START_WAIT_MS);
+  let startedAt = 0;
+  const queuedAt = performance.now();
+
+  utterance.onstart = () => {
+    if (activeUtterance !== utterance || startedAt) return;
+    startedAt = performance.now();
+  };
+
+  const finish = () => {
+    if (activeUtterance !== utterance) return;
+    activeUtterance = null;
+    stopWatchdog();
+    onDone();
+  };
+
+  // Watchdog only: `onend` does not fire for a cancelled utterance, a
+  // network-voice cutoff, or when voices are not loaded yet.
+  stopWatchdog();
+  watchdogTimer = window.setInterval(() => {
+    if (activeUtterance !== utterance) return;
+    const synthesis = window.speechSynthesis;
+    const now = performance.now();
+    if (now - queuedAt > hardCapMs) {
+      cancelSynthesis();
+      finish();
+      return;
+    }
+    if (synthesis.paused) return;
+    if (!startedAt) {
+      if (now - queuedAt > startWaitMs && !synthesis.speaking && !synthesis.pending) {
+        finish();
+      }
+      return;
+    }
+    if (now - startedAt > durationMs * 1.5 + 2000 && !synthesis.speaking) {
+      finish();
+    }
+  }, WATCHDOG_INTERVAL_MS);
+
+  utterance.onend = finish;
+  utterance.onerror = finish;
+
+  window.speechSynthesis.speak(utterance);
+}
+
 function speakBrowser(plain: string, options: SpeakOptions): boolean {
   if (!isSpeechSynthesisSupported()) return false;
   try {
-    const utterance = new SpeechSynthesisUtterance(plain);
-    utterance.lang = resolveVoiceLang(options.lang);
-    activeUtterance = utterance;
-
-    const speakId = options.speakId ?? null;
-    const durationMs = estimateDurationMs(plain, utterance.rate || 1);
-    // Past this, end no matter what the browser reports. Covers Chrome's
-    // stuck `speaking` after its ~15 s network-voice cutoff, speech left
-    // paused, and speech that never starts.
-    const hardCapMs = durationMs * 2 + 5000;
-    const startWaitMs = Math.min(durationMs + 2000, MAX_START_WAIT_MS);
-    let startedAt = 0;
-    const queuedAt = performance.now();
-
-    setProgress({ speakId, speaking: true });
-
-    utterance.onstart = () => {
-      if (activeUtterance !== utterance || startedAt) return;
-      startedAt = performance.now();
-    };
-
-    const finish = () => {
-      if (activeUtterance !== utterance) return;
-      activeUtterance = null;
+    setProgress({ speakId: options.speakId ?? null, speaking: true });
+    queueUtterance(plain, options.lang, () => {
       clearSpeechProgress();
       options.onEnd?.();
-    };
-
-    // Watchdog only: `onend` does not fire for a cancelled utterance, a
-    // network-voice cutoff, or when voices are not loaded yet.
-    watchdogTimer = window.setInterval(() => {
-      if (activeUtterance !== utterance) return;
-      const synthesis = window.speechSynthesis;
-      const now = performance.now();
-      if (now - queuedAt > hardCapMs) {
-        cancelSynthesis();
-        finish();
-        return;
-      }
-      if (synthesis.paused) return;
-      if (!startedAt) {
-        if (now - queuedAt > startWaitMs && !synthesis.speaking && !synthesis.pending) {
-          finish();
-        }
-        return;
-      }
-      if (now - startedAt > durationMs * 1.5 + 2000 && !synthesis.speaking) {
-        finish();
-      }
-    }, WATCHDOG_INTERVAL_MS);
-
-    utterance.onend = finish;
-    utterance.onerror = finish;
-
-    window.speechSynthesis.speak(utterance);
+    });
     return true;
   } catch {
     activeUtterance = null;
@@ -501,6 +590,163 @@ async function speakDeepgram(plain: string, options: SpeakOptions): Promise<void
       if (!speakBrowser(plain, options)) clearSpeechProgress();
     }
   }
+}
+
+function wakeStream(s: SpeechStream): void {
+  const notify = s.notify;
+  s.notify = null;
+  notify?.();
+}
+
+function ensureClipPrefetch(s: SpeechStream): void {
+  if (s.provider !== 'deepgram' || !s.fetchAudio) return;
+  const fetchAudio = s.fetchAudio;
+  const last = Math.min(s.clips.length, s.nextPlay + 2);
+  for (let i = s.nextPlay; i < last; i += 1) {
+    const clip = s.clips[i];
+    if (!clip.blobPromise) {
+      clip.blobPromise = fetchAudio(clip.text).catch(() => null);
+    }
+  }
+}
+
+/** Resolves when the clip ends, fails, or the stream is cancelled. */
+function playClip(s: SpeechStream, start: (done: () => void) => void): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      if (s.cancelClip === done) s.cancelClip = null;
+      resolve();
+    };
+    if (s.generation !== speakGeneration) {
+      done();
+      return;
+    }
+    s.cancelClip = done;
+    try {
+      start(done);
+    } catch {
+      done();
+    }
+  });
+}
+
+function playBrowserClip(s: SpeechStream, clip: SpeechClip): Promise<void> {
+  if (!isSpeechSynthesisSupported()) return Promise.resolve();
+  return playClip(s, (done) => queueUtterance(clip.text, s.lang, done));
+}
+
+function playBlobClip(s: SpeechStream, blob: Blob): Promise<void> {
+  return playClip(s, (done) => {
+    stopActiveAudio();
+    const objectUrl = URL.createObjectURL(blob);
+    activeObjectUrl = objectUrl;
+    const audio = new Audio(objectUrl);
+    activeAudio = audio;
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+  });
+}
+
+async function pumpSpeechStream(s: SpeechStream): Promise<void> {
+  if (s.pumping) return;
+  s.pumping = true;
+  try {
+    while (s.generation === speakGeneration) {
+      if (s.nextPlay >= s.clips.length) {
+        if (s.closed) break;
+        await new Promise<void>((resolve) => {
+          s.notify = resolve;
+        });
+        continue;
+      }
+      const clip = s.clips[s.nextPlay];
+      ensureClipPrefetch(s);
+      try {
+        if (s.provider === 'deepgram' && clip.blobPromise) {
+          const blob = await clip.blobPromise;
+          if (s.generation !== speakGeneration) return;
+          if (blob) await playBlobClip(s, blob);
+          else await playBrowserClip(s, clip);
+        } else {
+          await playBrowserClip(s, clip);
+        }
+      } catch {
+        // Skip a clip that failed to play and keep the rest of the reply.
+      }
+      if (s.generation !== speakGeneration) return;
+      s.nextPlay += 1;
+      ensureClipPrefetch(s);
+    }
+  } finally {
+    s.pumping = false;
+    if (
+      speechStream === s &&
+      s.generation === speakGeneration &&
+      s.closed &&
+      s.nextPlay >= s.clips.length
+    ) {
+      speechStream = null;
+      stopActiveAudio();
+      clearSpeechProgress();
+    }
+  }
+}
+
+/** Start a sentence queue. The first finished sentence plays while later
+ * ones are still being written. Deepgram clips are fetched one ahead. */
+export function beginSpeechStream(options: SpeakOptions = {}): void {
+  // The mic would otherwise transcribe the reply from the speakers.
+  stopListening();
+  stopSpeaking();
+  const speakId = options.speakId ?? null;
+  speechStream = {
+    generation: speakGeneration,
+    speakId,
+    lang: options.lang,
+    provider: options.provider === 'deepgram' ? 'deepgram' : 'browser',
+    fetchAudio: options.fetchAudio,
+    accepted: '',
+    consumed: 0,
+    clips: [],
+    nextPlay: 0,
+    closed: false,
+    pumping: false,
+    notify: null,
+    cancelClip: null,
+  };
+  setProgress({ speakId, speaking: true });
+}
+
+/** Feed the full plain reply so far. Pass `final` when the answer is done
+ * so the trailing fragment is spoken too. */
+export function feedSpeechStream(fullPlain: string, final = false): void {
+  const s = speechStream;
+  if (!s || s.generation !== speakGeneration) return;
+  const plain = (fullPlain || '').replace(/\s+/g, ' ').trim();
+  // A rewritten prefix (e.g. a markdown construct resolved differently)
+  // cannot be re-spoken; stop taking text and let the queue drain.
+  if (!plain || (s.accepted && !plain.startsWith(s.accepted))) {
+    if (final) {
+      s.closed = true;
+      wakeStream(s);
+      void pumpSpeechStream(s);
+    }
+    return;
+  }
+  const { pieces, consumed } = takeReadySentences(plain, s.consumed, final);
+  s.consumed = consumed;
+  s.accepted = plain.slice(0, consumed);
+  for (const piece of pieces) {
+    s.clips.push({ text: piece, blobPromise: null });
+  }
+  ensureClipPrefetch(s);
+  if (final) s.closed = true;
+  wakeStream(s);
+  void pumpSpeechStream(s);
 }
 
 export function speak(text: string, options: SpeakOptions = {}): boolean {
