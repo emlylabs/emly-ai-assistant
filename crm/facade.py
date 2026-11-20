@@ -23,10 +23,11 @@ class LeadSyncFacade:
         self._factory = factory or CrmProviderFactory.instance()
         self._strategy = strategy or UpsertLeadStrategy()
 
-    async def sync_bot(self, bot_id: str, lead: CapturedLead) -> None:
+    async def sync_bot(self, bot_id: str, lead: CapturedLead, providers: tuple | None = None) -> None:
+        """``providers`` limits the sync to those CRMs. ``None`` sends to every connected one."""
         if not looks_like_email((lead.email or "").strip()):
             return
-        for row in CrmConnections.list_syncable(bot_id):
+        for row in CrmConnections.list_syncable(bot_id, providers):
             try:
                 provider = self._factory.build(row)
                 await self._strategy.sync(provider, lead)

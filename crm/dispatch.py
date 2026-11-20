@@ -18,28 +18,31 @@ from models.crm_connections import CrmConnections
 log = logging.getLogger(__name__)
 
 
-def schedule_lead_sync(bot_id: str, lead: CapturedLead) -> None:
+def schedule_lead_sync(bot_id: str, lead: CapturedLead, providers: tuple | None = None) -> None:
+    """``providers`` is the form's CRM selection. ``None`` means every connected CRM."""
     if not looks_like_email((lead.email or "").strip()):
         return
     try:
-        if not CrmConnections.has_syncable(bot_id):
+        if not CrmConnections.has_syncable(bot_id, providers):
             return
     except Exception:
         log.exception("crm connection check failed bot=%s", bot_id)
         return
     threading.Thread(
         target=_run_sync,
-        args=(bot_id, lead),
+        args=(bot_id, lead, providers),
         name="crm-lead-sync",
         daemon=True,
     ).start()
 
 
-def schedule_widget_lead(bot_id: str, payload, user=None) -> None:
+def schedule_widget_lead(bot_id: str, payload, user=None, providers: tuple | None = None) -> None:
     try:
+        if providers is not None and not providers:
+            return
         lead = lead_from_widget(payload, user)
         if lead is not None:
-            schedule_lead_sync(bot_id, lead)
+            schedule_lead_sync(bot_id, lead, providers)
     except Exception:
         log.exception("crm lead sync could not be scheduled bot=%s", bot_id)
 
@@ -53,12 +56,12 @@ def schedule_from_slots(bot_id: str, slots, source: str = "chat") -> None:
         log.exception("crm lead sync could not be scheduled bot=%s", bot_id)
 
 
-def _run_sync(bot_id: str, lead: CapturedLead) -> None:
+def _run_sync(bot_id: str, lead: CapturedLead, providers: tuple | None = None) -> None:
     from db.db import DB
 
     DB.connect(reuse_if_open=True)
     try:
-        asyncio.run(LeadSyncFacade().sync_bot(bot_id, lead))
+        asyncio.run(LeadSyncFacade().sync_bot(bot_id, lead, providers))
     except Exception:
         log.exception("crm lead sync failed bot=%s", bot_id)
     finally:

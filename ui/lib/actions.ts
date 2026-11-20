@@ -158,6 +158,10 @@ export type Action = {
   alert?: ActionAlertConfig;
   link?: ActionLinkConfig;
 
+  /** CRMs that form submissions are sent to (`trigger.crm_providers`).
+   * `undefined` = every connected CRM; `[]` = none. */
+  crmProviders?: string[];
+
   // Shared advanced settings.
   confirmation?: ActionConfirmation;
   limits?: ActionLimits;
@@ -368,6 +372,14 @@ function buildTrigger(action: Action): Record<string, unknown> {
     delete base.alert_emails;
     delete base.analysis_prompt;
     delete base.submit_query;
+  }
+
+  // CRM lead sync. Absent means "every connected CRM", so only write the
+  // key once the admin has made a choice.
+  if (action.crmProviders !== undefined) {
+    base.crm_providers = [...action.crmProviders];
+  } else {
+    delete base.crm_providers;
   }
 
   // Link / UTM
@@ -613,6 +625,7 @@ export function actionFromForm(item: LegacyFormItem): Action {
     "utm_tracking", "utm_tracking_query",
     "instances",
     "belongs_to",
+    "crm_providers",
   ]);
   const rawTrigger: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(item.trigger)) {
@@ -630,6 +643,9 @@ export function actionFromForm(item: LegacyFormItem): Action {
     kind,
     trigger,
     belongsTo: strArray(item.trigger.belongs_to),
+    crmProviders: Array.isArray(item.trigger.crm_providers)
+      ? strArray(item.trigger.crm_providers)
+      : str(item.trigger.crm_providers)?.split(",").map((s) => s.trim()).filter(Boolean),
     form: formCfg,
     alert: alertCfg,
     link: linkCfg,

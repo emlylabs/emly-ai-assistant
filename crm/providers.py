@@ -62,6 +62,30 @@ HUBSPOT_LEAD_TO_CONTACT = 578
 
 PROVIDERS = ("zoho", "hubspot")
 
+
+def selected_providers(value) -> tuple | None:
+    """The CRMs a form's ``trigger.crm_providers`` sends to.
+
+    ``None`` (the key is absent) means every connected CRM, which is how
+    forms behaved before the setting existed. A list, or a comma-separated
+    string, names the CRMs; unknown names are dropped. Any other value is
+    treated as "none" so a malformed setting never widens where leads go.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        return ()
+    chosen = []
+    for item in items:
+        name = item.strip().lower() if isinstance(item, str) else ""
+        if name in PROVIDERS and name not in chosen:
+            chosen.append(name)
+    return tuple(chosen)
+
 _LOCAL_BASE = "http://localhost:8080"
 
 

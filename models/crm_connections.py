@@ -93,19 +93,27 @@ class CrmConnectionsTable:
             .order_by(CrmConnection.provider)
         )
 
-    def _syncable(self, bot_id: str):
-        return CrmConnection.select().where(
+    def _syncable(self, bot_id: str, providers: Optional[tuple] = None):
+        """Connections a lead can go to. ``providers`` narrows them; ``None`` is all."""
+        where = (
             (CrmConnection.bot_id == bot_id)
             & (CrmConnection.status.in_(("connected", "error")))
             & (CrmConnection.refresh_token_encrypted.is_null(False))
             & (CrmConnection.refresh_token_encrypted != "")
         )
+        if providers is not None:
+            where &= CrmConnection.provider.in_(list(providers))
+        return CrmConnection.select().where(where)
 
-    def list_syncable(self, bot_id: str) -> list:
-        return list(self._syncable(bot_id))
+    def list_syncable(self, bot_id: str, providers: Optional[tuple] = None) -> list:
+        if providers is not None and not providers:
+            return []
+        return list(self._syncable(bot_id, providers))
 
-    def has_syncable(self, bot_id: str) -> bool:
-        return self._syncable(bot_id).exists()
+    def has_syncable(self, bot_id: str, providers: Optional[tuple] = None) -> bool:
+        if providers is not None and not providers:
+            return False
+        return self._syncable(bot_id, providers).exists()
 
     def upsert_credentials(
         self,

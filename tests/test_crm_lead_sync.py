@@ -483,3 +483,117 @@ def test_make_client_does_not_follow_redirects():
         assert client.follow_redirects is False
     finally:
         _run(client.aclose())
+
+
+# --------------------------------------------------------------------------
+# Per-form CRM selection (``trigger.crm_providers``)
+# --------------------------------------------------------------------------
+
+
+def test_form_crm_selection_parses_and_fails_closed():
+    from crm.providers import selected_providers
+
+    assert selected_providers(None) is None  # never chosen: every connected CRM
+    assert selected_providers([]) == ()
+    assert selected_providers(["HubSpot", "zoho", "hubspot", "salesforce"]) == ("hubspot", "zoho")
+    assert selected_providers("zoho, hubspot") == ("zoho", "hubspot")
+    assert selected_providers({"zoho": True}) == ()
+    assert selected_providers(42) == ()
+
+
+def _connect(bot_id: str, provider: str) -> None:
+    from models.crm_connections import CrmConnections
+
+    center = "us" if provider == "zoho" else None
+    row_id = CrmConnections.upsert_credentials(bot_id, provider, "cid", "secret", center)
+    now = datetime.utcnow()
+    CrmConnections.save_tokens(
+        row_id, access_token="access", refresh_token="refresh", issued_at=now,
+        expires_in=1800, expires_at=now + timedelta(seconds=1800),
+        api_domain="https://www.zohoapis.com" if provider == "zoho" else None,
+    )
+
+
+def test_syncable_connections_follow_the_form_selection(isolated_db):
+    from models.bots import Bots
+    from models.crm_connections import CrmConnections
+
+    bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
+    _connect(bot.id, "zoho")
+    _connect(bot.id, "hubspot")
+
+    def providers(selection):
+        return sorted(row.provider for row in CrmConnections.list_syncable(bot.id, selection))
+
+    assert providers(None) == ["hubspot", "zoho"]
+    assert providers(("hubspot",)) == ["hubspot"]
+    assert providers(("zoho",)) == ["zoho"]
+    assert providers(()) == []
+    assert CrmConnections.has_syncable(bot.id, ()) is False
+    assert CrmConnections.has_syncable(bot.id, ("hubspot",)) is True
+
+
+def test_facade_only_syncs_the_selected_crms(isolated_db):
+    from crm.facade import LeadSyncFacade
+    from models.bots import Bots
+
+    bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
+    _connect(bot.id, "zoho")
+    _connect(bot.id, "hubspot")
+
+    built = []
+
+    class Factory:
+        def build(self, row):
+            built.append(row.provider)
+            return object()
+
+    class Strategy:
+        async def sync(self, provider, lead):
+            return None
+
+    facade = LeadSyncFacade(factory=Factory(), strategy=Strategy())
+    _run(facade.sync_bot(bot.id, _lead(), ("hubspot",)))
+    assert built == ["hubspot"]
+    built.clear()
+    _run(facade.sync_bot(bot.id, _lead()))
+    assert sorted(built) == ["hubspot", "zoho"]
+
+
+def test_widget_reads_the_form_crm_selection_and_keeps_it_private(monkeypatch):
+    from routes import widget
+
+    forms = [
+        {"Demo": {"form_schema": {"id": "demo_form", "name": "Demo"},
+                  "trigger": {"crm_providers": ["hubspot"]}}},
+        {"Callback": {"form_schema": {"id": "callback"}, "trigger": {}}},
+        {"Quiet": {"form_schema": {"id": "quiet"}, "trigger": {"crm_providers": []}}},
+    ]
+
+    class FakeConfig:
+        def model_dump(self, mode="json"):
+            return {"c_forms_selected": forms}
+
+    monkeypatch.setattr(widget, "get_config_for_bot", lambda _bot_id: FakeConfig())
+    assert widget._form_crm_providers("bot", "demo_form") == ("hubspot",)
+    assert widget._form_crm_providers("bot", "Demo") == ("hubspot",)
+    assert widget._form_crm_providers("bot", "callback") is None
+    assert widget._form_crm_providers("bot", "quiet") == ()
+    assert widget._form_crm_providers("bot", "not-a-form") is None
+    assert widget._form_crm_providers("bot", None) is None
+
+    public = widget._scrub_cforms(forms)
+    assert "crm_providers" not in public[0]["Demo"]["trigger"]
+
+
+def test_a_form_with_no_crm_selected_starts_no_sync(monkeypatch):
+    from crm import dispatch
+
+    started = []
+    monkeypatch.setattr(dispatch.threading, "Thread", lambda *a, **k: started.append(k) or SimpleNamespace(start=lambda: None))
+    monkeypatch.setattr(dispatch.CrmConnections, "has_syncable", lambda bot_id, providers=None: True)
+
+    dispatch.schedule_widget_lead("bot", {"email": "ada@example.com"}, None, providers=())
+    assert started == []
+    dispatch.schedule_widget_lead("bot", {"email": "ada@example.com"}, None, providers=("zoho",))
+    assert started and started[0]["args"][2] == ("zoho",)

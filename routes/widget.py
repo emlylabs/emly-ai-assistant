@@ -126,8 +126,9 @@ class WidgetConfigResponse(BaseModel):
     Anything sensitive (api_key, integration credentials, raw topics
     with internal prompts) stays server-side. Only the customer-visible
     surface is exposed. ``c_forms_selected`` triggers are scrubbed of
-    keys the LLM/email pipeline uses (``analysis_prompt``,
-    ``alert_emails``, ``trigger_prompt``, ``integration``) before
+    keys the LLM/email/CRM pipeline uses (``analysis_prompt``,
+    ``alert_emails``, ``trigger_prompt``, ``integration``,
+    ``crm_providers``) before
     forwarding — the widget never needs them and they leak admin
     intent/recipients.
     """
@@ -178,6 +179,7 @@ _TRIGGER_PRIVATE_KEYS = frozenset({
     "alert_emails",
     "trigger_prompt",
     "integration",
+    "crm_providers",
 })
 
 
@@ -682,7 +684,10 @@ async def widget_action(
     try:
         from crm.dispatch import schedule_widget_lead
 
-        schedule_widget_lead(bot.id, payload_data, user)
+        schedule_widget_lead(
+            bot.id, payload_data, user,
+            providers=_form_crm_providers(bot.id, payload_data.get("form_title")),
+        )
     except Exception:
         log.exception("CRM lead sync could not be scheduled bot=%s", bot.id)
 
@@ -778,6 +783,24 @@ def _find_form(cfg, form_title: Optional[str]) -> Optional[dict]:
             if target in keys:
                 return body
     return None
+
+
+def _form_crm_providers(bot_id: str, form_title: Optional[str]) -> Optional[tuple]:
+    """The CRMs this form's leads go to, from ``trigger.crm_providers``.
+
+    ``None`` sends to every connected CRM: the form never chose, or the
+    submission isn't one of the bot's forms.
+    """
+    from crm.providers import selected_providers
+
+    try:
+        body = _find_form(get_config_for_bot(bot_id), form_title)
+    except LookupError:
+        return None
+    if body is None:
+        return None
+    trigger = body.get("trigger") or {}
+    return selected_providers(trigger.get("crm_providers"))
 
 
 def _form_takes_files(bot_id: str, form_title: Optional[str]) -> bool:
