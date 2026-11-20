@@ -74,3 +74,27 @@ def test_camel_case_inside_c_forms_entry_rejected():
     }
     with pytest.raises(ValidationError):
         BotConfig.model_validate(payload)
+
+
+def test_enable_voice_round_trips():
+    cfg = BotConfig.model_validate({"enable_voice": True, "show_citations": True})
+    dumped = cfg.model_dump(mode="json", exclude_none=True)
+    assert dumped["enable_voice"] is True
+    assert dumped["show_citations"] is True
+
+
+def test_enable_voice_camel_case_rejected():
+    with pytest.raises(ValidationError):
+        BotConfig.model_validate({"enableVoice": True})
+
+
+def test_voice_language_round_trips():
+    cfg = BotConfig.model_validate({"enable_voice": True, "voice_language": "es-MX"})
+    dumped = cfg.model_dump(mode="json", exclude_none=True)
+    assert dumped["voice_language"] == "es-MX"
+
+
+@pytest.mark.parametrize("bad", ["english!", "e", "es_MX", "es-", ""])
+def test_voice_language_rejects_non_bcp47(bad):
+    with pytest.raises(ValidationError):
+        BotConfig.model_validate({"voice_language": bad})

@@ -44,6 +44,10 @@ interface ChatbotBodyProps {
     /** Mirrors the bot's `show_citations` config flag — gates RAG
      * citation pills under each assistant message. */
     showCitations?: boolean;
+    /** Mirrors the bot's `enable_voice` config flag — speak control. */
+    enableVoice?: boolean;
+    /** Bot's BCP-47 voice language; falls back to the browser language. */
+    voiceLanguage?: string | null;
 }
 
 const ChatbotBody: React.FC<ChatbotBodyProps> = ({
@@ -63,6 +67,8 @@ const ChatbotBody: React.FC<ChatbotBodyProps> = ({
     sessionId,
     userId,
     showCitations,
+    enableVoice,
+    voiceLanguage,
 }) => {
     const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -123,11 +129,14 @@ const ChatbotBody: React.FC<ChatbotBodyProps> = ({
                                 data={message.data}
                                 openLinkInSameTab={openLinkInSameTab}
                                 messageId={message.messageId}
+                                messageKey={message.id}
                                 showFeedback={showFeedback}
                                 sessionId={sessionId}
                                 userId={userId}
                                 citations={message.citations}
                                 showCitations={showCitations}
+                                enableVoice={enableVoice}
+                                voiceLanguage={voiceLanguage}
                             />
                             {(showLinkChips || showCardChips) && (
                                 <ul className="emw-action-chips" role="list">

@@ -1,11 +1,18 @@
 import React from 'react';
-import { Bot } from 'lucide-react';
+import { Bot, Volume2, VolumeX } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import DynamicDataRenderer from './DynamicDataRenderer';
 import MessageFeedback from './MessageFeedback';
 import CitationPills from './CitationPills';
 import type { Citation } from '../utils/sessionManager';
+import {
+    isSpeechSynthesisSupported,
+    speak,
+    stopSpeaking,
+    subscribeSpeechProgress,
+    type SpeechProgress,
+} from '../utils/speech';
 
 interface BotMessageProps {
     text: string;
@@ -18,6 +25,8 @@ interface BotMessageProps {
     openLinkInSameTab?: boolean;
     /** Backend assistant message id; required to show the rating buttons. */
     messageId?: number;
+    /** Client-side bubble id — used to highlight the message being spoken. */
+    messageKey?: string;
     /** Mirrors the bot's `feedback` config flag. */
     showFeedback?: boolean;
     sessionId?: string | null;
@@ -26,6 +35,10 @@ interface BotMessageProps {
     citations?: Citation[];
     /** Mirrors the bot's `show_citations` config flag. */
     showCitations?: boolean;
+    /** Mirrors the bot's `enable_voice` config flag. */
+    enableVoice?: boolean;
+    /** Bot's BCP-47 voice language; falls back to the browser language. */
+    voiceLanguage?: string | null;
 }
 
 const BotMessage: React.FC<BotMessageProps> = ({
@@ -36,16 +49,59 @@ const BotMessage: React.FC<BotMessageProps> = ({
     data,
     openLinkInSameTab,
     messageId,
+    messageKey,
     showFeedback,
     sessionId,
     userId,
     citations,
     showCitations,
+    enableVoice,
+    voiceLanguage,
 }) => {
     // Renders bot replies as markdown (GFM). Mirrors the
     // your-assistant/src/Utility/MarkdownRenderer.js pattern but stays
     // minimal — no math rendering (skip remark-math/rehype-katex to
     // keep the bundle small) and no link-card decoration.
+    const [speech, setSpeech] = React.useState<SpeechProgress>({
+        speakId: null,
+        speaking: false,
+    });
+
+    React.useEffect(() => {
+        if (!enableVoice || !messageKey) return;
+        return subscribeSpeechProgress((next) => {
+            setSpeech((prev) => {
+                if (next.speakId === messageKey) {
+                    if (prev.speaking === next.speaking && prev.speakId === next.speakId) return prev;
+                    return next;
+                }
+                if (prev.speaking && prev.speakId === messageKey) {
+                    return { speakId: null, speaking: false };
+                }
+                return prev;
+            });
+        });
+    }, [enableVoice, messageKey]);
+
+    const speakingThis =
+        Boolean(messageKey) &&
+        speech.speaking &&
+        speech.speakId === messageKey;
+
+    const showSpeak =
+        Boolean(enableVoice) &&
+        isSpeechSynthesisSupported() &&
+        !isLoading &&
+        Boolean(text?.trim());
+
+    const toggleSpeak = () => {
+        if (speakingThis) {
+            stopSpeaking();
+            return;
+        }
+        speak(text, { speakId: messageKey, lang: voiceLanguage });
+    };
+
     const linkTarget = openLinkInSameTab ? undefined : '_blank';
     const linkRel = openLinkInSameTab ? undefined : 'noopener noreferrer';
     const markdownComponents = {
@@ -79,7 +135,7 @@ const BotMessage: React.FC<BotMessageProps> = ({
                 </span>
             )}
             <div className="emw-content emw-bot-content">
-                <div className={`emw-message-bubble emw-bot-bubble ${isLoading ? 'emw-loading' : ''}`}>
+                <div className={`emw-message-bubble emw-bot-bubble ${isLoading ? 'emw-loading' : ''} ${speakingThis ? 'emw-bot-bubble--speaking' : ''}`}>
                     {isLoading ? (
                         <>
                             <div className="emw-loader-container">
@@ -105,7 +161,28 @@ const BotMessage: React.FC<BotMessageProps> = ({
                 {!isLoading && showCitations && citations && citations.length > 0 && (
                     <CitationPills citations={citations} />
                 )}
-                {!isLoading && <div className="emw-timestamp emw-bot-timestamp">{timestamp}</div>}
+                {!isLoading && (
+                    <div className="emw-bot-meta">
+                        {timestamp ? (
+                            <div className="emw-timestamp emw-bot-timestamp">{timestamp}</div>
+                        ) : null}
+                        {showSpeak && (
+                            <button
+                                type="button"
+                                className={`emw-speak-btn ${speakingThis ? 'emw-speak-btn--active' : ''}`}
+                                aria-label={speakingThis ? 'Stop speaking' : 'Speak reply'}
+                                aria-pressed={speakingThis}
+                                onClick={toggleSpeak}
+                            >
+                                {speakingThis ? (
+                                    <VolumeX size={14} aria-hidden="true" />
+                                ) : (
+                                    <Volume2 size={14} aria-hidden="true" />
+                                )}
+                            </button>
+                        )}
+                    </div>
+                )}
                 {!isLoading && showFeedback && messageId !== undefined && userId && (
                     <MessageFeedback
                         messageId={messageId}

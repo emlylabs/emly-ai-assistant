@@ -1494,6 +1494,19 @@ function WidgetSection({
           disabled={!writable}
         />
         <FlagToggle
+          label="Enable voice (browser mic + spoken replies)"
+          checked={Boolean(config.enable_voice)}
+          onChange={(v) => patchPath(["enable_voice"], v || undefined)}
+          disabled={!writable}
+        />
+        <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          Uses the browser Web Speech API (best in Chrome/Edge). Voice is
+          processed by the visitor&rsquo;s browser vendor (e.g. Google for
+          Chrome, Microsoft for Edge). Audio does not pass through Emly
+          servers. The mic needs HTTPS or localhost. On iPhone Safari,
+          replies are spoken when the visitor taps the speaker button.
+        </div>
+        <FlagToggle
           label="Answer only from your documents"
           checked={Boolean(config.require_citation)}
           onChange={(v) => patchPath(["require_citation"], v)}
