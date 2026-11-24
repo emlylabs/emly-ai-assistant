@@ -24,6 +24,8 @@ const ZOHO_AUTH_HOSTS = new Set([
   "accounts.zoho.com.cn",
 ]);
 
+const SALESFORCE_AUTH_HOSTS = new Set(["login.salesforce.com", "test.salesforce.com"]);
+
 type Draft = { clientId: string; secret: string; dataCenter: string };
 
 function formatWhen(iso: string | null): string {
@@ -38,6 +40,7 @@ function isAuthorizeUrl(provider: string, url: string): boolean {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") return false;
     if (provider === "hubspot") return parsed.host === "app.hubspot.com";
+    if (provider === "salesforce") return SALESFORCE_AUTH_HOSTS.has(parsed.hostname);
     return ZOHO_AUTH_HOSTS.has(parsed.hostname);
   } catch {
     return false;
@@ -167,7 +170,7 @@ export default function BotCrmPage() {
       await api.saveCrmCredentials(bot.slug, provider.id, {
         client_id: draft.clientId.trim(),
         client_secret: draft.secret.trim() || undefined,
-        data_center: provider.id === "zoho" ? draft.dataCenter : undefined,
+        data_center: provider.data_centers.length > 0 ? draft.dataCenter : undefined,
       });
       await reload();
       setBannerOk(true);
@@ -187,7 +190,7 @@ export default function BotCrmPage() {
       const { authorize_url: url } = await api.startCrmOAuth(bot.slug, provider.id);
       if (!isAuthorizeUrl(provider.id, url)) {
         setBannerOk(false);
-        setBanner("The authorization URL was not for Zoho or HubSpot, so it was not opened.");
+        setBanner(`The authorization URL was not for ${provider.name}, so it was not opened.`);
         return;
       }
       window.location.assign(url);
@@ -222,7 +225,7 @@ export default function BotCrmPage() {
         <div>
           <h1>CRM</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Connect Zoho CRM or HubSpot with your own app. When a visitor leaves an email, that
+            Connect Zoho CRM, HubSpot or Salesforce with your own app. When a visitor leaves an email, that
             lead is created, or the new capture is added to the lead that already has the email.
           </p>
         </div>
@@ -240,7 +243,7 @@ export default function BotCrmPage() {
       )}
       {catalog && !catalog.public_base_configured && (
         <div className="banner warning" style={{ marginBottom: 16 }}>
-          Set PUBLIC_BASE_URL (or APP_BASE_URL) to the origin Zoho or HubSpot can reach. Until
+          Set PUBLIC_BASE_URL (or APP_BASE_URL) to the origin your CRM can reach. Until
           then the redirect URL is only right for this machine.
         </div>
       )}
@@ -257,7 +260,7 @@ export default function BotCrmPage() {
         const dirty =
           draft.clientId.trim() !== savedId ||
           draft.secret.trim() !== "" ||
-          (provider.id === "zoho" && draft.dataCenter !== (row?.data_center || ""));
+          (provider.data_centers.length > 0 && draft.dataCenter !== (row?.data_center || ""));
         const locked = !writable || busy === provider.id;
         return (
           <section className="card" key={provider.id} style={{ marginBottom: 16 }}>
@@ -308,9 +311,9 @@ export default function BotCrmPage() {
                   onChange={(event) => updateDraft(provider.id, { clientId: event.target.value })}
                 />
               </div>
-              {provider.id === "zoho" && (
+              {provider.data_centers.length > 0 && (
                 <div className="field">
-                  <label htmlFor={`${provider.id}-dc`}>Data center</label>
+                  <label htmlFor={`${provider.id}-dc`}>{provider.data_center_label || "Data center"}</label>
                   <select
                     id={`${provider.id}-dc`}
                     value={draft.dataCenter}

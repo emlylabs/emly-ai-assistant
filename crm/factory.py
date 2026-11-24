@@ -6,13 +6,14 @@ import threading
 from crm.contracts import CrmError, CrmProvider
 from crm.http import make_client
 from crm.hubspot import HubSpotCrmAdapter
-from crm.oauth import HubSpotOAuth, ZohoOAuth
+from crm.oauth import HubSpotOAuth, SalesforceOAuth, ZohoOAuth
+from crm.salesforce import SalesforceCrmAdapter
 from crm.token_proxy import ConnectionTokenSource, RefreshingTokenProxy
 from crm.zoho import ZohoCrmAdapter
 
 
 class CrmProviderFactory:
-    """Singleton. Registers Zoho and HubSpot and builds the stack for a row.
+    """Singleton. Registers Zoho, HubSpot and Salesforce and builds the stack for a row.
 
     The stack is an OAuth client, a ``ConnectionTokenSource``, a
     ``RefreshingTokenProxy``, and the vendor adapter. Callers get the adapter.
@@ -44,4 +45,10 @@ class CrmProviderFactory:
             oauth = HubSpotOAuth(client_factory=self._clients)
             proxy = RefreshingTokenProxy(row.id, ConnectionTokenSource(row.id, oauth))
             return HubSpotCrmAdapter(proxy, client_factory=self._clients)
+        if provider == "salesforce":
+            if not getattr(row, "api_domain", None):
+                raise CrmError("Salesforce instance URL is not set")
+            oauth = SalesforceOAuth(client_factory=self._clients)
+            proxy = RefreshingTokenProxy(row.id, ConnectionTokenSource(row.id, oauth))
+            return SalesforceCrmAdapter(proxy, row.api_domain, client_factory=self._clients)
         raise CrmError("unknown CRM")

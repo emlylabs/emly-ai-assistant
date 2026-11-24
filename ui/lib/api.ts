@@ -509,6 +509,8 @@ export type CrmDataCenter = {
 export type CrmProviderInfo = {
   id: string;
   name: string;
+  /** Label for the `data_centers` choice ("Data center", "Environment"); "" when there is none. */
+  data_center_label?: string;
   redirect_url: string;
   scopes: string[];
   scope_help: string;

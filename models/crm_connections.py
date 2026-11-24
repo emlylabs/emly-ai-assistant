@@ -1,4 +1,4 @@
-"""One Zoho or HubSpot connection per bot.
+"""One Zoho, HubSpot or Salesforce connection per bot.
 
 The client secret, access token and refresh token are Fernet-sealed.
 Everything else is plain so the admin page can show status and expiry
@@ -13,7 +13,7 @@ from typing import Optional
 
 from peewee import CharField, DateTimeField, IntegerField, Model, TextField
 
-from crm.providers import PROVIDERS, scope_string, zoho_accounts_server
+from crm.providers import PROVIDERS, salesforce_login_server, scope_string, zoho_accounts_server
 from db.db import DB
 from services.secrets import encrypt
 
@@ -139,6 +139,10 @@ class CrmConnectionsTable:
         if provider == "zoho":
             center = (data_center or "").strip().lower()
             accounts = zoho_accounts_server(center)
+        elif provider == "salesforce":
+            # ``data_center`` holds the environment; the login host follows from it.
+            center = (data_center or "production").strip().lower()
+            accounts = salesforce_login_server(center)
         now = datetime.utcnow()
         fields = {
             "client_id": client_id,

@@ -5,6 +5,7 @@ creates a lead or appends to one; ``UpsertLeadStrategy`` does that.
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -62,5 +63,16 @@ def require_record_id(value: object) -> str:
     """
     text = str(value or "").strip()
     if not text.isdigit() or len(text) > 32:
+        raise CrmError("unexpected CRM record id")
+    return text
+
+
+_SALESFORCE_ID = re.compile(r"^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$")
+
+
+def require_salesforce_id(value: object) -> str:
+    """A Salesforce record id (15 or 18 letters and digits) bound for a URL path."""
+    text = str(value or "").strip()
+    if not _SALESFORCE_ID.match(text):
         raise CrmError("unexpected CRM record id")
     return text

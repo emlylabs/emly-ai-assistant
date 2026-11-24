@@ -16,7 +16,6 @@ from typing import Optional
 from cryptography.fernet import InvalidToken
 
 from crm.contracts import CrmAuthError
-from crm.providers import allow_zoho_api_domain
 from services.secrets import decrypt
 
 REFRESH_LEEWAY_SECONDS = 60
@@ -107,15 +106,30 @@ class RefreshingTokenProxy:
             record = await self._source.load()
             if not token_is_due(record):
                 return record.access_token
-            if not record.refresh_token:
-                raise CrmAuthError("no refresh token")
-            refreshed = await self._source.refresh(record.refresh_token)
-            if not refreshed.access_token:
-                raise CrmAuthError("refresh returned no access token")
-            if not refreshed.refresh_token:
-                refreshed = replace(refreshed, refresh_token=record.refresh_token)
-            await self._source.save(refreshed)
-            return refreshed.access_token
+            return await self._refresh(record)
+
+    async def refresh_rejected(self, rejected: str) -> str:
+        """The provider refused ``rejected`` before its expiry. Refresh once.
+
+        Salesforce sends no expiry, and an admin can end sessions early. If
+        another thread already replaced the token, that one is returned.
+        """
+        with _connection_lock(self._connection_id):
+            record = await self._source.load()
+            if record.access_token and record.access_token != rejected:
+                return record.access_token
+            return await self._refresh(record)
+
+    async def _refresh(self, record: TokenRecord) -> str:
+        if not record.refresh_token:
+            raise CrmAuthError("no refresh token")
+        refreshed = await self._source.refresh(record.refresh_token)
+        if not refreshed.access_token:
+            raise CrmAuthError("refresh returned no access token")
+        if not refreshed.refresh_token:
+            refreshed = replace(refreshed, refresh_token=record.refresh_token)
+        await self._source.save(refreshed)
+        return refreshed.access_token
 
 
 class ConnectionTokenSource(TokenSource):
@@ -174,7 +188,7 @@ class ConnectionTokenSource(TokenSource):
         api_domain = None
         if grant.api_domain:
             try:
-                api_domain = allow_zoho_api_domain(grant.api_domain)
+                api_domain = self._oauth.allow_api_domain(grant.api_domain)
             except ValueError:
                 CrmConnections.record_error(row.id, "token response named an unexpected API host")
                 raise CrmAuthError("token response named an unexpected API host") from None

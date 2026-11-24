@@ -1,4 +1,4 @@
-"""Browser redirect target for Zoho and HubSpot.
+"""Browser redirect target for Zoho, HubSpot and Salesforce.
 
 Unauthenticated on purpose: the provider's browser redirect does not carry
 the admin session. The signed ``state`` is the credential, same as the
@@ -18,9 +18,10 @@ from fastapi.responses import RedirectResponse
 
 from channels.auth.state import verify
 from crm.contracts import CrmAuthError
-from crm.oauth import HubSpotOAuth, ZohoOAuth
+from crm.oauth import HubSpotOAuth, SalesforceOAuth, ZohoOAuth
 from crm.providers import (
     PROVIDERS,
+    allow_salesforce_login,
     allow_zoho_accounts,
     allow_zoho_api_domain,
     oauth_redirect_uri,
@@ -96,6 +97,25 @@ async def crm_oauth_callback(
             data_center = location.strip().lower() if location.strip().lower() in {
                 "us", "eu", "in", "au", "jp", "ca", "sa", "cn"
             } else None
+        elif provider == "salesforce":
+            try:
+                verifier = decrypt(str(payload.get("pkce") or ""))
+            except InvalidToken:
+                verifier = None
+            if not verifier:
+                raise CrmAuthError("PKCE verifier is missing")
+            accounts = allow_salesforce_login(row.accounts_server or "")
+            grant = await SalesforceOAuth().exchange(
+                client_id=row.client_id,
+                client_secret=secret,
+                code=code,
+                redirect_uri=redirect_uri,
+                accounts_server=accounts,
+                code_verifier=verifier,
+            )
+            # SalesforceOAuth already allowlisted instance_url.
+            api_domain = grant.api_domain
+            data_center = None
         else:
             accounts = None
             api_domain = None

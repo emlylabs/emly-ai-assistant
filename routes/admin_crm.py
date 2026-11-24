@@ -1,4 +1,4 @@
-"""Admin setup for a bot's Zoho CRM and HubSpot connections.
+"""Admin setup for a bot's Zoho CRM, HubSpot and Salesforce connections.
 
 The admin pastes their own client id and secret. The redirect URL is
 computed here and shown on the CRM page; it is not something they type,
@@ -12,13 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from channels.auth.state import issue, validate_redirect_to
-from crm.oauth import HubSpotOAuth, ZohoOAuth
+from crm.oauth import HubSpotOAuth, SalesforceOAuth, ZohoOAuth, pkce_pair
 from crm.providers import PROVIDERS, catalog, oauth_redirect_uri
 from models.admin_users import AdminUserModel
 from models.crm_connections import CrmConnections, to_public
 from routes.admin_bot_channels import WRITE_ROLES, _resolve_bot_for_admin
 from services.audit import audit
 from services.auth.dependencies import get_admin
+from services.secrets import encrypt
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,15 +82,20 @@ def start_crm_oauth(slug: str, provider: str, admin: AdminUserModel = Depends(ge
     if row is None or not row.client_secret_encrypted:
         raise HTTPException(status_code=400, detail="Save a client id and client secret first")
     redirect_uri = oauth_redirect_uri(provider)
+    state_body = {
+        "purpose": "crm",
+        "bot_id": bot.id,
+        "provider": provider,
+        "redirect_to": validate_redirect_to(f"/bots/{bot.slug}/crm"),
+    }
+    challenge = None
+    if provider == "salesforce":
+        # PKCE. The state is signed but readable in the URL, so the verifier
+        # rides in it encrypted; only this app can recover it at the callback.
+        verifier, challenge = pkce_pair()
+        state_body["pkce"] = encrypt(verifier)
     try:
-        state = issue(
-            {
-                "purpose": "crm",
-                "bot_id": bot.id,
-                "provider": provider,
-                "redirect_to": validate_redirect_to(f"/bots/{bot.slug}/crm"),
-            }
-        )
+        state = issue(state_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     try:
@@ -101,6 +107,16 @@ def start_crm_oauth(slug: str, provider: str, admin: AdminUserModel = Depends(ge
                 redirect_uri=redirect_uri,
                 state=state,
                 accounts_server=row.accounts_server,
+            )
+        elif provider == "salesforce":
+            if not row.accounts_server:
+                raise HTTPException(status_code=400, detail="Choose Production or Sandbox and save it")
+            url = SalesforceOAuth().authorize_url(
+                client_id=row.client_id,
+                redirect_uri=redirect_uri,
+                state=state,
+                accounts_server=row.accounts_server,
+                code_challenge=challenge,
             )
         else:
             url = HubSpotOAuth().authorize_url(

@@ -140,6 +140,14 @@ def _crm_rows(bot_id: str) -> List[Dict[str, Any]]:
                 "When a visitor leaves an email, their name, email, phone and a note on the lead are sent.",
                 scope="external",
             ))
+        elif conn.provider == "salesforce":
+            host = host_of(conn.api_domain) if conn.api_domain else "salesforce.com"
+            rows.append(_row(
+                "Salesforce",
+                host or "salesforce.com",
+                "When a visitor leaves an email, their name, email, phone and the capture text are sent to a Lead.",
+                scope="external",
+            ))
     return rows
 
 

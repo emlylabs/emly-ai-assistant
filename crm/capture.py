@@ -53,6 +53,14 @@ def _first(sources: list, keys: tuple) -> str:
     return ""
 
 
+def _any_email(source: dict) -> str:
+    for value in source.values():
+        text = _text(value)
+        if looks_like_email(text):
+            return text
+    return ""
+
+
 def _has_contact_field(sources: list) -> bool:
     for source in sources:
         for key in _CONTACT_KEYS:
@@ -95,6 +103,11 @@ def lead_from_widget(payload: Any, user: Any = None) -> Optional[CapturedLead]:
     action = _as_dict(payload.get("action_payload"))
     sources = [action, payload]
     email = _first(sources, _EMAIL_KEYS)
+    if not looks_like_email(email):
+        # The form builder lets an admin key an email field anything
+        # (``field``, ``contact``...). Take the first submitted value that
+        # is an email, as chat slots do.
+        email = _any_email(action) or email
     if not looks_like_email(email) and user is not None and _has_contact_field(sources):
         email = _text(getattr(user, "email", None))
     if not looks_like_email(email):

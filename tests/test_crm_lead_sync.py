@@ -495,7 +495,7 @@ def test_form_crm_selection_parses_and_fails_closed():
 
     assert selected_providers(None) is None  # never chosen: every connected CRM
     assert selected_providers([]) == ()
-    assert selected_providers(["HubSpot", "zoho", "hubspot", "salesforce"]) == ("hubspot", "zoho")
+    assert selected_providers(["HubSpot", "zoho", "hubspot", "pipedrive"]) == ("hubspot", "zoho")
     assert selected_providers("zoho, hubspot") == ("zoho", "hubspot")
     assert selected_providers({"zoho": True}) == ()
     assert selected_providers(42) == ()
@@ -597,3 +597,289 @@ def test_a_form_with_no_crm_selected_starts_no_sync(monkeypatch):
     assert started == []
     dispatch.schedule_widget_lead("bot", {"email": "ada@example.com"}, None, providers=("zoho",))
     assert started and started[0]["args"][2] == ("zoho",)
+
+
+def test_widget_form_with_an_oddly_keyed_email_field_still_makes_a_lead():
+    # The form builder's default key for a new field is ``field``.
+    lead = lead_from_widget(
+        {"form_title": "lead_capture_action",
+         "action_payload": {"field": "ada@example.com", "form_title": "lead_capture_action"}}
+    )
+    assert lead is not None
+    assert lead.email == "ada@example.com"
+    assert lead.source == "widget:lead_capture_action"
+    # A button click with no email anywhere still makes nothing.
+    assert lead_from_widget({"action_payload": {"choice": "yes"}}) is None
+
+
+# --------------------------------------------------------------------------
+# Salesforce
+# --------------------------------------------------------------------------
+
+SF_INSTANCE = "https://acme.my.salesforce.com"
+SF_API = "/services/data/v66.0"
+
+
+def test_salesforce_instance_and_login_hosts_are_allowlisted():
+    from crm.providers import allow_salesforce_instance, allow_salesforce_login
+
+    assert allow_salesforce_instance("https://acme.my.salesforce.com") == SF_INSTANCE
+    assert allow_salesforce_instance("https://acme--uat.sandbox.my.salesforce.com/") == "https://acme--uat.sandbox.my.salesforce.com"
+    assert allow_salesforce_instance("https://na42.salesforce.com") == "https://na42.salesforce.com"
+    for bad in (
+        "http://acme.my.salesforce.com",
+        "https://acme.my.salesforce.com.evil.example",
+        "https://evil.example/.salesforce.com",
+        "https://user:pw@acme.my.salesforce.com",
+        "https://acme.my.salesforce.com:8443",
+        "https://acme.my.salesforce.com/services",
+        "https://salesforce.com",
+        "https://a_b.my.salesforce.com",
+    ):
+        with pytest.raises(ValueError):
+            allow_salesforce_instance(bad)
+    assert allow_salesforce_login("https://test.salesforce.com/") == "https://test.salesforce.com"
+    with pytest.raises(ValueError):
+        allow_salesforce_login("https://acme.my.salesforce.com")
+
+
+def test_salesforce_authorize_url_uses_pkce_s256_and_the_documented_scopes(monkeypatch):
+    import base64
+    import hashlib
+
+    from crm.oauth import SalesforceOAuth, pkce_pair
+
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://bots.example.com")
+    verifier, challenge = pkce_pair()
+    assert 43 <= len(verifier) <= 128
+    expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    assert challenge == expected
+    url = SalesforceOAuth().authorize_url(
+        client_id="cid", redirect_uri=oauth_redirect_uri("salesforce"), state="st",
+        accounts_server="https://login.salesforce.com", code_challenge=challenge,
+    )
+    parts = urlsplit(url)
+    assert (parts.scheme, parts.netloc, parts.path) == ("https", "login.salesforce.com", "/services/oauth2/authorize")
+    query = parse_qs(parts.query)
+    assert query["response_type"] == ["code"]
+    assert query["scope"] == ["api refresh_token"]
+    assert query["code_challenge"] == [challenge]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["redirect_uri"] == ["https://bots.example.com/crm/salesforce/oauth/callback"]
+
+
+def test_salesforce_code_exchange_sends_the_verifier_and_checks_instance_url():
+    from crm.oauth import SalesforceOAuth
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://test.salesforce.com/services/oauth2/token"
+        seen.update({k: v[0] for k, v in parse_qs(request.content.decode()).items()})
+        return httpx.Response(200, json={
+            "access_token": "sf-access", "refresh_token": "sf-refresh",
+            "instance_url": seen.get("instance", SF_INSTANCE), "id": "https://login.salesforce.com/id/x/y",
+            "issued_at": "1763800000000", "signature": "sig", "scope": "api refresh_token",
+        })
+
+    oauth = SalesforceOAuth(client_factory=_client(handler))
+    grant = _run(oauth.exchange(
+        client_id="cid", client_secret="sec", code="abc", redirect_uri="https://bots.example.com/cb",
+        accounts_server="https://test.salesforce.com", code_verifier="v" * 50,
+    ))
+    assert seen["grant_type"] == "authorization_code"
+    assert seen["code_verifier"] == "v" * 50
+    assert seen["client_secret"] == "sec"
+    assert grant.api_domain == SF_INSTANCE
+    assert grant.refresh_token == "sf-refresh"
+    assert grant.expires_in == 900  # Salesforce sends no expires_in
+
+    def evil(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"access_token": "a", "refresh_token": "r", "instance_url": "https://evil.example"})
+
+    with pytest.raises(CrmError):
+        _run(SalesforceOAuth(client_factory=_client(evil)).exchange(
+            client_id="cid", client_secret="sec", code="abc", redirect_uri="https://bots.example.com/cb",
+            accounts_server="https://login.salesforce.com", code_verifier="v" * 50,
+        ))
+
+
+def test_salesforce_search_hit_appends_to_an_open_lead_description():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer access-token"
+        path = _path(request)
+        if request.method == "GET" and path == f"{SF_API}/query":
+            q = request.url.params["q"]
+            assert "FROM Lead WHERE Email = 'ada@example.com'" in q
+            assert "IsConverted = false" in q
+            return httpx.Response(200, json={"totalSize": 1, "done": True, "records": [
+                {"attributes": {"type": "Lead"}, "Id": "00Q5g00000AbCdEFGH", "Description": "Called last week"}]})
+        if request.method == "PATCH" and path == f"{SF_API}/sobjects/Lead/00Q5g00000AbCdEFGH":
+            text = json.loads(request.content)["Description"]
+            assert text.startswith("Called last week\n\n")
+            assert "pricing" in text and "ada@example.com" in text
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected {request.method} {path}")
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    _run(UpsertLeadStrategy().sync(adapter, _lead()))
+
+
+def test_salesforce_search_miss_creates_a_lead_with_the_required_fields():
+    created = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = _path(request)
+        if request.method == "GET" and path == f"{SF_API}/query":
+            return httpx.Response(200, json={"totalSize": 0, "done": True, "records": []})
+        if request.method == "POST" and path == f"{SF_API}/sobjects/Lead":
+            created.update(json.loads(request.content))
+            return httpx.Response(201, json={"id": "00Q5g00000AbCdEFGH", "success": True, "errors": []})
+        raise AssertionError(f"unexpected {request.method} {path}")
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    _run(UpsertLeadStrategy().sync(adapter, _lead()))
+    assert created["LastName"] == "Lovelace"
+    assert created["FirstName"] == "Ada"
+    assert created["Company"] == "[not provided]"
+    assert created["Email"] == "ada@example.com"
+    assert created["Phone"] == "+15550100"
+    assert "pricing" in created["Description"]
+
+
+def test_salesforce_email_only_lead_and_quote_escaping():
+    created = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = _path(request)
+        if path.endswith("/query"):
+            assert "Email = 'o\\'neil@example.com'" in request.url.params["q"]
+            return httpx.Response(200, json={"records": []})
+        created.update(json.loads(request.content))
+        return httpx.Response(201, json={"id": "00Q5g00000AbCdE", "success": True})
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    _run(UpsertLeadStrategy().sync(adapter, CapturedLead(email="o'neil@example.com")))
+    assert created["LastName"] == "o'neil"
+    assert "FirstName" not in created and "Phone" not in created
+
+
+def test_salesforce_refreshes_once_when_a_token_is_rejected_early():
+    calls = []
+
+    class Tokens:
+        async def access_token(self):
+            return "stale"
+
+        async def refresh_rejected(self, rejected):
+            calls.append(rejected)
+            return "fresh"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["authorization"] == "Bearer stale":
+            return httpx.Response(401, json=[{"message": "Session expired or invalid", "errorCode": "INVALID_SESSION_ID"}])
+        return httpx.Response(200, json={"records": []})
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(Tokens(), SF_INSTANCE, client_factory=_client(handler))
+    assert _run(adapter.search_by_email("ada@example.com")) is None
+    assert calls == ["stale"]
+
+
+def test_salesforce_errors_carry_the_error_code():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _path(request).endswith("/query"):
+            return httpx.Response(200, json={"records": []})
+        return httpx.Response(400, json=[{"message": "Use one of these records?", "errorCode": "DUPLICATES_DETECTED"}])
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    with pytest.raises(CrmError, match="salesforce DUPLICATES_DETECTED"):
+        _run(UpsertLeadStrategy().sync(adapter, _lead()))
+
+
+def test_salesforce_record_ids_are_checked_before_they_reach_a_path():
+    from crm.contracts import require_salesforce_id
+
+    assert require_salesforce_id("00Q5g00000AbCdE") == "00Q5g00000AbCdE"
+    assert require_salesforce_id("00Q5g00000AbCdEFGH") == "00Q5g00000AbCdEFGH"
+    for bad in ("", "00Q/../../x", "00Q5g00000AbCdEF", "../" * 6):
+        with pytest.raises(CrmError):
+            require_salesforce_id(bad)
+
+
+def test_proxy_refresh_rejected_reuses_a_token_another_thread_already_replaced():
+    async def never(_):
+        raise AssertionError("should not refresh")
+
+    source = ScriptedSource(_record(access_token="newer"), never)
+    proxy = RefreshingTokenProxy("conn-sf-1", source)
+    assert _run(proxy.refresh_rejected("older")) == "newer"
+
+    async def refresher(token):
+        assert token == "old-refresh"
+        return SimpleNamespace(access_token="brand-new", refresh_token=None, expires_in=900, api_domain=None)
+
+    source = ScriptedSource(_record(access_token="older"), refresher)
+    proxy = RefreshingTokenProxy("conn-sf-2", source)
+    assert _run(proxy.refresh_rejected("older")) == "brand-new"
+    assert source.saved.refresh_token == "old-refresh"  # no rotation: keep the old one
+
+
+def test_salesforce_credentials_factory_and_callback(isolated_db, monkeypatch):
+    from channels.auth.state import issue
+    from crm.oauth import SalesforceOAuth, TokenGrant
+    from crm.salesforce import SalesforceCrmAdapter
+    from models.bots import Bots
+    from models.crm_connections import CrmConnections
+    from routes import crm_oauth
+    from services.secrets import encrypt
+
+    bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
+    with pytest.raises(ValueError):
+        CrmConnections.upsert_credentials(bot.id, "salesforce", "cid", "sec", "staging")
+    CrmConnections.upsert_credentials(bot.id, "salesforce", "cid", "sec", "sandbox")
+    row = CrmConnections.get(bot.id, "salesforce")
+    assert (row.data_center, row.accounts_server, row.status) == ("sandbox", "https://test.salesforce.com", "pending")
+    with pytest.raises(CrmError):
+        CrmProviderFactory().build(row)  # no instance URL until connected
+
+    seen = {}
+
+    async def fake_exchange(self, **kwargs):
+        seen.update(kwargs)
+        return TokenGrant(access_token="sf-access", refresh_token="sf-refresh", expires_in=900, api_domain=SF_INSTANCE)
+
+    monkeypatch.setattr(SalesforceOAuth, "exchange", fake_exchange)
+    state = issue({"purpose": "crm", "bot_id": bot.id, "provider": "salesforce",
+                   "redirect_to": f"/bots/{bot.slug}/crm", "pkce": encrypt("the-verifier")})
+    response = _run(crm_oauth.crm_oauth_callback("salesforce", code="abc", state=state))
+    assert response.headers["location"].endswith("crm=connected")
+    assert seen["code_verifier"] == "the-verifier"
+    assert seen["accounts_server"] == "https://test.salesforce.com"
+    row = CrmConnections.get(bot.id, "salesforce")
+    assert (row.status, row.api_domain) == ("connected", SF_INSTANCE)
+    assert isinstance(CrmProviderFactory().build(row), SalesforceCrmAdapter)
+
+    # A state without the verifier is refused and recorded.
+    bare = issue({"purpose": "crm", "bot_id": bot.id, "provider": "salesforce", "redirect_to": f"/bots/{bot.slug}/crm"})
+    response = _run(crm_oauth.crm_oauth_callback("salesforce", code="abc", state=bare))
+    assert "crm_error=exchange" in response.headers["location"]
+    assert CrmConnections.get(bot.id, "salesforce").last_error == "PKCE verifier is missing"
+
+
+def test_salesforce_is_a_selectable_form_crm():
+    from crm.providers import catalog, selected_providers
+
+    assert selected_providers(["salesforce", "zoho"]) == ("salesforce", "zoho")
+    info = {p["id"]: p for p in catalog()["providers"]}["salesforce"]
+    assert [d["id"] for d in info["data_centers"]] == ["production", "sandbox"]
+    assert info["data_center_label"] == "Environment"
