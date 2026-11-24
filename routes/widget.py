@@ -26,7 +26,17 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    status,
+)
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -38,9 +48,14 @@ from models.emly_users import EMLYUsers, EMLYUserUpdateForm
 from services.data_recipients import coerce_email_list
 from services.upload_types import UploadRejected, check_upload
 from services.widget_icons import is_icon_allowed
-from services.auth.widget_auth import ensure_same_user, require_bearer, require_widget_principal
+from services.auth.widget_auth import (
+    ensure_same_user,
+    require_bearer,
+    require_widget_principal,
+    verify_widget_token,
+)
 from services.auth.ratelimit import client_ip, hit, rate_limit
-from services.auth.widget_hmac import WidgetPrincipal
+from services.auth.widget_hmac import WidgetPrincipal, WidgetTokenError
 from services.bot_config import get_config_for_bot
 
 router = APIRouter()
@@ -161,6 +176,9 @@ class WidgetConfigResponse(BaseModel):
     # ``browser`` (default) or ``deepgram``. Never includes the API key.
     stt_provider: Optional[str] = None
     tts_provider: Optional[str] = None
+    # True when the widget may offer a realtime voice call
+    # (``enable_voice_call`` on and a Deepgram key configured).
+    voice_call: Optional[bool] = None
 
     starter_messages: Optional[List[str]] = None
     nudges: Optional[Dict[str, Any]] = None
@@ -221,6 +239,14 @@ def _opt(value: Any, want_type: type) -> Any:
     return value if isinstance(value, want_type) else None
 
 
+def _voice_call_flag(bot: BotModel) -> Optional[bool]:
+    try:
+        cfg = get_config_for_bot(bot.id)
+    except Exception:
+        return None
+    return voice_call_available(bot.id, cfg) or None
+
+
 def _build_widget_config(bot: BotModel) -> WidgetConfigResponse:
     try:
         cfg = get_config_for_bot(bot.id)
@@ -262,6 +288,7 @@ def _build_widget_config(bot: BotModel) -> WidgetConfigResponse:
         voice_language=_opt(raw.get("voice_language"), str),
         stt_provider=_opt(raw.get("stt_provider"), str),
         tts_provider=_opt(raw.get("tts_provider"), str),
+        voice_call=_voice_call_flag(bot),
         starter_messages=_opt(raw.get("starter_messages"), list),
         nudges=_opt(raw.get("nudges"), dict),
         c_forms_selected=_scrub_cforms(raw.get("c_forms_selected")),
@@ -335,6 +362,197 @@ def widget_tts(
         ) from exc
 
     return Response(content=audio, media_type="audio/mpeg")
+
+
+# ---------------------------------------------------------------------------
+# WS /widget/{bot_ref}/voice/ws — realtime voice call (Pipecat, self-hosted)
+# ---------------------------------------------------------------------------
+# The pipeline and wire protocol are in ``services/voice_call.py``.
+#
+# WebSocket requests skip the HTTP middleware (widget CORS, rate limits,
+# auth dependencies), so this handler does those checks itself. Browsers
+# can't put a token in a WebSocket header, and a query string lands in
+# access logs, so the token comes in the first message:
+#   {"type": "auth", "token": ..., "user_id": ..., "session_id": ...,
+#    "lang": "<BCP-47, optional>"}
+# Failures send {"type": "error", "code": ...} and close.
+
+_WS_POLICY_CLOSE = 1008
+_WS_AUTH_TIMEOUT_SECONDS = 10.0
+_BCP47 = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+
+
+def voice_call_available(bot_id: str, cfg) -> bool:
+    """Calls are their own setting (``enable_voice_call``, independent of
+    ``enable_voice``) and need a Deepgram key."""
+    if not cfg or not getattr(cfg, "enable_voice_call", None):
+        return False
+    from services import deepgram
+
+    return deepgram.deepgram_configured(bot_id)
+
+
+async def _voice_fail(websocket: WebSocket, code: str) -> None:
+    try:
+        await websocket.send_text(json.dumps({"type": "error", "code": code}))
+        await websocket.close(code=_WS_POLICY_CLOSE)
+    except Exception:
+        pass
+
+
+@router.websocket("/widget/{bot_ref}/voice/ws")
+async def widget_voice_call(websocket: WebSocket, bot_ref: str):
+    import asyncio
+
+    from services.auth.widget_cors import origin_allowed, self_origins
+    from services.widget_visitors import ensure_end_user, session_owned_by_other
+
+    try:
+        bot = _resolve_bot(bot_ref)
+    except HTTPException:
+        await websocket.close(code=_WS_POLICY_CLOSE)
+        return
+    try:
+        cfg = get_config_for_bot(bot.id)
+    except Exception:
+        cfg = None
+
+    # Same rule as WidgetCORSMiddleware: a browser always sends Origin, and
+    # it must be on the bot's allowlist or be this app.
+    origin = websocket.headers.get("origin")
+    allowlist = tuple(cfg.limits.widget_allowed_origins or ()) if cfg else ()
+    if origin is not None and not (
+        origin_allowed(origin, allowlist) or origin_allowed(origin, self_origins())
+    ):
+        log.info("widget voice call origin rejected bot=%s", bot.id)
+        await websocket.close(code=_WS_POLICY_CLOSE)
+        return
+
+    await websocket.accept()
+
+    try:
+        hit("widget_voice", client_ip(websocket), bot_ref)
+    except HTTPException:
+        await _voice_fail(websocket, "rate_limited")
+        return
+
+    try:
+        hello = await asyncio.wait_for(websocket.receive_json(), timeout=_WS_AUTH_TIMEOUT_SECONDS)
+    except Exception:
+        await _voice_fail(websocket, "widget_token_missing")
+        return
+    if not isinstance(hello, dict) or hello.get("type") != "auth":
+        await _voice_fail(websocket, "widget_token_missing")
+        return
+    token = hello.get("token")
+    if not isinstance(token, str) or not token:
+        await _voice_fail(websocket, "widget_token_missing")
+        return
+    try:
+        principal = verify_widget_token(token, bot)
+    except WidgetTokenError:
+        await _voice_fail(websocket, "widget_token_invalid")
+        return
+    claimed_user = hello.get("user_id")
+    if claimed_user and str(claimed_user) != principal.user_id:
+        await _voice_fail(websocket, "widget_user_mismatch")
+        return
+    session_id = hello.get("session_id")
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+        await _voice_fail(websocket, "session_required")
+        return
+    lang = hello.get("lang")
+    if not isinstance(lang, str) or not _BCP47.match(lang):
+        lang = cfg.voice_language if cfg else None
+
+    if not voice_call_available(bot.id, cfg):
+        await _voice_fail(websocket, "voice_call_not_enabled")
+        return
+    if session_owned_by_other(bot.id, session_id, principal.user_id):
+        await _voice_fail(websocket, "session_not_owned")
+        return
+
+    from services import deepgram
+    from utils.dependencies import get_agent_service
+    from utils.schemas import MAX_MESSAGE_CHARS
+
+    agent_service = get_agent_service()
+    if not agent_service.is_available():
+        await _voice_fail(websocket, "agent_unavailable")
+        return
+    api_key = deepgram.resolve_api_key(bot.id)
+    if not api_key:
+        await _voice_fail(websocket, "deepgram_not_configured")
+        return
+
+    # Imported here: Pipecat and the VAD model are only loaded once a call
+    # actually starts.
+    from services import voice_call
+
+    if voice_call.at_capacity():
+        await _voice_fail(websocket, "busy")
+        return
+
+    client = websocket.client
+    ensure_end_user(
+        bot.id,
+        principal.user_id,
+        ip=client.host if client else "",
+        browser=websocket.headers.get("user-agent", ""),
+    )
+
+    from models.bot_channels import BotChannels
+    from services.public_citations import bot_shows_citations, public_citations
+
+    channel_id = BotChannels.get_default_web_widget_channel_id(bot.id)
+    show_citations = bot_shows_citations(bot.id)
+    bot_id = bot.id
+    user_id = principal.user_id
+
+    def answer(text: str):
+        """One voice turn through the same path as a typed message."""
+        result = agent_service.process_message(
+            bot_id=bot_id,
+            user_id=user_id,
+            session_id=session_id,
+            message=text,
+            stream=True,
+            page_id=voice_call.PAGE_ID,
+            channel_id=channel_id,
+        )
+        if isinstance(result, tuple):  # non-streamed replies (e.g. commands)
+            reply, citations = result
+            yield {"type": "token", "data": reply}
+            yield {"type": "citations", "data": public_citations(citations, show=show_citations),
+                   "message_id": None}
+            return
+        for event in result:
+            if event.get("type") == "citations":
+                event = {**event, "data": public_citations(event.get("data"), show=show_citations)}
+            yield event
+
+    tts_voice = deepgram.resolve_tts_model(cfg.deepgram_tts_model)
+
+    log.info("voice call started bot=%s", bot_id)
+    try:
+        await voice_call.run_call(
+            websocket,
+            api_key=api_key,
+            stt_model=deepgram.resolve_stt_model(cfg.deepgram_stt_model),
+            tts_voice=tts_voice,
+            language=lang,
+            answer=answer,
+            max_chars=MAX_MESSAGE_CHARS,
+        )
+    except Exception as exc:
+        log.warning("voice call failed bot=%s: %s", bot_id, type(exc).__name__)
+        await _voice_fail(websocket, "call_failed")
+    finally:
+        log.info("voice call ended bot=%s", bot_id)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.post(

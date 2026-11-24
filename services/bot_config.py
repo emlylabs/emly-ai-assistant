@@ -144,6 +144,10 @@ class BotConfig(BaseModel):
     tts_provider: Optional[Literal["browser", "deepgram"]] = None
     deepgram_tts_model: Optional[str] = None
     deepgram_stt_model: Optional[str] = None
+    # Widget: hands-free realtime voice call (services/voice_call.py,
+    # open-source Pipecat in this app). Separate from ``enable_voice``;
+    # always uses Deepgram (the models above and the bot's Deepgram key).
+    enable_voice_call: Optional[bool] = None
 
     # Conversational
     starter_messages: Optional[List[str]] = None

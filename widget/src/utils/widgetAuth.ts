@@ -101,7 +101,7 @@ const storeToken = (botId: string, cached: CachedToken): void => {
 
 /** Force the next request to re-initialise, keeping the old token so it
  * can still be presented to `/init` as proof of identity. */
-const markTokenStale = (): void => {
+export const markTokenStale = (): void => {
   const { botId } = getChatbotConfig();
   if (!botId) return;
   const cached = readAny(botId);

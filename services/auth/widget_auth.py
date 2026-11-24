@@ -60,11 +60,13 @@ def require_bearer(request: Request) -> str:
     return token
 
 
-def require_widget_principal(request: Request, bot) -> WidgetPrincipal:
-    """Verify the widget token for ``bot`` or raise 401."""
-    token = require_bearer(request)
+def verify_widget_token(token: str, bot) -> WidgetPrincipal:
+    """Verify a widget token for ``bot``. Raises ``WidgetTokenError``.
+
+    For transports that can't send an ``Authorization`` header, such as a
+    browser WebSocket, which sends the token in its first message."""
     try:
-        principal = verify(
+        return verify(
             token,
             expected_bot_id=bot.id,
             current_key_version=int(getattr(bot, "widget_key_version", 1) or 1),
@@ -74,6 +76,15 @@ def require_widget_principal(request: Request, bot) -> WidgetPrincipal:
         # Reason only (e.g. "expired", "bot_mismatch") — never the token.
         reason = str(exc).split(":", 1)[0]
         log.info("widget token rejected bot=%s reason=%s", bot.id, reason)
+        raise
+
+
+def require_widget_principal(request: Request, bot) -> WidgetPrincipal:
+    """Verify the widget token for ``bot`` or raise 401."""
+    token = require_bearer(request)
+    try:
+        principal = verify_widget_token(token, bot)
+    except WidgetTokenError:
         raise _unauthorized("widget_token_invalid") from None
 
     header_user = request.headers.get(USER_HEADER)

@@ -1238,6 +1238,14 @@ function WidgetSection({
   const usesDeepgram =
     (config.stt_provider as string) === "deepgram" ||
     (config.tts_provider as string) === "deepgram";
+  const voiceOn = Boolean(config.enable_voice);
+  const callsOn = Boolean(config.enable_voice_call);
+  // Deepgram settings serve both features; show each once.
+  const showSttModel =
+    callsOn || (voiceOn && (config.stt_provider as string) === "deepgram");
+  const showVoice =
+    callsOn || (voiceOn && (config.tts_provider as string) === "deepgram");
+  const showKey = callsOn || (voiceOn && usesDeepgram);
 
   const stopVoicePreview = () => {
     const audio = previewAudioRef.current;
@@ -1301,7 +1309,13 @@ function WidgetSection({
       setDgHasKey(has);
       setDgConfigured(has || dgFallback);
       setDgDraft("");
-      if (has) {
+      if (has && config.enable_voice_call && !config.enable_voice) {
+        // The key is for calls; leave the mic / read-aloud option alone.
+        setDgMsg({
+          ok: true,
+          text: "Deepgram key saved. Click Save (top right) so the preview shows the call button.",
+        });
+      } else if (has) {
         // Key alone doesn't turn Deepgram on — pick providers so the
         // next Save publishes a working voice setup.
         if ((config.stt_provider as string | undefined) !== "deepgram") {
@@ -1673,7 +1687,37 @@ function WidgetSection({
                 <option value="deepgram">Deepgram (needs API key)</option>
               </select>
             </div>
-            {(config.stt_provider as string) === "deepgram" && (
+          </div>
+        )}
+        <FlagToggle
+          label="Enable voice calls"
+          checked={Boolean(config.enable_voice_call)}
+          onChange={(v) => patchPath(["enable_voice_call"], v || undefined)}
+          disabled={!writable}
+        />
+        <div className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          Adds a call button to the widget for a hands-free conversation:
+          live transcription, spoken answers, and the visitor can talk over
+          the bot to interrupt. The call runs on this server (open-source
+          Pipecat) with Deepgram for speech, and its transcript is saved to
+          the chat like typed messages. Independent of the voice option
+          above. Needs a Deepgram key and HTTPS (or localhost).
+        </div>
+        {callsOn && hasUnsavedEdits && (
+          <div className="error" style={{ fontSize: 13, marginTop: 4 }}>
+            Call changes are not live yet. Click <strong>Save</strong> (top
+            right) so the preview shows the call button.
+          </div>
+        )}
+        {callsOn && dgHasKey === false && !dgFallback && (
+          <div className="error" style={{ fontSize: 13, marginTop: 4 }}>
+            Add a Deepgram key below; the call button only appears once a key is set.
+          </div>
+        )}
+        {(showSttModel || showVoice || showKey) && (
+          <div style={{ display: "grid", gap: 12, marginTop: 8 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>Deepgram</div>
+            {showSttModel && (
               <div className="field">
                 <label htmlFor="cfg-dg-stt-model">Deepgram speech model</label>
                 <select
@@ -1692,7 +1736,7 @@ function WidgetSection({
                 </select>
               </div>
             )}
-            {(config.tts_provider as string) === "deepgram" && (
+            {showVoice && (
               <div className="field">
                 <label htmlFor="cfg-dg-tts-voice">Deepgram voice</label>
                 <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -1758,7 +1802,7 @@ function WidgetSection({
                 </div>
               </div>
             )}
-            {usesDeepgram && (
+            {showKey && (
             <div className="field">
               <label>Deepgram API key</label>
               <div className="row" style={{ alignItems: "center", gap: 8, marginBottom: 8 }}>

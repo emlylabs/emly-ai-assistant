@@ -79,14 +79,36 @@ def _fill_path(template: str) -> str:
     return re.sub(r"\{([^}:]+)(?::[^}]+)?\}", lambda m: "1" if m.group(1).endswith("_id") else "x", template)
 
 
+def _probe_websocket(client, path: str) -> int:
+    """Open a WebSocket route without a token. 403: refused before accept;
+    401: accepted, then answered with an error and closed; 200: served."""
+    from starlette.websockets import WebSocketDisconnect
+
+    try:
+        with client.websocket_connect(_fill_path(path)) as ws:
+            ws.send_json({"type": "auth"})
+            message = ws.receive_json()
+    except WebSocketDisconnect:
+        return 403
+    except Exception:
+        return 403
+    return 401 if isinstance(message, dict) and message.get("type") == "error" else 200
+
+
 def probe_routes(app) -> list[dict]:
     """Call every (method, route) on ``app`` with no credentials."""
     from fastapi.testclient import TestClient
-    from starlette.routing import Route
+    from starlette.routing import Route, WebSocketRoute
 
     client = TestClient(app, raise_server_exceptions=False)
     results = []
     for route in app.routes:
+        if isinstance(route, WebSocketRoute):
+            # WebSockets skip the HTTP auth middleware and dependencies, so
+            # each handler must refuse a client without a valid token itself.
+            results.append({"method": "WS", "path": route.path,
+                            "status": _probe_websocket(client, route.path)})
+            continue
         if not isinstance(route, Route):
             results.append({"method": "MOUNT", "path": getattr(route, "path", "?"), "status": None})
             continue
@@ -209,7 +231,7 @@ def test_security_headers_on_every_route(real_app_results):
     https in the probe)."""
     from services.security_headers import is_widget_path
 
-    routes = [r for r in real_app_results if r["method"] != "MOUNT"]
+    routes = [r for r in real_app_results if r["method"] not in ("MOUNT", "WS")]
     assert all(r["nosniff"] for r in routes), [r["path"] for r in routes if not r["nosniff"]]
     assert all(r["referrer_policy"] == "strict-origin-when-cross-origin" for r in routes)
     assert all(r["hsts"] for r in routes)

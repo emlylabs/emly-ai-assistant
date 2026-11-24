@@ -178,3 +178,4 @@ def transcribe(
     if not text:
         raise RuntimeError("No speech detected")
     return text
+

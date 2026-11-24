@@ -22,8 +22,9 @@ import type { MessageForm, Citation } from '../utils/sessionManager';
 import { buildCandidateSummary, extractCandidateArray } from '../utils/candidateData';
 import ChatSessionManager from './ChatSessionManager'; // Import ChatSessionManager
 // import { CHATBOT_THEMES, resolveChatbotTheme, type ChatbotTheme } from '../utils/chatbotThemes';
-import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, getTtsUrl, getSttUrl, fetchBotConfig, recordImpression } from '../embed';
+import { getChatbotConfig, getChatUrl, getActionUrl, getSubmissionCountsUrl, getTtsUrl, getSttUrl, getVoiceCallUrl, fetchBotConfig, recordImpression } from '../embed';
 import { ensureWidgetIdentity, getEmlyUserId, widgetFetch } from '../utils/widgetAuth';
+import { VoiceCall, type VoiceCallReply, type VoiceCallState } from '../utils/voiceCall';
 import type { WidgetBotConfig, CFormSelected } from '../embed';
 import Nudge from './Nudge';
 import {
@@ -31,6 +32,7 @@ import {
   canSpeak,
   feedSpeechStream,
   plainTextForSpeech,
+  resolveVoiceLang,
   silenceVoice,
   speak,
   stopSpeaking,
@@ -191,6 +193,32 @@ const flattenCForms = (forms?: CFormSelected[] | null): FlatForm[] => {
   return out;
 };
 
+/** What to tell the visitor when a voice call ends badly. */
+const callEndMessage = (code: string): string => {
+  switch (code) {
+    case 'not-allowed':
+      return 'Microphone permission was blocked.';
+    case 'audio-capture':
+      return 'No microphone was found.';
+    case 'busy':
+      return 'Voice calls are busy right now. Please try again in a moment.';
+    case 'rate_limited':
+      return 'Too many calls started. Please try again in a minute.';
+    case 'idle_timeout':
+      return 'The call ended after a long silence.';
+    case 'call_too_long':
+      return 'The call reached its time limit.';
+    case 'voice_call_not_enabled':
+    case 'deepgram_not_configured':
+    case 'unsupported':
+      return 'Voice calls are not available here.';
+    case 'speech_service_error':
+      return "The voice service isn't responding. Please type your message instead.";
+    default:
+      return 'The call ended unexpectedly.';
+  }
+};
+
 const findFormByTriggerCode = (forms: FlatForm[], code: string): FlatForm | null =>
   forms.find(f => (f.trigger?.trigger_code as string | undefined) === code) ?? null;
 
@@ -287,6 +315,18 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
   // when they typed. Text replies always stay visible either way.
   const speakNextReplyRef = useRef(false);
   const isOpenRef = useRef(false);
+  // Realtime voice call (Pipecat on the backend). Each call turn's bot
+  // bubble is tracked by turn number while its answer streams in.
+  const [callState, setCallState] = useState<VoiceCallState | null>(null);
+  const [callCaption, setCallCaption] = useState('');
+  const [callError, setCallError] = useState<string | null>(null);
+  const callRef = useRef<VoiceCall | null>(null);
+  const callTurnsRef = useRef<Map<number, { id: string | null; raw: string }>>(new Map());
+  const [callMuted, setCallMuted] = useState(false);
+  const getCallLevels = React.useCallback(
+    () => callRef.current?.levels() ?? { mic: 0, bot: 0 },
+    [],
+  );
   const sendMessageRef = useRef<(text: string, opts?: { fromVoice?: boolean }) => void>(() => {});
   const chatTurnRef = useRef(0);
   const chatAbortRef = useRef<AbortController | null>(null);
@@ -974,6 +1014,120 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     }
   };
 
+  const nameSessionFrom = (text: string) => {
+    if (activeSessionId && messages.length === 0) {
+      const sessionLabel = text.length > 30 ? text.slice(0, 30) + '…' : text;
+      dispatch(updateSessionName({ sessionId: activeSessionId, newName: sessionLabel }));
+    }
+  };
+
+  // Read through a ref so a long call always uses the current state.
+  const callHandlersRef = useRef({
+    userTurn: (_turn: number, _text: string) => {},
+    botText: (_turn: number, _delta: string) => {},
+    botDone: (_turn: number, _reply: VoiceCallReply) => {},
+  });
+  callHandlersRef.current = {
+    userTurn: (_turn, text) => {
+      setCallCaption('');
+      if (!text.trim()) return;
+      nameSessionFrom(text);
+      addMessage(text, true);
+    },
+    botText: (turn, delta) => {
+      const entry = callTurnsRef.current.get(turn) ?? { id: null, raw: '' };
+      entry.raw += delta;
+      callTurnsRef.current.set(turn, entry);
+      const shown = visibleReply(entry.raw);
+      if (!shown) return;
+      if (!entry.id) entry.id = addMessage(shown, false);
+      else dispatch(updateMessage({ id: entry.id, text: shown, persist: false }));
+    },
+    botDone: (turn, reply) => {
+      const entry = callTurnsRef.current.get(turn) ?? { id: null, raw: '' };
+      callTurnsRef.current.delete(turn);
+      const raw = reply.text || entry.raw;
+      if (!raw) {
+        if (reply.error) addMessage('Unable to reach the chatbot service right now.', false);
+        return;
+      }
+      // Same finishing steps as a typed reply: cards, form triggers, citations.
+      const resolved = resolveBotResponse({ message: { content: raw } });
+      const { code, cleaned } = extractInternalCode(resolved.text || raw);
+      const messageId = reply.messageId ?? undefined;
+      const citations = reply.citations as Citation[];
+      if (cleaned) {
+        if (!entry.id) {
+          addMessage(cleaned, false, resolved.data, undefined, messageId, citations);
+        } else {
+          dispatch(updateMessage({
+            id: entry.id,
+            text: cleaned,
+            data: resolved.data,
+            messageId,
+            citations,
+            persist: true,
+          }));
+        }
+      }
+      if (code) {
+        const matched = findFormByTriggerCode(cForms, code);
+        if (matched) addFormMessage(matched);
+      }
+    },
+  };
+
+  /** Runs inside the call button's click: audio needs that gesture. */
+  const startCall = () => {
+    if (callRef.current || !activeSessionId || pendingStartChat) return;
+    silenceVoice();
+    setCallError(null);
+    setCallCaption('');
+    setCallMuted(false);
+    callTurnsRef.current = new Map();
+    const call = new VoiceCall(
+      getVoiceCallUrl(),
+      { sessionId: activeSessionId, lang: resolveVoiceLang(botConfig?.voice_language) },
+      {
+        onState: (state) => setCallState(state),
+        onUserInterim: (text) => setCallCaption(text),
+        onUserTranscript: (turn, text) => callHandlersRef.current.userTurn(turn, text),
+        onBotText: (turn, delta) => callHandlersRef.current.botText(turn, delta),
+        onBotDone: (turn, reply) => callHandlersRef.current.botDone(turn, reply),
+        onEnd: (reason) => {
+          if (callRef.current === call) callRef.current = null;
+          setCallState(null);
+          setCallCaption('');
+          setCallMuted(false);
+          setCallError(reason ? callEndMessage(reason) : null);
+        },
+      },
+    );
+    callRef.current = call;
+    setCallState('connecting');
+    call.start();
+  };
+
+  const endCall = () => {
+    callRef.current?.hangup();
+  };
+
+  const toggleCallMute = () => {
+    const call = callRef.current;
+    if (!call) return;
+    const next = !call.isMuted();
+    call.setMuted(next);
+    setCallMuted(next);
+  };
+
+  // A call belongs to one session and an open widget.
+  useEffect(() => () => {
+    callRef.current?.hangup();
+  }, [activeSessionId]);
+  useEffect(() => {
+    if (!isOpen) callRef.current?.hangup();
+  }, [isOpen]);
+
   const sendMessage = (text: string, opts?: { fromVoice?: boolean }) => {
     const messageToSend = text.trim();
     if (messageToSend === '') return;
@@ -984,13 +1138,9 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
     stopSpeaking();
     chatAbortRef.current?.abort();
     speakNextReplyRef.current = Boolean(opts?.fromVoice);
+    setCallError(null);
     // Auto-name the session from the first user query
-    if (activeSessionId && messages.length === 0) {
-      const sessionLabel = messageToSend.length > 30
-        ? messageToSend.slice(0, 30) + '…'
-        : messageToSend;
-      dispatch(updateSessionName({ sessionId: activeSessionId, newName: sessionLabel }));
-    }
+    nameSessionFrom(messageToSend);
     addMessage(messageToSend, true);
     setNewMessage('');
     void getBotResponse(messageToSend);
@@ -1279,6 +1429,18 @@ const ChatbotWidget: React.FC<ChatbotWidgetProps> = ({
             voiceLanguage={botConfig?.voice_language}
             sttProvider={(botConfig?.stt_provider === 'deepgram' ? 'deepgram' : 'browser') as SttProvider}
             transcribeAudio={transcribeAudio}
+            voiceCall={Boolean(botConfig?.voice_call)}
+            callState={callState}
+            callMuted={callMuted}
+            onToggleCallMute={toggleCallMute}
+            onCallSendText={(text) => callRef.current?.sendText(text) ?? false}
+            getCallLevels={getCallLevels}
+            getCallMicrophone={() => callRef.current?.currentMicrophone() ?? null}
+            onSelectCallMicrophone={(id) => { void callRef.current?.setMicrophone(id); }}
+            callCaption={callCaption}
+            callError={callError}
+            onStartCall={startCall}
+            onEndCall={endCall}
           />
           <div className="emly-attribution" aria-label="Branding">
             <span>Powered by</span>

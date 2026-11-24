@@ -115,6 +115,13 @@ def test_tts_provider_deepgram_round_trips():
     assert dumped["deepgram_stt_model"] == "nova-3"
 
 
+def test_enable_voice_call_round_trips_independently():
+    cfg = BotConfig.model_validate({"enable_voice_call": True})
+    dumped = cfg.model_dump(mode="json", exclude_none=True)
+    assert dumped["enable_voice_call"] is True
+    assert "enable_voice" not in dumped
+
+
 def test_tts_provider_invalid_rejected():
     with pytest.raises(ValidationError):
         BotConfig.model_validate({"tts_provider": "elevenlabs"})

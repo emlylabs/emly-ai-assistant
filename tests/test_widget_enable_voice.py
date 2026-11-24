@@ -55,3 +55,15 @@ def test_build_widget_config_drops_non_str_voice_language(isolated_db, monkeypat
 
     monkeypatch.setattr("routes.widget.get_config_for_bot", lambda _bot_id: FakeConfig())
     assert _build_widget_config(bot).voice_language is None
+
+
+def test_voice_call_needs_its_own_flag_and_a_deepgram_key(isolated_db, monkeypatch):
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key")
+    assert _build_widget_config(_bot({"schema_version": 1, "enable_voice_call": True})).voice_call is True
+    # Voice (mic + read-aloud) on its own doesn't offer calls.
+    voice_only = {"schema_version": 1, "enable_voice": True,
+                  "stt_provider": "deepgram", "tts_provider": "deepgram"}
+    assert _build_widget_config(_bot(voice_only)).voice_call is None
+
+    monkeypatch.delenv("DEEPGRAM_API_KEY")
+    assert _build_widget_config(_bot({"schema_version": 1, "enable_voice_call": True})).voice_call is None

@@ -57,6 +57,23 @@ export const getTtsUrl = (): string => {
   return `${baseUrl}/widget/${encodeURIComponent(botId)}/tts`;
 };
 
+/** Realtime voice-call socket, e.g. `wss://api.example/widget/support-faq/voice/ws`.
+ * An empty `baseUrl` resolves against the page, so the scheme follows it
+ * (https → wss). */
+export const getVoiceCallUrl = (): string => {
+  const { baseUrl, botId } = chatbotConfig;
+  if (!botId || typeof window === 'undefined') return '';
+  try {
+    const url = new URL(`${baseUrl}/widget/${encodeURIComponent(botId)}/voice/ws`, window.location.href);
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    else if (url.protocol === 'http:') url.protocol = 'ws:';
+    else return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
 /** Deepgram STT proxy — upload a short mic recording. */
 export const getSttUrl = (): string => {
   const { baseUrl, botId } = chatbotConfig;
@@ -206,6 +223,8 @@ export interface WidgetBotConfig {
   stt_provider?: 'browser' | 'deepgram' | string | null;
   /** ``browser`` (default) or ``deepgram`` for spoken replies. */
   tts_provider?: 'browser' | 'deepgram' | string | null;
+  /** The bot offers a realtime voice call (Deepgram, via the backend). */
+  voice_call?: boolean | null;
   starter_messages?: string[] | null;
   support_email?: string | null;
   whatsapp_link?: string | null;

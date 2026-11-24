@@ -70,32 +70,18 @@ async def widget_chat(
 
     # Session ids are minted client-side; refuse one that belongs to
     # another visitor so a token for user A can't continue user B's thread.
-    from models.emly_sessions import EMLYSessions
+    from services.widget_visitors import ensure_end_user, session_owned_by_other
 
-    existing = EMLYSessions.get(bot.id, str(request.session_id))
-    if existing is not None and existing.user_id and existing.user_id != principal.user_id:
+    if session_owned_by_other(bot.id, str(request.session_id), principal.user_id):
         raise HTTPException(status_code=403, detail={"code": "session_not_owned"})
 
-    from models.emly_users import EMLYUsers
-    end_user_id = str(request.user_id) if request.user_id else None
-    if end_user_id and EMLYUsers.get_user_by_id(bot.id, end_user_id) is None:
-        client = http_request.client
-        ip = client.host if client else ""
-        browser = http_request.headers.get("user-agent", "")
-        try:
-            EMLYUsers.insert_new_user(
-                bot_id=bot.id,
-                id=end_user_id,
-                first_name=None, last_name=None, email=None, phone=None,
-                ip=ip,
-                browser=browser,
-                meta=None,
-            )
-        except Exception:
-            if EMLYUsers.get_user_by_id(bot.id, end_user_id) is None:
-                logger.exception("Failed to auto-create end-user for bot=%s user=%s", bot.id, end_user_id)
-            else:
-                logger.info("Concurrent insert for bot=%s user=%s — using existing row", bot.id, end_user_id)
+    client = http_request.client
+    ensure_end_user(
+        bot.id,
+        str(request.user_id) if request.user_id else None,
+        ip=client.host if client else "",
+        browser=http_request.headers.get("user-agent", ""),
+    )
 
     user_id = request.user_id
     if not user_id:

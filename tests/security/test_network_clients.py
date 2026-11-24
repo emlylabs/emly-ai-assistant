@@ -24,7 +24,8 @@ SKIP_DIRS = {"tests", "migrations", "ui", "widget", "data", "__pycache__"}
 # Modules that open network connections. Matched as the module itself or
 # any submodule (``requests.adapters`` counts as ``requests``).
 NETWORK_MODULES = {
-    "aiohttp", "anthropic", "boto3", "botocore", "ftplib", "grpc", "http.client", "httplib2",
+    "aiohttp", "anthropic", "boto3", "botocore", "deepgram", "ftplib", "grpc", "http.client",
+    "httplib2", "pipecat",
     "httpx", "huggingface_hub", "langchain_openai", "langsmith", "openai", "paramiko", "pycurl",
     "qdrant_client", "requests", "sentence_transformers", "smtplib", "socket", "telnetlib",
     "transformers", "urllib.request", "urllib3", "websocket", "websockets",
@@ -48,6 +49,10 @@ ALLOWED = {
         "channels/dispatcher.py": "chat platforms",
         "channels/telegram.py": "Telegram Bot API",
         "services/auth/oidc.py": "the external OIDC identity provider",
+        "services/deepgram.py": "Deepgram speech-to-text and text-to-speech (HTTP)",
+    },
+    "pipecat": {
+        "services/voice_call.py": "Deepgram live speech-to-text and text-to-speech (voice calls)",
     },
     "requests": {
         "services/crawl_fetch.py": "websites an admin asks to crawl",

@@ -1845,3 +1845,256 @@
   line-height: 1.45;
   color: var(--cb-ink, #0f172a);
 }
+
+
+/* ---- Voice call (footer) -------------------------------------------------
+   A call lives in the normal chat frame: a meter row with END above the
+   input, and a mic segment (level dots, microphone picker) in the input.
+   Bubbles appear in the chat as usual. */
+
+.emls-chatbot-widget .footer .emw-callrow {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 4px 0;
+    box-sizing: border-box;
+}
+
+.emls-chatbot-widget .footer .emw-callrow__bars {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 4px;
+    height: 26px;
+}
+
+.emls-chatbot-widget .footer .emw-callrow__bars span {
+    width: 5px;
+    height: 26px;
+    background: var(--cb-accent, #7c3aed);
+    transform: scaleY(0.55);
+    transform-origin: bottom;
+}
+
+.emls-chatbot-widget .footer .emw-callrow--connecting .emw-callrow__bars span {
+    background: var(--cb-muted, #cbd5e1);
+    animation: emw-callrow-wait 1.2s ease-in-out infinite;
+}
+
+.emls-chatbot-widget .footer .emw-callrow--connecting .emw-callrow__bars span:nth-child(2n) {
+    animation-delay: 0.3s;
+}
+
+@keyframes emw-callrow-wait {
+    0%, 100% { transform: scaleY(0.3); }
+    50% { transform: scaleY(0.7); }
+}
+
+/* Status is for screen readers; the bars say it visually. */
+.emls-chatbot-widget .footer .emw-callrow__status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.emls-chatbot-widget .footer .emw-callrow__end {
+    appearance: none;
+    margin-left: auto;
+    border: none;
+    background: transparent;
+    padding: 4px 2px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--cb-muted, #6b7280);
+    cursor: pointer;
+}
+
+.emls-chatbot-widget .footer .emw-callrow__end:hover {
+    color: #dc2626;
+}
+
+.emls-chatbot-widget .footer textarea.emw-has-caption::placeholder {
+    font-style: italic;
+}
+
+.emls-chatbot-widget .footer .emw-callseg {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    margin: -8px -10px -8px 6px;
+    border-left: 1px solid var(--cb-line, rgba(15, 23, 42, 0.10));
+}
+
+.emls-chatbot-widget .footer .emw-callseg__mic {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 100%;
+    padding: 0 12px;
+    border: none;
+    background: transparent;
+    color: var(--cb-ink, #0f172a);
+    cursor: pointer;
+}
+
+.emls-chatbot-widget .footer .emw-callseg:not(.emw-callseg--live) .emw-callseg__mic {
+    border-radius: 0 13px 13px 0;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__mic:hover:not(:disabled) {
+    background: rgba(15, 23, 42, 0.04);
+}
+
+.emls-chatbot-widget .footer .emw-callseg__mic:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__mic--muted {
+    color: #dc2626;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--cb-muted, #cbd5e1);
+    transition: height 0.08s linear, background 0.08s linear;
+}
+
+/* In a call the dots become a green mic-level meter, like the bars. */
+.emls-chatbot-widget .footer .emw-callseg--live .emw-callseg__dots span {
+    background: #16a34a;
+}
+
+.emls-chatbot-widget .footer .emw-callseg--live .emw-callseg__dots span[data-on="1"] {
+    height: 12px;
+}
+
+.emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span {
+    background: var(--cb-muted, #cbd5e1);
+    animation: emw-callseg-wait 1s ease-in-out infinite;
+}
+
+.emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span:nth-child(2) { animation-delay: 0.15s; }
+.emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span:nth-child(3) { animation-delay: 0.3s; }
+.emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span:nth-child(4) { animation-delay: 0.45s; }
+.emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span:nth-child(5) { animation-delay: 0.6s; }
+
+@keyframes emw-callseg-wait {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}
+
+.emls-chatbot-widget .footer .emw-callseg__mic--muted .emw-callseg__dots span {
+    background: var(--cb-muted, #cbd5e1);
+    height: 4px;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-wrap {
+    position: relative;
+    height: 100%;
+    display: flex;
+    border-left: 1px solid var(--cb-line, rgba(15, 23, 42, 0.10));
+}
+
+.emls-chatbot-widget .footer .emw-callseg__chevron {
+    appearance: none;
+    width: 40px;
+    border: none;
+    background: transparent;
+    color: var(--cb-muted, #6b7280);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    border-radius: 0 13px 13px 0;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__chevron:hover:not(:disabled) {
+    background: rgba(15, 23, 42, 0.04);
+    color: var(--cb-ink, #0f172a);
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 10px);
+    min-width: 220px;
+    max-width: 280px;
+    padding: 6px;
+    background: var(--cb-panel, #fff);
+    border: 1px solid var(--cb-line, rgba(15, 23, 42, 0.10));
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+    z-index: 20;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-title {
+    padding: 6px 8px 4px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cb-muted, #6b7280);
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-empty {
+    padding: 8px;
+    font-size: 13px;
+    color: var(--cb-muted, #6b7280);
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-item {
+    appearance: none;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--cb-ink, #0f172a);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.emls-chatbot-widget .footer .emw-callseg__menu-item:hover {
+    background: rgba(15, 23, 42, 0.05);
+}
+
+.emls-chatbot-widget .footer .emw-callrow__end:focus-visible,
+.emls-chatbot-widget .footer .emw-callseg__mic:focus-visible,
+.emls-chatbot-widget .footer .emw-callseg__chevron:focus-visible,
+.emls-chatbot-widget .footer .emw-callseg__menu-item:focus-visible {
+    outline: 2px solid var(--cb-accent, #2563eb);
+    outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .emls-chatbot-widget .footer .emw-callrow--connecting .emw-callrow__bars span,
+    .emls-chatbot-widget .footer .emw-callseg--connecting .emw-callseg__dots span {
+        animation: none;
+    }
+}
