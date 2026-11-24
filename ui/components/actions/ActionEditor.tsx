@@ -416,6 +416,7 @@ function BehaviorCard({
                 writable={writable}
                 onChange={(next) => onChange({ ...action, form: next })}
                 actionName={action.name}
+                crmNames={(crmConnections ?? []).length > 0}
               />
               <CrmSubEditor
                 selected={action.crmProviders}
@@ -527,11 +528,14 @@ function FormSubEditor({
   writable,
   onChange,
   actionName,
+  crmNames,
 }: {
   form: ActionFormConfig;
   writable: boolean;
   onChange: (next: ActionFormConfig) => void;
   actionName: string;
+  /** The bot has a CRM set up; see FormFieldsEditor. */
+  crmNames: boolean;
 }) {
   const isAuth = form.preset === "auth_form";
 
@@ -633,6 +637,7 @@ function FormSubEditor({
             submitLabel={form.submitLabel}
             onSubmitLabelChange={(submitLabel) => onChange({ ...form, submitLabel })}
             disabled={!writable}
+            crmNames={crmNames}
           />
         </>
       )}

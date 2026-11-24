@@ -246,6 +246,7 @@ export default function ActionsSection({ config, patch, writable }: Props) {
           skillIds={skillIds}
           existingTriggerCodes={existingTriggerCodes}
           existingActionNames={actions.map((a) => a.name)}
+          crmNames={(crmConnections ?? []).length > 0}
           onCancel={() => setWizardSkill(null)}
           onSave={finishWizard}
         />
