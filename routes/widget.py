@@ -698,6 +698,12 @@ async def widget_action(
     recipients, analysis_prompt = _resolve_alert_trigger(
         bot.id, payload_data.get("form_title")
     )
+    if not recipients:
+        # Says why no alert email went out; the CRM sync above does not need recipients.
+        log.info(
+            "alert email not sent bot=%s form=%s: the form has no alert recipients in the live config",
+            bot.id, str(payload_data.get("form_title") or "")[:80],
+        )
     if recipients:
         form_data = EMLYUserActionsFormData(**{
             "user_id": user.id,
