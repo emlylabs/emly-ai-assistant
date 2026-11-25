@@ -955,7 +955,7 @@ These are the only places the backend opens a connection to another system, besi
 
 At start-up the app logs an "Outbound destinations" block naming, by host only, what this deployment is configured to use: the default model endpoint and every endpoint a bot has set, embeddings, Qdrant, the mail server, the identity provider, connected chat platforms, Hugging Face downloads and LangSmith.
 
-For one bot, its *Settings* page shows the same as "Where this bot's data goes" (`GET /api/admin/bots/{slug}/data-recipients`, any member): the model endpoint its answers, alert summaries and classification use, embeddings, the search index, each connected chat platform, each connected Zoho, HubSpot or Salesforce CRM, the form alert recipients with what alerts contain, and LangSmith when allowed. Each row is marked as inside or outside your network (by address or internal name; no DNS lookup).
+For one bot, its *Settings* page shows the same as "Where this bot's data goes" (`GET /api/admin/bots/{slug}/data-recipients`, any member): the model endpoint its answers, alert summaries and classification use, embeddings, the search index, each connected chat platform, each connected Zoho CRM or Salesforce org, the form alert recipients with what alerts contain, and LangSmith when allowed. Each row is marked as inside or outside your network (by address or internal name; no DNS lookup).
 
 | Destination | When | Code |
 |-------------|------|------|
@@ -965,7 +965,7 @@ For one bot, its *Settings* page shows the same as "Where this bot's data goes" 
 | Mail server (`EMAIL_SERVER`) | Form alerts, invites, sign-in codes | `services/email_service.py` |
 | External identity provider | Sign-in, when `AUTH_PROVIDER=oidc`: discovery, keys, token exchange | `services/auth/oidc.py` |
 | Slack, Teams, Google Chat, WhatsApp, Telegram | Only for connected channels: replies, the sender's profile (Slack), and the platforms' signing keys | `channels/dispatcher.py`, `channels/auth/_http.py`, `channels/auth/service_account_jwt.py`, `channels/telegram.py` |
-| Zoho CRM, HubSpot and Salesforce | Only after an admin connects that CRM on a bot. A captured lead's name, email, phone and note are sent. Zoho uses that data center's API host; HubSpot uses `api.hubapi.com`; Salesforce uses the org's own `*.salesforce.com` instance (from the token response, allowlisted) and signs in through `login.salesforce.com` or `test.salesforce.com`. Per bot, so they are not in the start-up list. | `crm/http.py` |
+| Zoho CRM and Salesforce | Only after an admin connects that CRM on a bot. A captured lead's name, email, phone and note are sent. Zoho uses that data center's API host; Salesforce uses the org's own `*.salesforce.com` instance (from the token response, allowlisted) and signs in through `login.salesforce.com`, `test.salesforce.com`, or the org's `*.my.salesforce.com` My Domain (Developer Edition). Per bot, so they are not in the start-up list. | `crm/http.py` |
 | Websites an admin crawls | Only when an admin adds a crawl. Private and internal addresses are refused unless their range is in `CRAWL_ALLOWED_PRIVATE_CIDRS`, and each connection goes to the address that was checked. | `services/crawl_fetch.py` |
 | Hugging Face Hub | Only when model downloads are on. The Docker image sets `HF_HUB_OFFLINE=1` and bakes the models in. | `config.py`, `utils/model_pins.py` |
 

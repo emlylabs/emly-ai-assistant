@@ -1,4 +1,4 @@
-"""Zoho, HubSpot and Salesforce facts the OAuth flow and the in-app guide share.
+"""Zoho CRM and Salesforce facts the OAuth flow and the in-app guide share.
 
 Hosts an admin can send us to are an allowlist. A token response that names
 any other host is refused, so a poisoned row cannot turn a lead sync into
@@ -15,14 +15,6 @@ ZOHO_SCOPES = (
     "ZohoCRM.modules.leads.CREATE",
     "ZohoCRM.modules.leads.UPDATE",
     "ZohoSearch.securesearch.READ",
-)
-
-HUBSPOT_SCOPES = (
-    "oauth",
-    "crm.objects.contacts.read",
-    "crm.objects.contacts.write",
-    "crm.objects.leads.read",
-    "crm.objects.leads.write",
 )
 
 # (id, label, accounts host). The client secret belongs to one data center.
@@ -53,25 +45,25 @@ ZOHO_API_DOMAINS = {
 _ZOHO_ACCOUNT_HOSTS = {urlsplit(host).hostname for host in ZOHO_ACCOUNTS.values()}
 _ZOHO_API_HOSTS = {urlsplit(host).hostname for host in ZOHO_API_DOMAINS.values()}
 
-HUBSPOT_AUTHORIZE = "https://app.hubspot.com/oauth/authorize"
-HUBSPOT_TOKEN = "https://api.hubapi.com/oauth/v3/token"
-HUBSPOT_API = "https://api.hubapi.com"
-
-# Lead to contact, HUBSPOT_DEFINED. A lead cannot be created without it.
-# https://developers.hubspot.com/docs/guides/api/crm/objects/leads
-HUBSPOT_LEAD_TO_CONTACT = 578
-
 # Salesforce. The token response has no ``expires_in``; the access token
 # lives as long as the org's session timeout, which an admin can set as
 # low as 15 minutes. We treat every token as good for 15 minutes and also
 # refresh once if Salesforce rejects one sooner.
 # https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_web_server_flow.htm
 SALESFORCE_SCOPES = ("api", "refresh_token")
+# (id, label, login host). "developer" has no fixed host: the admin pastes
+# the org's My Domain URL, e.g. https://acme-dev-ed.develop.my.salesforce.com.
 SALESFORCE_ENVIRONMENTS = (
-    ("production", "Production or Developer Edition", "https://login.salesforce.com"),
+    ("production", "Production", "https://login.salesforce.com"),
     ("sandbox", "Sandbox", "https://test.salesforce.com"),
+    ("developer", "Developer Edition (My Domain URL)", ""),
 )
-SALESFORCE_LOGIN = {env_id: host for env_id, _label, host in SALESFORCE_ENVIRONMENTS}
+SALESFORCE_MY_DOMAIN_ENVIRONMENT = "developer"
+SALESFORCE_LOGIN = {env_id: host for env_id, _label, host in SALESFORCE_ENVIRONMENTS if host}
+# What sits between the org's name and ``my.salesforce.com`` in a My Domain
+# login host: nothing (production), develop (Developer Edition), sandbox,
+# scratch, or trailblaze (Trailhead Playground).
+_MY_DOMAIN_KINDS = ("", "develop", "sandbox", "scratch", "trailblaze")
 SALESFORCE_API_VERSION = "v66.0"
 SALESFORCE_TOKEN_SECONDS = 900
 # Required on a Lead, and the capture never asks for it.
@@ -79,7 +71,7 @@ SALESFORCE_NO_COMPANY = "[not provided]"
 _SALESFORCE_LOGIN_HOSTS = {urlsplit(host).hostname for host in SALESFORCE_LOGIN.values()}
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
-PROVIDERS = ("zoho", "hubspot", "salesforce")
+PROVIDERS = ("zoho", "salesforce")
 
 
 def selected_providers(value) -> tuple | None:
@@ -131,8 +123,6 @@ def oauth_redirect_uri(provider: str) -> str:
 def scope_string(provider: str) -> str:
     if provider == "zoho":
         return ",".join(ZOHO_SCOPES)
-    if provider == "hubspot":
-        return " ".join(HUBSPOT_SCOPES)
     if provider == "salesforce":
         return " ".join(SALESFORCE_SCOPES)
     raise ValueError("unknown CRM")
@@ -180,20 +170,72 @@ def allow_zoho_api_domain(url: str) -> str:
     return _known_origin(url, _ZOHO_API_HOSTS, ZOHO_API_DOMAINS)
 
 
-def salesforce_login_server(environment: str) -> str:
+def salesforce_login_server(environment: str, login_url: str | None = None) -> str:
+    """The login origin for an environment. Developer Edition uses the org's My Domain URL."""
+    env = (environment or "").strip().lower()
+    if env == SALESFORCE_MY_DOMAIN_ENVIRONMENT:
+        if not (login_url or "").strip():
+            raise ValueError("Paste your org's My Domain URL, e.g. https://yourorg-dev-ed.develop.my.salesforce.com")
+        return allow_salesforce_my_domain(login_url)
     try:
-        return SALESFORCE_LOGIN[(environment or "").strip().lower()]
+        return SALESFORCE_LOGIN[env]
     except KeyError:
         raise ValueError("unknown Salesforce environment") from None
 
 
-def allow_salesforce_login(url: str) -> str:
-    """The canonical login origin (production or sandbox), or raise."""
+def _plain_https_host(url: str) -> str:
+    """The lowercase host of a bare https origin (a trailing ``/`` is fine), or ""."""
     parsed = urlsplit((url or "").strip())
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        return ""
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or parsed.username or parsed.password or host not in _SALESFORCE_LOGIN_HOSTS:
-        raise ValueError("host is not a Salesforce login host")
+    if not host or not all(_HOST_LABEL.match(label) for label in host.split(".")):
+        return ""
+    return host
+
+
+def _is_my_domain(host: str) -> bool:
+    if not host.endswith(".my.salesforce.com"):
+        return False
+    middle = host[: -len(".my.salesforce.com")].split(".")
+    # ``name`` or ``name.kind``; the org's name is the first label.
+    if len(middle) == 1:
+        return True
+    return len(middle) == 2 and middle[1] in _MY_DOMAIN_KINDS
+
+
+def allow_salesforce_my_domain(url: str) -> str:
+    """A My Domain login origin (``https://<name>[.develop|.sandbox|...].my.salesforce.com``), or raise.
+
+    The admin types this one, and the client secret is posted to it, so
+    only the shapes Salesforce issues are accepted.
+    """
+    host = _plain_https_host(url)
+    if not host or not _is_my_domain(host):
+        raise ValueError(
+            "That is not a Salesforce My Domain URL. It looks like https://yourorg-dev-ed.develop.my.salesforce.com"
+        )
     return f"https://{host}"
+
+
+def allow_salesforce_login(url: str) -> str:
+    """The canonical login origin (login., test., or a My Domain host), or raise."""
+    host = _plain_https_host(url)
+    if host in _SALESFORCE_LOGIN_HOSTS or (host and _is_my_domain(host)):
+        return f"https://{host}"
+    raise ValueError("host is not a Salesforce login host")
 
 
 def allow_salesforce_instance(url: str) -> str:
@@ -250,66 +292,101 @@ def _zoho_info() -> dict:
     }
 
 
-def _hubspot_info() -> dict:
-    redirect = oauth_redirect_uri("hubspot")
-    requirements = [
-        "Lead scopes require Sales Hub Professional or Enterprise.",
-        "The person who clicks Connect must be a Super Admin.",
-    ]
-    if urlsplit(redirect).scheme != "https":
-        requirements.append(
-            "HubSpot requires an https redirect URL in production. Set PUBLIC_BASE_URL to the public https origin before connecting."
-        )
-    return {
-        "id": "hubspot",
-        "name": "HubSpot",
-        "data_center_label": "",
-        "redirect_url": redirect,
-        "scopes": list(HUBSPOT_SCOPES),
-        "scope_help": "Space-separated. HubSpot shows them as the app's scopes.",
-        "data_centers": [],
-        "requirements": requirements,
-        "steps": [
-            "In the HubSpot developer portal, create an app and set its redirect URL to the one shown here.",
-            "Allow these scopes: " + ", ".join(HUBSPOT_SCOPES) + ".",
-            "crm.objects.leads.read and crm.objects.leads.write are only available on Sales Hub Professional or Enterprise, and the installing user must be a Super Admin.",
-            "Paste the client id and client secret on this page and save. Then Connect.",
-            "Access tokens last 30 minutes. When HubSpot refreshes one it also returns a new refresh token, and this app stores that new token.",
-            "A HubSpot lead has no Description field. A new email creates or reuses a contact, creates a lead linked to that contact, and adds a note. An email that already has a lead gets another note on that lead.",
-        ],
-    }
+SALESFORCE_SCOPE_LABELS = (
+    "Manage user data via APIs (api)",
+    "Perform requests at any time (refresh_token, offline_access)",
+)
 
 
 def _salesforce_info() -> dict:
     redirect = oauth_redirect_uri("salesforce")
     requirements = [
         "The org needs API access: Enterprise, Unlimited, Performance or Developer Edition, or Professional Edition with the API add-on.",
-        "The person who clicks Connect needs permission to create and edit Leads.",
+        "The person who clicks Connect needs the API Enabled permission and permission to create and edit Leads.",
     ]
     if urlsplit(redirect).scheme != "https":
         requirements.append(
             "Salesforce requires an https callback URL except for localhost. Set PUBLIC_BASE_URL to the public https origin before connecting."
         )
+    # One block per section of Setup > External Client App Manager > New
+    # External Client App, in the order the form shows them.
+    sections = [
+        {
+            "title": "Basic Information",
+            "items": [
+                "External Client App Name: any name, e.g. Emly leads. API Name fills itself in.",
+                "Contact Email: your email. Distribution State: Local.",
+                "Contact Phone, Info URL, Logo, Icon and Description are optional.",
+            ],
+        },
+        {
+            "title": "API (Enable OAuth Settings)",
+            "items": [
+                "Tick Enable OAuth.",
+                "Callback URL: paste the redirect URL shown below, exactly.",
+                "OAuth Scopes: move these two to Selected OAuth Scopes: "
+                + " and ".join(f"'{label}'" for label in SALESFORCE_SCOPE_LABELS)
+                + ". No other scope is needed.",
+                "Leave 'Introspect all Tokens' and 'Configure ID token' unticked.",
+            ],
+        },
+        {
+            "title": "Flow Enablement",
+            "items": [
+                "Leave every box unticked. This app uses the authorization code (web server) flow, which needs no box here.",
+            ],
+        },
+        {
+            "title": "Security",
+            "items": [
+                "Tick 'Require secret for Web Server Flow' and 'Require secret for Refresh Token Flow'. This app always sends the secret.",
+                "'Require Proof Key for Code Exchange (PKCE)' stays on. This app sends a PKCE challenge.",
+                "'Enable Refresh Token Rotation' stays on. This app saves the new refresh token Salesforce returns on every refresh.",
+                "'Limit Idle Refresh Token Time-to-Live (TTL) to 30 Days' stays on. If no lead reaches Salesforce for 30 days, the connection expires and shows an error here; click Connect again.",
+                "Leave 'Issue JSON Web Token (JWT)-based access tokens', 'Enforce Refresh Token IP Allowlist' and 'Require Demonstrating Proof of Possession (DPoP)' unticked.",
+            ],
+        },
+        {
+            "title": "After you click Create",
+            "items": [
+                "Open the app, go to the Settings tab, and under OAuth Settings click 'Consumer Key and Secret'. Salesforce emails you a code to view them.",
+                "Paste the Consumer Key as the client id and the Consumer Secret as the client secret below.",
+                "If the app's Policies tab limits Permitted Users to approved users, add the person who will click Connect.",
+                "A new app can take up to 10 minutes before sign-in works.",
+            ],
+        },
+        {
+            "title": "On this page",
+            "items": [
+                "Environment: Production signs in at login.salesforce.com, Sandbox at test.salesforce.com. For a Developer Edition org, choose Developer Edition and paste its My Domain URL (Setup > My Domain, e.g. https://yourorg-dev-ed.develop.my.salesforce.com).",
+                "Save, then Connect, and approve access in Salesforce.",
+                "When a visitor submits an email, an open Lead with that email gets the new capture added to Description. Otherwise a Lead is created with First Name, Last Name, Email, Phone, Description, and Company set to '"
+                + SALESFORCE_NO_COMPANY
+                + "' because Salesforce requires a company.",
+            ],
+        },
+    ]
     return {
         "id": "salesforce",
         "name": "Salesforce",
         "data_center_label": "Environment",
         "redirect_url": redirect,
         "scopes": list(SALESFORCE_SCOPES),
-        "scope_help": "In the app's OAuth settings, select 'Manage user data via APIs (api)' and 'Perform requests at any time (refresh_token, offline_access)'.",
+        "scope_help": "In the app's OAuth Scopes, select "
+        + " and ".join(f"'{label}'" for label in SALESFORCE_SCOPE_LABELS)
+        + ".",
         "data_centers": [
-            {"id": env_id, "label": label, "accounts_host": host}
+            {
+                "id": env_id,
+                "label": label,
+                "accounts_host": host,
+                "login_url_required": env_id == SALESFORCE_MY_DOMAIN_ENVIRONMENT,
+            }
             for env_id, label, host in SALESFORCE_ENVIRONMENTS
         ],
         "requirements": requirements,
-        "steps": [
-            "In Salesforce Setup, open External Client App Manager and create a new External Client App. (Orgs created before Spring '26 can still use an existing Connected App.)",
-            "Enable OAuth. Set the Callback URL to the redirect URL shown here, exactly.",
-            "Select the two OAuth scopes listed here. Keep 'Require Proof Key for Code Exchange (PKCE)' and 'Require secret for Web Server Flow' turned on; this app uses both.",
-            "Set the refresh token policy to 'Refresh token is valid until revoked', or leads stop syncing when it expires.",
-            "Copy the Consumer Key and Consumer Secret, paste them here as the client id and client secret, choose Production or Sandbox, and save. Then Connect.",
-            "When a visitor submits an email, an open Lead with that email gets the new capture appended to Description. Otherwise a Lead is created with Last Name, First Name, Email, Phone, Description, and Company set to '" + SALESFORCE_NO_COMPANY + "' because Salesforce requires a company.",
-        ],
+        "steps": [],
+        "sections": sections,
     }
 
 
@@ -317,5 +394,5 @@ def catalog() -> dict:
     return {
         "public_base_url": public_base_url(),
         "public_base_configured": public_base_configured(),
-        "providers": [_zoho_info(), _hubspot_info(), _salesforce_info()],
+        "providers": [_zoho_info(), _salesforce_info()],
     }

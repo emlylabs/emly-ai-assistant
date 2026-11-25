@@ -1,6 +1,6 @@
 """Run a lead sync off the request that captured it.
 
-The visitor's response does not wait on Zoho or HubSpot. Nothing is
+The visitor's response does not wait on Zoho or Salesforce. Nothing is
 scheduled when the bot has no connected CRM, so the usual chat path
 does not start a thread.
 """

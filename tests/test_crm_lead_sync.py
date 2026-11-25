@@ -1,4 +1,4 @@
-"""Zoho and HubSpot lead sync, with HTTP mocked.
+"""Zoho CRM and Salesforce lead sync, with HTTP mocked.
 
 Covers upsert (search hit appends, search miss creates), token refresh when
 the access token is due, and the authorize URLs.
@@ -19,10 +19,8 @@ from crm.capture import lead_from_slots, lead_from_widget
 from crm.contracts import CapturedLead, CrmError
 from crm.factory import CrmProviderFactory
 from crm.http import make_client
-from crm.hubspot import HubSpotCrmAdapter
-from crm.oauth import HubSpotOAuth, ZohoOAuth
+from crm.oauth import ZohoOAuth
 from crm.providers import (
-    HUBSPOT_SCOPES,
     ZOHO_SCOPES,
     allow_zoho_accounts,
     allow_zoho_api_domain,
@@ -141,67 +139,6 @@ def test_zoho_search_miss_creates_the_lead():
     _run(UpsertLeadStrategy().sync(adapter, _lead()))
 
 
-def test_hubspot_search_hit_adds_a_note_and_does_not_create_a_lead():
-    calls = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = _path(request)
-        calls.append((request.method, path))
-        assert request.headers["authorization"] == "Bearer access-token"
-        if request.method == "POST" and path == "/crm/v3/objects/contacts/search":
-            return httpx.Response(200, json={"results": [{"id": "10"}]})
-        if request.method == "GET" and path == "/crm/v4/objects/contacts/10/associations/leads":
-            return httpx.Response(200, json={"results": [{"toObjectId": 20}]})
-        if request.method == "POST" and path == "/crm/v3/objects/notes":
-            body = json.loads(request.content)
-            assert "pricing" in body["properties"]["hs_note_body"]
-            return httpx.Response(201, json={"id": "30"})
-        if request.method == "PUT" and path == "/crm/v4/objects/notes/30/associations/default/leads/20":
-            return httpx.Response(200, json={"status": "COMPLETE"})
-        raise AssertionError(f"unexpected {request.method} {path}")
-
-    adapter = HubSpotCrmAdapter(StaticToken(), client_factory=_client(handler))
-    _run(UpsertLeadStrategy().sync(adapter, _lead()))
-    assert ("POST", "/crm/v3/objects/leads") not in calls
-    assert ("POST", "/crm/v3/objects/contacts") not in calls
-
-
-def test_hubspot_search_miss_creates_contact_lead_and_note():
-    calls = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = _path(request)
-        calls.append((request.method, path))
-        if request.method == "POST" and path == "/crm/v3/objects/contacts/search":
-            return httpx.Response(200, json={"total": 0, "results": []})
-        if request.method == "POST" and path == "/crm/v3/objects/contacts":
-            body = json.loads(request.content)
-            assert body["properties"]["email"] == "ada@example.com"
-            assert body["properties"]["firstname"] == "Ada"
-            assert body["properties"]["lastname"] == "Lovelace"
-            return httpx.Response(201, json={"id": "10"})
-        if request.method == "GET" and path == "/crm/v4/objects/contacts/10/associations/leads":
-            return httpx.Response(200, json={"results": []})
-        if request.method == "POST" and path == "/crm/v3/objects/leads":
-            body = json.loads(request.content)
-            assert body["properties"]["hs_lead_name"] == "Ada Lovelace"
-            assert body["associations"][0]["types"][0]["associationTypeId"] == 578
-            assert body["associations"][0]["to"]["id"] == "10"
-            return httpx.Response(201, json={"id": "20"})
-        if request.method == "POST" and path == "/crm/v3/objects/notes":
-            assert "pricing" in json.loads(request.content)["properties"]["hs_note_body"]
-            return httpx.Response(201, json={"id": "30"})
-        if request.method == "PUT" and path == "/crm/v4/objects/notes/30/associations/default/leads/20":
-            return httpx.Response(200, json={})
-        raise AssertionError(f"unexpected {request.method} {path}")
-
-    adapter = HubSpotCrmAdapter(StaticToken(), client_factory=_client(handler))
-    _run(UpsertLeadStrategy().sync(adapter, _lead()))
-    assert ("POST", "/crm/v3/objects/contacts") in calls
-    assert ("POST", "/crm/v3/objects/leads") in calls
-    assert ("POST", "/crm/v3/objects/notes") in calls
-
-
 def test_proxy_refreshes_a_due_zoho_token_and_keeps_the_refresh_token():
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url).startswith("https://accounts.zoho.com/oauth/v2/token")
@@ -272,24 +209,25 @@ def test_proxy_uses_issued_at_when_expires_at_is_missing():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("a token issued just now is not due")
 
-    oauth = HubSpotOAuth(client_factory=_client(handler))
+    oauth = ZohoOAuth(client_factory=_client(handler))
     fresh = ScriptedSource(
         _record(expires_at=None, issued_at=datetime.utcnow(), expires_in=3600),
         lambda refresh_token: oauth.refresh(
             client_id="cid", client_secret="sec", refresh_token=refresh_token,
+            accounts_server="https://accounts.zoho.com",
         ),
     )
     assert _run(RefreshingTokenProxy("conn-issued-fresh", fresh).access_token()) == "still-good"
 
     def refresh_handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://api.hubapi.com/oauth/v3/token"
+        assert str(request.url).startswith("https://accounts.zoho.com/oauth/v2/token")
         return httpx.Response(200, json={
             "access_token": "rotated-access",
             "refresh_token": "rotated-refresh",
-            "expires_in": 1800,
+            "expires_in": 3600,
         })
 
-    oauth = HubSpotOAuth(client_factory=_client(refresh_handler))
+    oauth = ZohoOAuth(client_factory=_client(refresh_handler))
     due = ScriptedSource(
         _record(
             access_token="old-access",
@@ -299,6 +237,7 @@ def test_proxy_uses_issued_at_when_expires_at_is_missing():
         ),
         lambda refresh_token: oauth.refresh(
             client_id="cid", client_secret="sec", refresh_token=refresh_token,
+            accounts_server="https://accounts.zoho.com",
         ),
     )
     token = _run(RefreshingTokenProxy("conn-issued-due", due).access_token())
@@ -327,18 +266,6 @@ def test_authorize_urls_carry_the_documented_scopes_and_zoho_offline_access(monk
     assert set(query["scope"][0].split(",")) == set(ZOHO_SCOPES)
     assert "client_secret" not in zoho
 
-    hubspot = HubSpotOAuth().authorize_url(
-        client_id="cid",
-        redirect_uri=oauth_redirect_uri("hubspot"),
-        state="signed-state",
-    )
-    parsed = urlsplit(hubspot)
-    assert parsed.netloc == "app.hubspot.com"
-    assert parsed.path == "/oauth/authorize"
-    query = parse_qs(parsed.query)
-    assert query["redirect_uri"] == ["https://crm.example.com/crm/hubspot/oauth/callback"]
-    assert set(query["scope"][0].split()) == set(HUBSPOT_SCOPES)
-
 
 def test_app_base_url_is_the_redirect_when_public_base_url_is_unset(monkeypatch):
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
@@ -358,28 +285,14 @@ def test_code_exchange_posts_the_fixed_redirect(monkeypatch):
             "api_domain": "https://www.zohoapis.com",
         })
 
-    def hubspot_handler(request: httpx.Request) -> httpx.Response:
-        seen["hubspot_url"] = str(request.url)
-        seen["hubspot_body"] = request.content.decode()
-        return httpx.Response(200, json={
-            "access_token": "a", "refresh_token": "r", "expires_in": 1800, "hub_id": 42,
-        })
-
     zoho = _run(ZohoOAuth(client_factory=_client(zoho_handler)).exchange(
         client_id="cid", client_secret="sec", code="the-code",
         redirect_uri=oauth_redirect_uri("zoho"), accounts_server="https://accounts.zoho.com",
     ))
-    hubspot = _run(HubSpotOAuth(client_factory=_client(hubspot_handler)).exchange(
-        client_id="cid", client_secret="sec", code="the-code",
-        redirect_uri=oauth_redirect_uri("hubspot"),
-    ))
-    assert zoho.refresh_token == "r" and hubspot.hub_id == "42"
+    assert zoho.refresh_token == "r"
     assert seen["zoho_url"].startswith("https://accounts.zoho.com/oauth/v2/token")
-    assert seen["hubspot_url"] == "https://api.hubapi.com/oauth/v3/token"
     assert "redirect_uri=https%3A%2F%2Fcrm.example.com%2Fcrm%2Fzoho%2Foauth%2Fcallback" in seen["zoho_body"]
-    assert "redirect_uri=https%3A%2F%2Fcrm.example.com%2Fcrm%2Fhubspot%2Foauth%2Fcallback" in seen["hubspot_body"]
     assert "grant_type=authorization_code" in seen["zoho_body"]
-    assert "grant_type=authorization_code" in seen["hubspot_body"]
 
 
 def test_zoho_hosts_are_allowlisted():
@@ -404,8 +317,8 @@ def test_factory_is_a_singleton_and_refuses_zoho_without_an_api_domain():
     assert CrmProviderFactory.instance() is CrmProviderFactory.instance()
     with pytest.raises(CrmError):
         CrmProviderFactory().build(SimpleNamespace(id="1", provider="zoho", api_domain=None))
-    built = CrmProviderFactory().build(SimpleNamespace(id="1", provider="hubspot"))
-    assert isinstance(built, HubSpotCrmAdapter)
+    with pytest.raises(CrmError):
+        CrmProviderFactory().build(SimpleNamespace(id="1", provider="hubspot", api_domain=None))
 
 
 def test_widget_and_slot_captures_need_an_email():
@@ -439,8 +352,8 @@ def test_saved_secret_is_write_only_and_saving_again_clears_tokens(isolated_db):
     from models.crm_connections import CrmConnections, to_public
 
     bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
-    CrmConnections.upsert_credentials(bot.id, "hubspot", "cid", "super-secret", None)
-    row = CrmConnections.get(bot.id, "hubspot")
+    CrmConnections.upsert_credentials(bot.id, "salesforce", "cid", "super-secret", None)
+    row = CrmConnections.get(bot.id, "salesforce")
     assert decrypt(row.client_secret_encrypted) == "super-secret"
     public = to_public(row)
     assert public["has_secret"] is True
@@ -454,8 +367,8 @@ def test_saved_secret_is_write_only_and_saving_again_clears_tokens(isolated_db):
         expires_in=1800, expires_at=now + timedelta(seconds=1800),
     )
     assert CrmConnections.has_syncable(bot.id) is True
-    CrmConnections.upsert_credentials(bot.id, "hubspot", "cid", None, None)
-    cleared = CrmConnections.get(bot.id, "hubspot")
+    CrmConnections.upsert_credentials(bot.id, "salesforce", "cid", None, None)
+    cleared = CrmConnections.get(bot.id, "salesforce")
     assert cleared.status == "pending"
     assert cleared.access_token_encrypted is None
     assert cleared.refresh_token_encrypted is None
@@ -466,11 +379,11 @@ def test_saved_secret_is_write_only_and_saving_again_clears_tokens(isolated_db):
         expires_in=1800, expires_at=now + timedelta(seconds=1800),
     )
     CrmConnections.record_error(cleared.id, "zoho 401")
-    failed = CrmConnections.get(bot.id, "hubspot")
+    failed = CrmConnections.get(bot.id, "salesforce")
     assert failed.status == "error"
     assert failed.refresh_token_encrypted
     CrmConnections.mark_synced(cleared.id)
-    restored = CrmConnections.get(bot.id, "hubspot")
+    restored = CrmConnections.get(bot.id, "salesforce")
     assert restored.status == "connected"
     assert restored.last_error is None
     with pytest.raises(ValueError):
@@ -495,8 +408,8 @@ def test_form_crm_selection_parses_and_fails_closed():
 
     assert selected_providers(None) is None  # never chosen: every connected CRM
     assert selected_providers([]) == ()
-    assert selected_providers(["HubSpot", "zoho", "hubspot", "pipedrive"]) == ("hubspot", "zoho")
-    assert selected_providers("zoho, hubspot") == ("zoho", "hubspot")
+    assert selected_providers(["Salesforce", "zoho", "salesforce", "pipedrive"]) == ("salesforce", "zoho")
+    assert selected_providers("zoho, salesforce") == ("zoho", "salesforce")
     assert selected_providers({"zoho": True}) == ()
     assert selected_providers(42) == ()
 
@@ -510,7 +423,7 @@ def _connect(bot_id: str, provider: str) -> None:
     CrmConnections.save_tokens(
         row_id, access_token="access", refresh_token="refresh", issued_at=now,
         expires_in=1800, expires_at=now + timedelta(seconds=1800),
-        api_domain="https://www.zohoapis.com" if provider == "zoho" else None,
+        api_domain="https://www.zohoapis.com" if provider == "zoho" else "https://acme.my.salesforce.com",
     )
 
 
@@ -520,17 +433,17 @@ def test_syncable_connections_follow_the_form_selection(isolated_db):
 
     bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
     _connect(bot.id, "zoho")
-    _connect(bot.id, "hubspot")
+    _connect(bot.id, "salesforce")
 
     def providers(selection):
         return sorted(row.provider for row in CrmConnections.list_syncable(bot.id, selection))
 
-    assert providers(None) == ["hubspot", "zoho"]
-    assert providers(("hubspot",)) == ["hubspot"]
+    assert providers(None) == ["salesforce", "zoho"]
+    assert providers(("salesforce",)) == ["salesforce"]
     assert providers(("zoho",)) == ["zoho"]
     assert providers(()) == []
     assert CrmConnections.has_syncable(bot.id, ()) is False
-    assert CrmConnections.has_syncable(bot.id, ("hubspot",)) is True
+    assert CrmConnections.has_syncable(bot.id, ("salesforce",)) is True
 
 
 def test_facade_only_syncs_the_selected_crms(isolated_db):
@@ -539,7 +452,7 @@ def test_facade_only_syncs_the_selected_crms(isolated_db):
 
     bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
     _connect(bot.id, "zoho")
-    _connect(bot.id, "hubspot")
+    _connect(bot.id, "salesforce")
 
     built = []
 
@@ -553,11 +466,11 @@ def test_facade_only_syncs_the_selected_crms(isolated_db):
             return None
 
     facade = LeadSyncFacade(factory=Factory(), strategy=Strategy())
-    _run(facade.sync_bot(bot.id, _lead(), ("hubspot",)))
-    assert built == ["hubspot"]
+    _run(facade.sync_bot(bot.id, _lead(), ("salesforce",)))
+    assert built == ["salesforce"]
     built.clear()
     _run(facade.sync_bot(bot.id, _lead()))
-    assert sorted(built) == ["hubspot", "zoho"]
+    assert sorted(built) == ["salesforce", "zoho"]
 
 
 def test_widget_reads_the_form_crm_selection_and_keeps_it_private(monkeypatch):
@@ -565,7 +478,7 @@ def test_widget_reads_the_form_crm_selection_and_keeps_it_private(monkeypatch):
 
     forms = [
         {"Demo": {"form_schema": {"id": "demo_form", "name": "Demo"},
-                  "trigger": {"crm_providers": ["hubspot"]}}},
+                  "trigger": {"crm_providers": ["salesforce"]}}},
         {"Callback": {"form_schema": {"id": "callback"}, "trigger": {}}},
         {"Quiet": {"form_schema": {"id": "quiet"}, "trigger": {"crm_providers": []}}},
     ]
@@ -575,8 +488,8 @@ def test_widget_reads_the_form_crm_selection_and_keeps_it_private(monkeypatch):
             return {"c_forms_selected": forms}
 
     monkeypatch.setattr(widget, "get_config_for_bot", lambda _bot_id: FakeConfig())
-    assert widget._form_crm_providers("bot", "demo_form") == ("hubspot",)
-    assert widget._form_crm_providers("bot", "Demo") == ("hubspot",)
+    assert widget._form_crm_providers("bot", "demo_form") == ("salesforce",)
+    assert widget._form_crm_providers("bot", "Demo") == ("salesforce",)
     assert widget._form_crm_providers("bot", "callback") is None
     assert widget._form_crm_providers("bot", "quiet") == ()
     assert widget._form_crm_providers("bot", "not-a-form") is None
@@ -639,8 +552,20 @@ def test_salesforce_instance_and_login_hosts_are_allowlisted():
         with pytest.raises(ValueError):
             allow_salesforce_instance(bad)
     assert allow_salesforce_login("https://test.salesforce.com/") == "https://test.salesforce.com"
-    with pytest.raises(ValueError):
-        allow_salesforce_login("https://acme.my.salesforce.com")
+    # My Domain logins (Developer Edition and friends) are accepted too.
+    assert allow_salesforce_login("https://acme.my.salesforce.com") == "https://acme.my.salesforce.com"
+    assert allow_salesforce_login("https://acme-dev-ed.develop.my.salesforce.com/") == "https://acme-dev-ed.develop.my.salesforce.com"
+    for bad in (
+        "https://na42.salesforce.com",
+        "https://acme.lightning.force.com",
+        "https://acme.evil.my.salesforce.com",
+        "https://a.b.develop.my.salesforce.com",
+        "https://my.salesforce.com",
+        "https://acme.my.salesforce.com/services/oauth2/token",
+        "https://acme.my.salesforce.com?x=1",
+    ):
+        with pytest.raises(ValueError):
+            allow_salesforce_login(bad)
 
 
 def test_salesforce_authorize_url_uses_pkce_s256_and_the_documented_scopes(monkeypatch):
@@ -881,5 +806,63 @@ def test_salesforce_is_a_selectable_form_crm():
 
     assert selected_providers(["salesforce", "zoho"]) == ("salesforce", "zoho")
     info = {p["id"]: p for p in catalog()["providers"]}["salesforce"]
-    assert [d["id"] for d in info["data_centers"]] == ["production", "sandbox"]
+    assert [d["id"] for d in info["data_centers"]] == ["production", "sandbox", "developer"]
+    assert [d["login_url_required"] for d in info["data_centers"]] == [False, False, True]
     assert info["data_center_label"] == "Environment"
+    # The guide follows the External Client App form, section by section.
+    titles = [section["title"] for section in info["sections"]]
+    assert titles[:4] == ["Basic Information", "API (Enable OAuth Settings)", "Flow Enablement", "Security"]
+    api_items = " ".join(info["sections"][1]["items"])
+    assert "Manage user data via APIs (api)" in api_items
+    assert "Perform requests at any time (refresh_token, offline_access)" in api_items
+    assert {p["id"] for p in catalog()["providers"]} == {"zoho", "salesforce"}
+
+
+def test_salesforce_developer_edition_saves_its_my_domain_login(isolated_db):
+    from models.bots import Bots
+    from models.crm_connections import CrmConnections, to_public
+
+    bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
+    with pytest.raises(ValueError):
+        CrmConnections.upsert_credentials(bot.id, "salesforce", "cid", "sec", "developer")
+    with pytest.raises(ValueError):
+        CrmConnections.upsert_credentials(
+            bot.id, "salesforce", "cid", "sec", "developer", "https://evil.example"
+        )
+    CrmConnections.upsert_credentials(
+        bot.id, "salesforce", "cid", "sec", "developer", "https://Acme-Dev-Ed.develop.my.salesforce.com/"
+    )
+    row = CrmConnections.get(bot.id, "salesforce")
+    assert row.data_center == "developer"
+    assert row.accounts_server == "https://acme-dev-ed.develop.my.salesforce.com"
+    assert to_public(row)["login_url"] == "https://acme-dev-ed.develop.my.salesforce.com"
+
+    from crm.oauth import SalesforceOAuth
+
+    url = SalesforceOAuth().authorize_url(
+        client_id="cid", redirect_uri="https://bots.example.com/crm/salesforce/oauth/callback",
+        state="s", accounts_server=row.accounts_server, code_challenge="c",
+    )
+    assert url.startswith("https://acme-dev-ed.develop.my.salesforce.com/services/oauth2/authorize?")
+    # Production ignores a pasted URL.
+    CrmConnections.upsert_credentials(
+        bot.id, "salesforce", "cid", None, "production", "https://acme-dev-ed.develop.my.salesforce.com"
+    )
+    assert CrmConnections.get(bot.id, "salesforce").accounts_server == "https://login.salesforce.com"
+
+
+def test_a_leftover_hubspot_row_is_not_listed_or_synced(isolated_db):
+    from models.bots import Bots
+    from models.crm_connections import CrmConnection, CrmConnections
+
+    bot = Bots.insert(id=f"bot-{uuid.uuid4().hex[:8]}", slug=f"crm-{uuid.uuid4().hex[:8]}", name="CRM")
+    now = datetime.utcnow()
+    # A row saved before HubSpot was removed.
+    CrmConnection.create(
+        id=str(uuid.uuid4()), bot_id=bot.id, provider="hubspot", status="connected",
+        client_id="cid", refresh_token_encrypted="sealed", created_at=now, updated_at=now,
+    )
+    assert CrmConnections.list_for_bot(bot.id) == []
+    assert CrmConnections.has_syncable(bot.id) is False
+    with pytest.raises(ValueError):
+        CrmConnections.upsert_credentials(bot.id, "hubspot", "cid", "sec", None)

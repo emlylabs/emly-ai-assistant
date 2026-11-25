@@ -1,4 +1,4 @@
-"""Outbound HTTP for Zoho CRM and HubSpot.
+"""Outbound HTTP for Zoho CRM and Salesforce.
 
 This is the only module in ``crm`` that imports a network client, so the
 outbound-connection review has one place to look.

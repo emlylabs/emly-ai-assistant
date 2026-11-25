@@ -647,7 +647,6 @@ function FormSubEditor({
 
 const CRM_NAMES: Record<string, string> = {
   zoho: "Zoho CRM",
-  hubspot: "HubSpot",
   salesforce: "Salesforce",
 };
 
@@ -696,7 +695,7 @@ function CrmSubEditor({
         </div>
       ) : shown.length === 0 ? (
         <div className="muted" style={{ fontSize: 12 }}>
-          No CRM is connected. <a href={crmPage}>Connect Zoho CRM, HubSpot or Salesforce</a> to send
+          No CRM is connected. <a href={crmPage}>Connect Zoho CRM or Salesforce</a> to send
           this form&apos;s leads there.
         </div>
       ) : (

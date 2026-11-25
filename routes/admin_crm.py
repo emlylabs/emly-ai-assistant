@@ -1,4 +1,4 @@
-"""Admin setup for a bot's Zoho CRM, HubSpot and Salesforce connections.
+"""Admin setup for a bot's Zoho CRM and Salesforce connections.
 
 The admin pastes their own client id and secret. The redirect URL is
 computed here and shown on the CRM page; it is not something they type,
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from channels.auth.state import issue, validate_redirect_to
-from crm.oauth import HubSpotOAuth, SalesforceOAuth, ZohoOAuth, pkce_pair
+from crm.oauth import SalesforceOAuth, ZohoOAuth, pkce_pair
 from crm.providers import PROVIDERS, catalog, oauth_redirect_uri
 from models.admin_users import AdminUserModel
 from models.crm_connections import CrmConnections, to_public
@@ -29,6 +29,8 @@ class SaveCrmCredentials(BaseModel):
     client_id: str = Field(min_length=1, max_length=512)
     client_secret: str | None = Field(default=None, max_length=2048)
     data_center: str | None = Field(default=None, max_length=16)
+    # Salesforce Developer Edition: the org's My Domain URL.
+    login_url: str | None = Field(default=None, max_length=255)
 
 
 def _provider(provider: str) -> str:
@@ -60,7 +62,7 @@ def save_crm(
     bot = _resolve_bot_for_admin(slug, admin, allowed_roles=WRITE_ROLES)
     try:
         CrmConnections.upsert_credentials(
-            bot.id, provider, body.client_id, body.client_secret, body.data_center
+            bot.id, provider, body.client_id, body.client_secret, body.data_center, body.login_url
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -110,7 +112,7 @@ def start_crm_oauth(slug: str, provider: str, admin: AdminUserModel = Depends(ge
             )
         elif provider == "salesforce":
             if not row.accounts_server:
-                raise HTTPException(status_code=400, detail="Choose Production or Sandbox and save it")
+                raise HTTPException(status_code=400, detail="Choose a Salesforce environment and save it")
             url = SalesforceOAuth().authorize_url(
                 client_id=row.client_id,
                 redirect_uri=redirect_uri,
@@ -119,11 +121,7 @@ def start_crm_oauth(slug: str, provider: str, admin: AdminUserModel = Depends(ge
                 code_challenge=challenge,
             )
         else:
-            url = HubSpotOAuth().authorize_url(
-                client_id=row.client_id,
-                redirect_uri=redirect_uri,
-                state=state,
-            )
+            raise HTTPException(status_code=404, detail="unknown CRM")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     log.info("crm oauth start provider=%s bot=%s", provider, bot.id)

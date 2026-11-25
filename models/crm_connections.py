@@ -1,4 +1,4 @@
-"""One Zoho, HubSpot or Salesforce connection per bot.
+"""One Zoho CRM or Salesforce connection per bot.
 
 The client secret, access token and refresh token are Fernet-sealed.
 Everything else is plain so the admin page can show status and expiry
@@ -28,7 +28,7 @@ class CrmConnection(Model):
     data_center = CharField(max_length=16, null=True)
     accounts_server = CharField(max_length=255, null=True)
     api_domain = CharField(max_length=255, null=True)
-    hub_id = CharField(max_length=64, null=True)
+    hub_id = CharField(max_length=64, null=True)  # HubSpot only; HubSpot was removed
     scopes = TextField(null=True)
     access_token_encrypted = TextField(null=True)
     refresh_token_encrypted = TextField(null=True)
@@ -69,7 +69,8 @@ def to_public(row: CrmConnection) -> dict:
         "expires_at": _iso(row.expires_at),
         "token_issued_at": _iso(row.token_issued_at),
         "expires_in": row.expires_in,
-        "hub_id": row.hub_id,
+        # Salesforce: the login origin, so the page can show a saved My Domain URL.
+        "login_url": row.accounts_server if row.provider == "salesforce" else None,
         "scopes": row.scopes,
         "last_error": row.last_error,
         "api_domain": row.api_domain,
@@ -87,9 +88,11 @@ class CrmConnectionsTable:
         )
 
     def list_for_bot(self, bot_id: str) -> list:
+        # Rows for a CRM this app no longer supports (HubSpot) stay in the
+        # table but are not listed or synced.
         return list(
             CrmConnection.select()
-            .where(CrmConnection.bot_id == bot_id)
+            .where((CrmConnection.bot_id == bot_id) & CrmConnection.provider.in_(list(PROVIDERS)))
             .order_by(CrmConnection.provider)
         )
 
@@ -97,6 +100,7 @@ class CrmConnectionsTable:
         """Connections a lead can go to. ``providers`` narrows them; ``None`` is all."""
         where = (
             (CrmConnection.bot_id == bot_id)
+            & CrmConnection.provider.in_(list(PROVIDERS))
             & (CrmConnection.status.in_(("connected", "error")))
             & (CrmConnection.refresh_token_encrypted.is_null(False))
             & (CrmConnection.refresh_token_encrypted != "")
@@ -122,8 +126,12 @@ class CrmConnectionsTable:
         client_id: str,
         client_secret: Optional[str],
         data_center: Optional[str],
+        login_url: Optional[str] = None,
     ) -> str:
-        """Save the app credentials and drop any tokens. The admin connects again after this."""
+        """Save the app credentials and drop any tokens. The admin connects again after this.
+
+        ``login_url`` is only read for a Salesforce Developer Edition org: its My Domain URL.
+        """
         if provider not in PROVIDERS:
             raise ValueError("unknown CRM")
         client_id = _credential(client_id, "client id", 512)
@@ -140,9 +148,10 @@ class CrmConnectionsTable:
             center = (data_center or "").strip().lower()
             accounts = zoho_accounts_server(center)
         elif provider == "salesforce":
-            # ``data_center`` holds the environment; the login host follows from it.
+            # ``data_center`` holds the environment; the login host follows from
+            # it, or for Developer Edition is the org's My Domain URL.
             center = (data_center or "production").strip().lower()
-            accounts = salesforce_login_server(center)
+            accounts = salesforce_login_server(center, login_url)
         now = datetime.utcnow()
         fields = {
             "client_id": client_id,
@@ -180,7 +189,6 @@ class CrmConnectionsTable:
         expires_in: int,
         expires_at: datetime,
         api_domain: Optional[str] = None,
-        hub_id: Optional[str] = None,
         scopes: Optional[str] = None,
         accounts_server: Optional[str] = None,
         data_center: Optional[str] = None,
@@ -199,8 +207,6 @@ class CrmConnectionsTable:
         }
         if api_domain:
             fields["api_domain"] = api_domain
-        if hub_id:
-            fields["hub_id"] = str(hub_id)[:64]
         if scopes:
             fields["scopes"] = scopes
         if accounts_server:

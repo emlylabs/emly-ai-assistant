@@ -8,7 +8,7 @@ import { ApiError, CrmCatalog, CrmConnection, CrmProviderInfo, api } from "@/lib
 const CRM_ERRORS: Record<string, string> = {
   denied: "The provider did not grant access. Start the connection again.",
   exchange:
-    "The authorization code could not be exchanged. Check the client id, secret, data center, and that the redirect URL matches.",
+    "The authorization code could not be exchanged. Check the client id, secret, data center or environment, and that the redirect URL matches.",
   state: "That connection attempt expired. Start it again.",
   missing: "Save a client id and client secret before connecting.",
 };
@@ -25,8 +25,26 @@ const ZOHO_AUTH_HOSTS = new Set([
 ]);
 
 const SALESFORCE_AUTH_HOSTS = new Set(["login.salesforce.com", "test.salesforce.com"]);
+// A My Domain login host, as crm/providers.py allows it.
+const SALESFORCE_MY_DOMAIN =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.(?:develop|sandbox|scratch|trailblaze))?\.my\.salesforce\.com$/;
 
-type Draft = { clientId: string; secret: string; dataCenter: string };
+type Draft = { clientId: string; secret: string; dataCenter: string; loginUrl: string };
+
+function needsLoginUrl(provider: CrmProviderInfo, dataCenter: string): boolean {
+  return Boolean(provider.data_centers.find((c) => c.id === dataCenter)?.login_url_required);
+}
+
+function draftFor(provider: CrmProviderInfo, row: CrmConnection | undefined, prev?: Draft): Draft {
+  const dataCenter = row?.data_center || prev?.dataCenter || provider.data_centers[0]?.id || "us";
+  return {
+    clientId: row?.client_id || prev?.clientId || "",
+    secret: "",
+    dataCenter,
+    // Only a My Domain choice has a URL worth showing back.
+    loginUrl: needsLoginUrl(provider, dataCenter) ? row?.login_url || prev?.loginUrl || "" : prev?.loginUrl || "",
+  };
+}
 
 function formatWhen(iso: string | null): string {
   if (!iso) return "";
@@ -39,8 +57,9 @@ function isAuthorizeUrl(provider: string, url: string): boolean {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") return false;
-    if (provider === "hubspot") return parsed.host === "app.hubspot.com";
-    if (provider === "salesforce") return SALESFORCE_AUTH_HOSTS.has(parsed.hostname);
+    if (provider === "salesforce") {
+      return SALESFORCE_AUTH_HOSTS.has(parsed.hostname) || SALESFORCE_MY_DOMAIN.test(parsed.hostname);
+    }
     return ZOHO_AUTH_HOSTS.has(parsed.hostname);
   } catch {
     return false;
@@ -101,11 +120,7 @@ export default function BotCrmPage() {
           const next = { ...prev };
           for (const provider of nextCatalog.providers) {
             const row = nextConnections.find((item) => item.provider === provider.id);
-            next[provider.id] = {
-              clientId: row?.client_id || prev[provider.id]?.clientId || "",
-              secret: "",
-              dataCenter: row?.data_center || prev[provider.id]?.dataCenter || provider.data_centers[0]?.id || "us",
-            };
+            next[provider.id] = draftFor(provider, row, prev[provider.id]);
           }
           return next;
         });
@@ -135,7 +150,7 @@ export default function BotCrmPage() {
   function updateDraft(provider: string, patch: Partial<Draft>) {
     setDrafts((prev) => ({
       ...prev,
-      [provider]: { ...(prev[provider] || { clientId: "", secret: "", dataCenter: "us" }), ...patch },
+      [provider]: { ...(prev[provider] || { clientId: "", secret: "", dataCenter: "us", loginUrl: "" }), ...patch },
     }));
   }
 
@@ -150,11 +165,7 @@ export default function BotCrmPage() {
       const next = { ...prev };
       for (const provider of nextCatalog.providers) {
         const row = nextConnections.find((item) => item.provider === provider.id);
-        next[provider.id] = {
-          clientId: row?.client_id || "",
-          secret: "",
-          dataCenter: row?.data_center || provider.data_centers[0]?.id || "us",
-        };
+        next[provider.id] = draftFor(provider, row);
       }
       return next;
     });
@@ -171,6 +182,7 @@ export default function BotCrmPage() {
         client_id: draft.clientId.trim(),
         client_secret: draft.secret.trim() || undefined,
         data_center: provider.data_centers.length > 0 ? draft.dataCenter : undefined,
+        login_url: needsLoginUrl(provider, draft.dataCenter) ? draft.loginUrl.trim() : undefined,
       });
       await reload();
       setBannerOk(true);
@@ -225,7 +237,7 @@ export default function BotCrmPage() {
         <div>
           <h1>CRM</h1>
           <p className="muted" style={{ margin: "4px 0 0" }}>
-            Connect Zoho CRM, HubSpot or Salesforce with your own app. When a visitor leaves an email, that
+            Connect Zoho CRM or Salesforce with your own app. When a visitor leaves an email, that
             lead is created, or the new capture is added to the lead that already has the email.
           </p>
         </div>
@@ -251,16 +263,14 @@ export default function BotCrmPage() {
 
       {catalog?.providers.map((provider) => {
         const row = connections.find((item) => item.provider === provider.id) || null;
-        const draft = drafts[provider.id] || {
-          clientId: row?.client_id || "",
-          secret: "",
-          dataCenter: row?.data_center || provider.data_centers[0]?.id || "us",
-        };
+        const draft = drafts[provider.id] || draftFor(provider, row ?? undefined);
         const savedId = row?.client_id || "";
+        const wantsLoginUrl = needsLoginUrl(provider, draft.dataCenter);
         const dirty =
           draft.clientId.trim() !== savedId ||
           draft.secret.trim() !== "" ||
-          (provider.data_centers.length > 0 && draft.dataCenter !== (row?.data_center || ""));
+          (provider.data_centers.length > 0 && draft.dataCenter !== (row?.data_center || "")) ||
+          (wantsLoginUrl && draft.loginUrl.trim().replace(/\/+$/, "").toLowerCase() !== (row?.login_url || ""));
         const locked = !writable || busy === provider.id;
         return (
           <section className="card" key={provider.id} style={{ marginBottom: 16 }}>
@@ -272,11 +282,26 @@ export default function BotCrmPage() {
                 ))}
               </ul>
             )}
-            <ol>
-              {provider.steps.map((step) => (
-                <li key={step}>{step}</li>
-              ))}
-            </ol>
+            {provider.sections && provider.sections.length > 0 ? (
+              <ol>
+                {provider.sections.map((section) => (
+                  <li key={section.title} style={{ marginBottom: 8 }}>
+                    <strong>{section.title}</strong>
+                    <ul style={{ marginTop: 4 }}>
+                      {section.items.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <ol>
+                {provider.steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            )}
 
             <div className="field">
               <label htmlFor={`${provider.id}-redirect`}>Redirect URL</label>
@@ -322,10 +347,29 @@ export default function BotCrmPage() {
                   >
                     {provider.data_centers.map((center) => (
                       <option key={center.id} value={center.id}>
-                        {center.label} ({center.accounts_host.replace("https://", "")})
+                        {center.label}
+                        {center.accounts_host ? ` (${center.accounts_host.replace("https://", "")})` : ""}
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+              {wantsLoginUrl && (
+                <div className="field">
+                  <label htmlFor={`${provider.id}-login`}>My Domain URL</label>
+                  <input
+                    id={`${provider.id}-login`}
+                    type="url"
+                    value={draft.loginUrl}
+                    autoComplete="off"
+                    disabled={locked}
+                    placeholder="https://yourorg-dev-ed.develop.my.salesforce.com"
+                    onChange={(event) => updateDraft(provider.id, { loginUrl: event.target.value })}
+                  />
+                  <p className="muted">
+                    Setup &gt; My Domain shows it. Sign-in for this org goes to this address instead of
+                    login.salesforce.com.
+                  </p>
                 </div>
               )}
               <div className="field">
@@ -342,7 +386,10 @@ export default function BotCrmPage() {
                 <p className="muted">Write-only. The saved secret is never shown again.</p>
               </div>
               <div className="row">
-                <button type="submit" disabled={locked || !draft.clientId.trim()}>
+                <button
+                  type="submit"
+                  disabled={locked || !draft.clientId.trim() || (wantsLoginUrl && !draft.loginUrl.trim())}
+                >
                   Save
                 </button>
                 <button
@@ -384,7 +431,6 @@ function Status({ row }: { row: CrmConnection | null }) {
         <p>
           {row.status === "connected" ? "Connected." : "The last sync failed."}{" "}
           {row.expires_at ? `Access token expires ${formatWhen(row.expires_at)}. It refreshes automatically a minute before then.` : ""}
-          {row.hub_id ? ` Hub ${row.hub_id}.` : ""}
           {row.api_domain ? ` API ${row.api_domain.replace("https://", "")}.` : ""}
         </p>
         {row.last_error && (

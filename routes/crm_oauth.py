@@ -1,4 +1,4 @@
-"""Browser redirect target for Zoho, HubSpot and Salesforce.
+"""Browser redirect target for Zoho CRM and Salesforce.
 
 Unauthenticated on purpose: the provider's browser redirect does not carry
 the admin session. The signed ``state`` is the credential, same as the
@@ -18,7 +18,7 @@ from fastapi.responses import RedirectResponse
 
 from channels.auth.state import verify
 from crm.contracts import CrmAuthError
-from crm.oauth import HubSpotOAuth, SalesforceOAuth, ZohoOAuth
+from crm.oauth import SalesforceOAuth, ZohoOAuth
 from crm.providers import (
     PROVIDERS,
     allow_salesforce_login,
@@ -117,18 +117,9 @@ async def crm_oauth_callback(
             api_domain = grant.api_domain
             data_center = None
         else:
-            accounts = None
-            api_domain = None
-            data_center = None
-            grant = await HubSpotOAuth().exchange(
-                client_id=row.client_id,
-                client_secret=secret,
-                code=code,
-                redirect_uri=redirect_uri,
-            )
+            raise CrmAuthError("unknown CRM")
         if not grant.refresh_token:
             raise CrmAuthError("no refresh token")
-        hub_id = grant.hub_id if grant.hub_id and grant.hub_id.isdigit() else None
         now = datetime.utcnow()
         CrmConnections.save_tokens(
             row.id,
@@ -138,7 +129,6 @@ async def crm_oauth_callback(
             expires_in=grant.expires_in,
             expires_at=now + timedelta(seconds=grant.expires_in),
             api_domain=api_domain,
-            hub_id=hub_id,
             scopes=grant.scopes or scope_string(provider),
             accounts_server=accounts,
             data_center=data_center,

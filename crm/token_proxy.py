@@ -2,8 +2,9 @@
 
 Adapters ask for ``access_token()``. When ``now >= expires_at - 60s`` this
 refreshes, stores the new access token and expiry, and stores a rotated
-refresh token when the provider returned one. Zoho usually does not, and
-the previous refresh token is kept.
+refresh token when the provider returned one. Salesforce returns one on
+every refresh (rotation is required for External Client Apps); Zoho
+usually does not, and the previous refresh token is kept.
 """
 from __future__ import annotations
 
@@ -27,8 +28,8 @@ _LOCKS_GUARD = threading.Lock()
 def _connection_lock(connection_id: str) -> threading.Lock:
     """One refresh at a time per connection, across lead-sync threads.
 
-    HubSpot invalidates the previous refresh token when it issues a new one.
-    Two overlapping refreshes would save the loser and then fail forever.
+    Salesforce invalidates the previous refresh token when it issues a new
+    one. Two overlapping refreshes would save the loser and then fail forever.
     """
     with _LOCKS_GUARD:
         lock = _LOCKS.get(connection_id)
@@ -46,7 +47,6 @@ class TokenRecord:
     expires_in: int
     expires_at: Optional[datetime]
     api_domain: Optional[str] = None
-    hub_id: Optional[str] = None
     scopes: Optional[str] = None
 
 
@@ -101,7 +101,7 @@ class RefreshingTokenProxy:
     async def access_token(self) -> str:
         # Held across the refresh HTTP call on purpose: each lead sync runs
         # in its own thread, and this lock stops a second thread refreshing
-        # the same HubSpot connection at the same time.
+        # the same Salesforce connection at the same time.
         with _connection_lock(self._connection_id):
             record = await self._source.load()
             if not token_is_due(record):
@@ -161,7 +161,6 @@ class ConnectionTokenSource(TokenSource):
             expires_in=row.expires_in or 0,
             expires_at=row.expires_at,
             api_domain=row.api_domain,
-            hub_id=row.hub_id,
             scopes=row.scopes,
         )
 
@@ -183,7 +182,11 @@ class ConnectionTokenSource(TokenSource):
                 accounts_server=row.accounts_server,
             )
         except CrmAuthError as exc:
-            CrmConnections.record_error(row.id, str(exc))
+            message = str(exc)
+            if message == "invalid_grant":
+                # Revoked, or (Salesforce) unused for 30 days. Only a new sign-in fixes it.
+                message = "The CRM no longer accepts this connection (invalid_grant). Click Connect to sign in again."
+            CrmConnections.record_error(row.id, message)
             raise
         api_domain = None
         if grant.api_domain:
@@ -200,7 +203,6 @@ class ConnectionTokenSource(TokenSource):
             expires_in=grant.expires_in,
             expires_at=now + timedelta(seconds=grant.expires_in),
             api_domain=api_domain,
-            hub_id=grant.hub_id,
             scopes=grant.scopes,
         )
 
@@ -215,6 +217,5 @@ class ConnectionTokenSource(TokenSource):
             expires_in=record.expires_in,
             expires_at=record.expires_at or datetime.utcnow(),
             api_domain=record.api_domain,
-            hub_id=record.hub_id,
             scopes=record.scopes,
         )

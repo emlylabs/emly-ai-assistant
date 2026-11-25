@@ -503,7 +503,16 @@ export type ChannelHealth = {
 export type CrmDataCenter = {
   id: string;
   label: string;
+  /** Login/accounts origin; "" when the admin supplies it (Salesforce My Domain). */
   accounts_host: string;
+  /** The admin pastes a login URL for this choice (Salesforce Developer Edition). */
+  login_url_required?: boolean;
+};
+
+/** One section of a provider's setup form, e.g. Salesforce's "Security". */
+export type CrmGuideSection = {
+  title: string;
+  items: string[];
 };
 
 export type CrmProviderInfo = {
@@ -517,6 +526,8 @@ export type CrmProviderInfo = {
   data_centers: CrmDataCenter[];
   requirements: string[];
   steps: string[];
+  /** Setup guide split by the provider form's sections. Shown instead of `steps` when present. */
+  sections?: CrmGuideSection[];
 };
 
 export type CrmCatalog = {
@@ -534,10 +545,11 @@ export type CrmConnection = {
   expires_at: string | null;
   token_issued_at: string | null;
   expires_in: number | null;
-  hub_id: string | null;
   scopes: string | null;
   last_error: string | null;
   api_domain: string | null;
+  /** Salesforce: the saved login origin (a My Domain URL for Developer Edition). */
+  login_url?: string | null;
 };
 
 export type DocumentType =
@@ -1804,7 +1816,7 @@ export const api = {
     ),
 
   // -------------------------------------------------------------------------
-  // CRM — per-bot Zoho and HubSpot. The secret is write-only.
+  // CRM — per-bot Zoho CRM and Salesforce. The secret is write-only.
   // -------------------------------------------------------------------------
   crmCatalog: () => request<CrmCatalog>("GET", "/crm/providers"),
   listCrmConnections: (slug: string) =>
@@ -1812,7 +1824,7 @@ export const api = {
   saveCrmCredentials: (
     slug: string,
     provider: string,
-    body: { client_id: string; client_secret?: string; data_center?: string }
+    body: { client_id: string; client_secret?: string; data_center?: string; login_url?: string }
   ) =>
     request<CrmConnection>(
       "PUT",
