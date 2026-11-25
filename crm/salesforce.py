@@ -5,6 +5,11 @@ when the token was issued) under a pinned API version. A Lead needs
 ``LastName`` and ``Company``; the capture has no company, so a placeholder
 is sent. Converted Leads are left alone: a new capture for that email opens
 a fresh Lead instead of editing one that sales already converted.
+
+The org's duplicate rules can refuse a create even when no open Lead has
+the email (the standard Lead rule also matches on name and company, and
+the company is always the placeholder). The refusal lists the matching
+records, so an open Lead among them gets the capture appended instead.
 """
 from __future__ import annotations
 
@@ -27,6 +32,42 @@ def soql_string(value: str) -> str:
         .replace("\t", "\\t")
     )
     return f"'{escaped}'"
+
+
+# Lets a create through a duplicate rule whose action is "Allow" (alert only).
+_ALLOW_DUPLICATE = {"Sforce-Duplicate-Rule-Header": "allowSave=true"}
+
+
+def _duplicate_matches(response) -> tuple[list[str], bool] | None:
+    """``(Lead ids, allowSave)`` from a DUPLICATES_DETECTED refusal, else None.
+
+    The refusal is a list of errors; each carries ``duplicateResult`` with
+    ``matchResults[].matchRecords[].record.Id`` per matched object type.
+    """
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if not isinstance(payload, list):
+        return None
+    for error in payload:
+        if not isinstance(error, dict) or error.get("errorCode") != "DUPLICATES_DETECTED":
+            continue
+        result = error.get("duplicateResult") or {}
+        lead_ids = []
+        for match in result.get("matchResults") or []:
+            if not isinstance(match, dict) or match.get("entityType") != "Lead":
+                continue
+            for record in match.get("matchRecords") or []:
+                raw = ((record or {}).get("record") or {}).get("Id") if isinstance(record, dict) else None
+                try:
+                    lead_id = require_salesforce_id(raw)
+                except (CrmError, ValueError):
+                    continue
+                if lead_id not in lead_ids:
+                    lead_ids.append(lead_id)
+        return lead_ids, bool(result.get("allowSave"))
+    return None
 
 
 def _error_code(response) -> str:
@@ -53,24 +94,29 @@ class SalesforceCrmAdapter(CrmProvider):
         self._api = f"{allow_salesforce_instance(api_domain)}/services/data/{SALESFORCE_API_VERSION}"
         self._client_factory = client_factory or make_client
 
-    async def _send(self, method: str, path: str, token: str, *, params=None, json_body=None):
+    async def _send(self, method: str, path: str, token: str, *, params=None, json_body=None, headers=None):
         return await send(
             self._client_factory,
             method,
             f"{self._api}{path}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json", **(headers or {})},
             params=params,
             json_body=json_body,
         )
 
-    async def _request(self, method: str, path: str, *, params=None, json_body=None):
+    async def _call(self, method: str, path: str, *, params=None, json_body=None, headers=None):
+        """The response, whatever its status, after one refresh on a 401."""
         token = await self._tokens.access_token()
-        response = await self._send(method, path, token, params=params, json_body=json_body)
+        response = await self._send(method, path, token, params=params, json_body=json_body, headers=headers)
         refresh = getattr(self._tokens, "refresh_rejected", None)
         if response.status_code == 401 and refresh is not None:
             # No expiry comes with the token. A rejected one gets one refresh.
             token = await refresh(token)
-            response = await self._send(method, path, token, params=params, json_body=json_body)
+            response = await self._send(method, path, token, params=params, json_body=json_body, headers=headers)
+        return response
+
+    async def _request(self, method: str, path: str, *, params=None, json_body=None, headers=None):
+        response = await self._call(method, path, params=params, json_body=json_body, headers=headers)
         if not 200 <= response.status_code < 300:
             raise CrmError(f"salesforce {_error_code(response)}")
         return response
@@ -100,11 +146,48 @@ class SalesforceCrmAdapter(CrmProvider):
             fields["FirstName"] = first
         if lead.phone:
             fields["Phone"] = lead.phone[:40]
-        response = await self._request("POST", "/sobjects/Lead", json_body=fields)
+        response = await self._call("POST", "/sobjects/Lead", json_body=fields)
+        if response.status_code == 400:
+            duplicate = _duplicate_matches(response)
+            if duplicate is not None:
+                return await self._on_duplicate(duplicate, fields, details)
+        if not 200 <= response.status_code < 300:
+            raise CrmError(f"salesforce {_error_code(response)}")
+        return self._created_id(response)
+
+    @staticmethod
+    def _created_id(response) -> str:
         payload = read_json(response)
         if payload.get("success") is False:
             raise CrmError("salesforce create failed")
         return require_salesforce_id(payload.get("id"))
+
+    async def _open_lead(self, lead_id: str) -> Optional[ExistingLead]:
+        """The Lead if it can still be edited (not converted), else None."""
+        response = await self._request(
+            "GET", f"/sobjects/Lead/{lead_id}", params={"fields": "Description,IsConverted"}
+        )
+        row = read_json(response)
+        if row.get("IsConverted"):
+            return None
+        return ExistingLead(id=lead_id, description=row.get("Description") or "")
+
+    async def _on_duplicate(self, duplicate: tuple[list[str], bool], fields: dict, details: str) -> str:
+        """A duplicate rule refused the create. Append to the open Lead it matched,
+        or, when the rule only alerts, create the Lead anyway."""
+        lead_ids, allow_save = duplicate
+        for lead_id in lead_ids:
+            existing = await self._open_lead(lead_id)
+            if existing is not None:
+                await self.append_details(existing, details)
+                return lead_id
+        if allow_save:
+            # The matches are converted Leads or Contacts, which we do not edit.
+            response = await self._request("POST", "/sobjects/Lead", json_body=fields, headers=_ALLOW_DUPLICATE)
+            return self._created_id(response)
+        raise CrmError(
+            "salesforce DUPLICATES_DETECTED: a duplicate rule blocks this Lead and it matches no open Lead"
+        )
 
     async def append_details(self, existing: ExistingLead, details: str) -> None:
         lead_id = require_salesforce_id(existing.id)

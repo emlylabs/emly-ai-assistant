@@ -731,6 +731,96 @@ def test_salesforce_errors_carry_the_error_code():
         _run(UpsertLeadStrategy().sync(adapter, _lead()))
 
 
+def _duplicate_refusal(entity: str, record_id: str, allow_save: bool) -> list:
+    """The REST body Salesforce returns when a duplicate rule stops a create."""
+    return [{
+        "errorCode": "DUPLICATES_DETECTED",
+        "message": "Use one of these records?",
+        "fields": [],
+        "duplicateResult": {
+            "allowSave": allow_save,
+            "duplicateRule": "Standard_Lead_Duplicate_Rule",
+            "duplicateRuleEntityType": "Lead",
+            "matchResults": [{
+                "entityType": entity,
+                "matchEngine": "FuzzyMatchEngine",
+                "rule": "Standard_Lead_Match_Rule_v1_0",
+                "size": 1,
+                "success": True,
+                "matchRecords": [{
+                    "matchConfidence": 100.0,
+                    "record": {"attributes": {"type": entity}, "Id": record_id},
+                }],
+            }],
+        },
+    }]
+
+
+def test_salesforce_duplicate_rule_match_appends_to_the_open_lead():
+    # No open Lead has this email, but the org's rule matched one on name and company.
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = _path(request)
+        calls.append((request.method, path))
+        if path.endswith("/query"):
+            return httpx.Response(200, json={"records": []})
+        if request.method == "POST" and path == f"{SF_API}/sobjects/Lead":
+            return httpx.Response(400, json=_duplicate_refusal("Lead", "00Q5g00000AbCdEFGH", allow_save=True))
+        if request.method == "GET" and path == f"{SF_API}/sobjects/Lead/00Q5g00000AbCdEFGH":
+            assert request.url.params["fields"] == "Description,IsConverted"
+            return httpx.Response(200, json={"Description": "Captured earlier", "IsConverted": False})
+        if request.method == "PATCH" and path == f"{SF_API}/sobjects/Lead/00Q5g00000AbCdEFGH":
+            description = json.loads(request.content)["Description"]
+            assert description.startswith("Captured earlier\n\n")
+            assert "Email: ada@example.com" in description
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected {request.method} {path}")
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    _run(UpsertLeadStrategy().sync(adapter, _lead()))
+    assert [c for c in calls if c[0] == "POST"] == [("POST", f"{SF_API}/sobjects/Lead")]
+    assert ("PATCH", f"{SF_API}/sobjects/Lead/00Q5g00000AbCdEFGH") in calls
+
+
+def test_salesforce_duplicate_of_a_converted_lead_creates_with_allow_save():
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = _path(request)
+        if path.endswith("/query"):
+            return httpx.Response(200, json={"records": []})
+        if request.method == "POST" and path == f"{SF_API}/sobjects/Lead":
+            posts.append(request.headers.get("sforce-duplicate-rule-header"))
+            if len(posts) == 1:
+                return httpx.Response(400, json=_duplicate_refusal("Lead", "00Q5g00000AbCdEFGH", allow_save=True))
+            return httpx.Response(201, json={"id": "00Q5g00000ZzZzZZZZ", "success": True, "errors": []})
+        if request.method == "GET":
+            return httpx.Response(200, json={"Description": "", "IsConverted": True})
+        raise AssertionError(f"unexpected {request.method} {path}")
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    assert _run(adapter.create_lead(_lead(), "details")) == "00Q5g00000ZzZzZZZZ"
+    assert posts == [None, "allowSave=true"]
+
+
+def test_salesforce_blocking_duplicate_rule_on_a_contact_is_reported():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(400, json=_duplicate_refusal("Contact", "0035g00000AbCdEFGH", allow_save=False))
+        raise AssertionError("a Contact match is not edited")
+
+    from crm.salesforce import SalesforceCrmAdapter
+
+    adapter = SalesforceCrmAdapter(StaticToken(), SF_INSTANCE, client_factory=_client(handler))
+    with pytest.raises(CrmError, match="duplicate rule blocks this Lead"):
+        _run(adapter.create_lead(_lead(), "details"))
+
+
 def test_salesforce_record_ids_are_checked_before_they_reach_a_path():
     from crm.contracts import require_salesforce_id
 
