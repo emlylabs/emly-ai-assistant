@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
+import { useBot } from "@/components/BotShell";
+import { CrmConnection, api } from "@/lib/api";
 import {
   Action,
   actionsFromConfig,
@@ -30,6 +32,25 @@ export default function ActionsSection({ config, patch, writable }: Props) {
   const actions = useMemo(() => actionsFromConfig(config.c_forms_selected), [config.c_forms_selected]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [wizardSkill, setWizardSkill] = useState<string | null>(null);
+  const { bot } = useBot();
+  // Connected CRMs feed the per-form "Send leads to" picker. `null` while
+  // loading or when this admin can't read them; the picker says so.
+  const [crmConnections, setCrmConnections] = useState<CrmConnection[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listCrmConnections(bot.slug)
+      .then((rows) => {
+        if (!cancelled) setCrmConnections(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setCrmConnections(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bot.slug]);
 
   const skillIds = Object.keys(
     (config.topics && typeof config.topics === "object" ? config.topics : {}) as Record<string, unknown>,
@@ -208,6 +229,8 @@ export default function ActionsSection({ config, patch, writable }: Props) {
               action={current}
               skillIds={skillIds}
               existingTriggerCodes={existingTriggerCodes}
+              crmConnections={crmConnections}
+              botSlug={bot.slug}
               writable={writable}
               onChange={(next) => updateAt(safeIndex, () => next)}
               onRename={(n) => rename(safeIndex, n)}
@@ -223,6 +246,7 @@ export default function ActionsSection({ config, patch, writable }: Props) {
           skillIds={skillIds}
           existingTriggerCodes={existingTriggerCodes}
           existingActionNames={actions.map((a) => a.name)}
+          crmNames={(crmConnections ?? []).length > 0}
           onCancel={() => setWizardSkill(null)}
           onSave={finishWizard}
         />

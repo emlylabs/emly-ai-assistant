@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from routes import (
     admin_audit,
     admin_bot_channels,
+    admin_crm,
     admin_bot_dashboard,
     admin_bot_files,
     admin_bot_realtime,
@@ -34,6 +35,7 @@ from routes import (
     bff_auth,
     channels as channels_route,
     chat,
+    crm_oauth,
     widget,
     workspace as workspace_routes,
 )
@@ -332,6 +334,7 @@ app.include_router(admin_widget.router, prefix="/api/admin", tags=["admin-widget
 app.include_router(admin_bot_files.router, prefix="/api/admin", tags=["admin-bot-files"])
 app.include_router(admin_bot_dashboard.router, prefix="/api/admin", tags=["admin-bot-dashboard"])
 app.include_router(admin_bot_channels.router, prefix="/api/admin", tags=["admin-bot-channels"])
+app.include_router(admin_crm.router, prefix="/api/admin", tags=["admin-crm"])
 # Phase 5 backend-backfill: per-session aggregation + audit-log read endpoints.
 app.include_router(admin_bot_sessions.router, prefix="/api/admin", tags=["admin-bot-sessions"])
 app.include_router(admin_audit.router, prefix="/api/admin", tags=["admin-audit"])
@@ -340,6 +343,7 @@ app.include_router(admin_bot_realtime.router, prefix="/api/admin", tags=["admin-
 # Workspace-scoped admin (§6): defaults, saved templates, bulk bot actions.
 app.include_router(workspace_routes.router, prefix="/api/admin", tags=["workspace"])
 app.include_router(channels_route.router, prefix="", tags=["channels"])
+app.include_router(crm_oauth.router, prefix="", tags=["crm-oauth"])
 # New OIDC admin client — login/callback/logout/me. Always mounted.
 app.include_router(auth_routes.router, prefix="/api/admin", tags=["admin-auth-oidc"])
 # BFF (Backend-for-Frontend) auth surface — silent refresh + refresh-claims

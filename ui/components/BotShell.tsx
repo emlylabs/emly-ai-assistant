@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   Menu,
   MessagesSquare,
+  Plug,
   Radio,
   ScrollText,
   Search,
@@ -67,6 +68,7 @@ const WORKSPACE_NAV: NavItem[] = [
   { href: "files",         label: "Knowledge",     icon: FileText,          chord: "g k" },
   { href: "retrieval",     label: "Retrieval",     icon: Search,            chord: "g r" },
   { href: "channels",      label: "Channels",      icon: Radio,             chord: "g h" },
+  { href: "crm",           label: "CRM",           icon: Plug,              chord: "g i" },
 ];
 
 const CONFIGURE_NAV: NavItem[] = [
@@ -281,8 +283,8 @@ export default function BotShell({ children }: { children: ReactNode }) {
   // Per-bot `g <key>` jump shortcuts. Mirrors the sidebar tab order so
   // muscle memory builds with hand-eye: g d = dashboard, g a = analytics,
   // g v = conversations, g k = knowledge (files), g r = retrieval,
-  // g h = channels, g c = config, g u = bot users, g m = members,
-  // g s = settings.
+  // g h = channels, g i = CRM, g c = config, g u = bot users,
+  // g m = members, g s = settings.
   useShortcuts(
     [
       ["g d", "dashboard", "Dashboard"],
@@ -291,6 +293,7 @@ export default function BotShell({ children }: { children: ReactNode }) {
       ["g k", "files", "Knowledge"],
       ["g r", "retrieval", "Retrieval"],
       ["g h", "channels", "Channels"],
+      ["g i", "crm", "CRM"],
       ["g c", "config", "Config"],
       ["g u", "users", "Bot users"],
       ["g m", "members", "Members"],

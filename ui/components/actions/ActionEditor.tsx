@@ -15,6 +15,7 @@ import {
   generateTriggerCode,
   summarizeAction,
 } from "@/lib/actions";
+import type { CrmConnection } from "@/lib/api";
 import FormFieldsEditor from "./FormFieldsEditor";
 
 // Plain-language editor for an existing Action.
@@ -35,6 +36,9 @@ type Props = {
   skillIds: string[];
   /** Existing trigger codes in the bot (to avoid collisions on regenerate). */
   existingTriggerCodes: Iterable<string>;
+  /** The bot's CRM connections; `null` while loading or unreadable. */
+  crmConnections: CrmConnection[] | null;
+  botSlug: string;
   writable: boolean;
   onChange: (next: Action) => void;
   onRename: (newName: string) => void;
@@ -45,6 +49,8 @@ export default function ActionEditor({
   action,
   skillIds,
   existingTriggerCodes,
+  crmConnections,
+  botSlug,
   writable,
   onChange,
   onRename,
@@ -71,6 +77,8 @@ export default function ActionEditor({
 
       <BehaviorCard
         action={action}
+        crmConnections={crmConnections}
+        botSlug={botSlug}
         writable={writable}
         onChange={onChange}
       />
@@ -340,10 +348,14 @@ function TriggerCard({
 
 function BehaviorCard({
   action,
+  crmConnections,
+  botSlug,
   writable,
   onChange,
 }: {
   action: Action;
+  crmConnections: CrmConnection[] | null;
+  botSlug: string;
   writable: boolean;
   onChange: (next: Action) => void;
 }) {
@@ -398,12 +410,22 @@ function BehaviorCard({
           description="Open a form so the visitor can submit structured information."
         >
           {showForm && action.form && (
-            <FormSubEditor
-              form={action.form}
-              writable={writable}
-              onChange={(next) => onChange({ ...action, form: next })}
-              actionName={action.name}
-            />
+            <>
+              <FormSubEditor
+                form={action.form}
+                writable={writable}
+                onChange={(next) => onChange({ ...action, form: next })}
+                actionName={action.name}
+                crmNames={(crmConnections ?? []).length > 0}
+              />
+              <CrmSubEditor
+                selected={action.crmProviders}
+                connections={crmConnections}
+                botSlug={botSlug}
+                writable={writable}
+                onChange={(crmProviders) => onChange({ ...action, crmProviders })}
+              />
+            </>
           )}
         </BehaviorRow>
 
@@ -506,11 +528,14 @@ function FormSubEditor({
   writable,
   onChange,
   actionName,
+  crmNames,
 }: {
   form: ActionFormConfig;
   writable: boolean;
   onChange: (next: ActionFormConfig) => void;
   actionName: string;
+  /** The bot has a CRM set up; see FormFieldsEditor. */
+  crmNames: boolean;
 }) {
   const isAuth = form.preset === "auth_form";
 
@@ -612,7 +637,114 @@ function FormSubEditor({
             submitLabel={form.submitLabel}
             onSubmitLabelChange={(submitLabel) => onChange({ ...form, submitLabel })}
             disabled={!writable}
+            crmNames={crmNames}
           />
+        </>
+      )}
+    </div>
+  );
+}
+
+const CRM_NAMES: Record<string, string> = {
+  zoho: "Zoho CRM",
+  salesforce: "Salesforce",
+};
+
+function crmName(provider: string): string {
+  return CRM_NAMES[provider] ?? provider;
+}
+
+// Which connected CRMs this form's submissions go to. `selected` undefined
+// means "every connected CRM" (the default, and how forms saved before this
+// setting behave); the first edit writes an explicit list.
+function CrmSubEditor({
+  selected,
+  connections,
+  botSlug,
+  writable,
+  onChange,
+}: {
+  selected: string[] | undefined;
+  connections: CrmConnection[] | null;
+  botSlug: string;
+  writable: boolean;
+  onChange: (next: string[] | undefined) => void;
+}) {
+  const crmPage = `/bots/${botSlug}/crm`;
+  const connected = (connections ?? [])
+    .filter((c) => c.status === "connected" || c.status === "error")
+    .map((c) => c.provider);
+  const effective = selected ?? connected;
+  // A CRM picked earlier and since disconnected stays listed so the admin
+  // can see why leads stopped and untick it.
+  const shown = [...connected, ...(selected ?? []).filter((p) => !connected.includes(p))];
+
+  function toggle(provider: string, on: boolean) {
+    const next = on
+      ? [...effective.filter((p) => p !== provider), provider]
+      : effective.filter((p) => p !== provider);
+    onChange(next);
+  }
+
+  return (
+    <div className="field" style={{ marginTop: 12, marginBottom: 0 }}>
+      <label>Send leads to CRM</label>
+      {connections === null ? (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Couldn&apos;t load this bot&apos;s CRM connections.
+        </div>
+      ) : shown.length === 0 ? (
+        <div className="muted" style={{ fontSize: 12 }}>
+          No CRM is connected. <a href={crmPage}>Connect Zoho CRM or Salesforce</a> to send
+          this form&apos;s leads there.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gap: 6 }}>
+            {shown.map((provider) => {
+              const isConnected = connected.includes(provider);
+              return (
+                <label
+                  key={provider}
+                  style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 400 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={effective.includes(provider)}
+                    onChange={(e) => toggle(provider, e.target.checked)}
+                    disabled={!writable}
+                  />
+                  {crmName(provider)}
+                  {!isConnected && (
+                    <span className="muted" style={{ fontSize: 11 }}>
+                      (not connected, so nothing is sent)
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            {selected === undefined
+              ? "Sending to every connected CRM, including any you connect later. "
+              : effective.length === 0
+                ? "This form's leads aren't sent to any CRM. "
+                : "Only the ticked CRMs get this form's leads. "}
+            A submission is sent only when it includes an email.
+            {selected !== undefined && writable && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => onChange(undefined)}
+                  style={{ padding: 0, fontSize: 11, textDecoration: "underline" }}
+                >
+                  Send to every connected CRM
+                </button>
+              </>
+            )}
+          </div>
         </>
       )}
     </div>

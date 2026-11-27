@@ -158,6 +158,10 @@ export type Action = {
   alert?: ActionAlertConfig;
   link?: ActionLinkConfig;
 
+  /** CRMs that form submissions are sent to (`trigger.crm_providers`).
+   * `undefined` = every connected CRM; `[]` = none. */
+  crmProviders?: string[];
+
   // Shared advanced settings.
   confirmation?: ActionConfirmation;
   limits?: ActionLimits;
@@ -368,6 +372,14 @@ function buildTrigger(action: Action): Record<string, unknown> {
     delete base.alert_emails;
     delete base.analysis_prompt;
     delete base.submit_query;
+  }
+
+  // CRM lead sync. Absent means "every connected CRM", so only write the
+  // key once the admin has made a choice.
+  if (action.crmProviders !== undefined) {
+    base.crm_providers = [...action.crmProviders];
+  } else {
+    delete base.crm_providers;
   }
 
   // Link / UTM
@@ -613,6 +625,7 @@ export function actionFromForm(item: LegacyFormItem): Action {
     "utm_tracking", "utm_tracking_query",
     "instances",
     "belongs_to",
+    "crm_providers",
   ]);
   const rawTrigger: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(item.trigger)) {
@@ -630,6 +643,9 @@ export function actionFromForm(item: LegacyFormItem): Action {
     kind,
     trigger,
     belongsTo: strArray(item.trigger.belongs_to),
+    crmProviders: Array.isArray(item.trigger.crm_providers)
+      ? strArray(item.trigger.crm_providers)
+      : str(item.trigger.crm_providers)?.split(",").map((s) => s.trim()).filter(Boolean),
     form: formCfg,
     alert: alertCfg,
     link: linkCfg,
@@ -695,6 +711,74 @@ export function defaultAction(skillName: string, existingCodes: Iterable<string>
       submitLabel: "Submit",
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// CRM field ids
+// ---------------------------------------------------------------------------
+//
+// A CRM lead is read from a form submission by field id: `email` (the only
+// one it needs), `full_name` / `name`, `first_name`, `last_name`, `phone`,
+// `use_case`. These mirror the keys in crm/capture.py. A form whose email
+// field is called `field_2` reaches no CRM, so while a CRM is set up the
+// editor names fields from their type and label instead.
+
+/** Field ids crm/capture.py reads an email from. */
+export const CRM_EMAIL_IDS = ["email", "email_address", "work_email"];
+
+const CRM_LABEL_IDS: [RegExp, string][] = [
+  [/\bfirst\s*name\b|\bgiven\s*name\b/, "first_name"],
+  [/\blast\s*name\b|\bsurname\b|\bfamily\s*name\b/, "last_name"],
+  [/e-?mail/, "email"],
+  [/phone|mobile|whats\s*app|contact\s*number/, "phone"],
+  [/\bname\b/, "full_name"],
+  [/use\s*case|message|requirement|how can we help/, "use_case"],
+];
+
+/** The CRM field id this field's type or label points to, if any. */
+export function crmFieldId(field: Pick<FormField, "type" | "label">): string | undefined {
+  if (field.type === "email") return "email";
+  if (field.type === "phone") return "phone";
+  const label = field.label.toLowerCase().replace(/_/g, " ");
+  // "Company name" is not the visitor's name.
+  if (/company|business|organi[sz]ation|brand|website/.test(label)) return undefined;
+  return CRM_LABEL_IDS.find(([re]) => re.test(label))?.[1];
+}
+
+/** An id the editor made up (`field`, `field_2`, `field 3`), not one an admin chose. */
+export function isGeneratedFieldId(id: string): boolean {
+  return /^field(?:[\s_-]*\d+)?$/i.test(id.trim());
+}
+
+/**
+ * The id to give `next` (the field after an edit) so a CRM can read it.
+ * Only a generated id, or the CRM id the field had before the edit, is
+ * replaced; an id the admin typed stays. Returns `next.id` when there is
+ * nothing to change or the CRM id is taken by another field.
+ */
+export function crmIdAfterEdit(prev: FormField, next: FormField, others: FormField[]): string {
+  const wanted = crmFieldId(next);
+  const replaceable = isGeneratedFieldId(next.id) || next.id === crmFieldId(prev);
+  if (!wanted || wanted === next.id || !replaceable) return next.id;
+  if (others.some((f) => f.id === wanted)) return next.id;
+  return wanted;
+}
+
+/** `fields` with every generated id that has a CRM id renamed to it. */
+export function withCrmFieldIds(fields: FormField[]): FormField[] {
+  const used = new Set(fields.map((f) => f.id));
+  return fields.map((f) => {
+    const wanted = crmFieldId(f);
+    if (!wanted || wanted === f.id || used.has(wanted) || !isGeneratedFieldId(f.id)) return f;
+    used.delete(f.id);
+    used.add(wanted);
+    return { ...f, id: wanted };
+  });
+}
+
+/** Whether a CRM can read an email from this form. */
+export function hasCrmEmailField(fields: FormField[]): boolean {
+  return fields.some((f) => CRM_EMAIL_IDS.includes(f.id));
 }
 
 // Lightweight email check — same shape every browser type="email" uses.
