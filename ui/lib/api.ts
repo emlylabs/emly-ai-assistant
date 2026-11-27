@@ -500,6 +500,58 @@ export type ChannelHealth = {
   info: Record<string, unknown>;
 };
 
+export type CrmDataCenter = {
+  id: string;
+  label: string;
+  /** Login/accounts origin; "" when the admin supplies it (Salesforce My Domain). */
+  accounts_host: string;
+  /** The admin pastes a login URL for this choice (Salesforce Developer Edition). */
+  login_url_required?: boolean;
+};
+
+/** One section of a provider's setup form, e.g. Salesforce's "Security". */
+export type CrmGuideSection = {
+  title: string;
+  items: string[];
+};
+
+export type CrmProviderInfo = {
+  id: string;
+  name: string;
+  /** Label for the `data_centers` choice ("Data center", "Environment"); "" when there is none. */
+  data_center_label?: string;
+  redirect_url: string;
+  scopes: string[];
+  scope_help: string;
+  data_centers: CrmDataCenter[];
+  requirements: string[];
+  steps: string[];
+  /** Setup guide split by the provider form's sections. Shown instead of `steps` when present. */
+  sections?: CrmGuideSection[];
+};
+
+export type CrmCatalog = {
+  public_base_url: string;
+  public_base_configured: boolean;
+  providers: CrmProviderInfo[];
+};
+
+export type CrmConnection = {
+  provider: string;
+  status: string;
+  client_id: string;
+  has_secret: boolean;
+  data_center: string | null;
+  expires_at: string | null;
+  token_issued_at: string | null;
+  expires_in: number | null;
+  scopes: string | null;
+  last_error: string | null;
+  api_domain: string | null;
+  /** Salesforce: the saved login origin (a My Domain URL for Developer Edition). */
+  login_url?: string | null;
+};
+
 export type DocumentType =
   | "web_page"
   | "document"
@@ -1761,6 +1813,33 @@ export const api = {
       "POST",
       `/bots/${encodeURIComponent(slug)}/channels/oauth-start`,
       payload
+    ),
+
+  // -------------------------------------------------------------------------
+  // CRM — per-bot Zoho CRM and Salesforce. The secret is write-only.
+  // -------------------------------------------------------------------------
+  crmCatalog: () => request<CrmCatalog>("GET", "/crm/providers"),
+  listCrmConnections: (slug: string) =>
+    request<CrmConnection[]>("GET", `/bots/${encodeURIComponent(slug)}/crm`),
+  saveCrmCredentials: (
+    slug: string,
+    provider: string,
+    body: { client_id: string; client_secret?: string; data_center?: string; login_url?: string }
+  ) =>
+    request<CrmConnection>(
+      "PUT",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}`,
+      body
+    ),
+  startCrmOAuth: (slug: string, provider: string) =>
+    request<{ authorize_url: string }>(
+      "POST",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}/oauth/start`
+    ),
+  disconnectCrm: (slug: string, provider: string) =>
+    request<{ status: string }>(
+      "DELETE",
+      `/bots/${encodeURIComponent(slug)}/crm/${encodeURIComponent(provider)}`
     ),
 };
 

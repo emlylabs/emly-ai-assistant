@@ -807,6 +807,16 @@ class TopicAgent(BaseAgent):
 
             # Reset slot-filling state
             self.conversation_manager.reset_slot_filling_state(self.topic_name)
+            # Every required slot is filled, and this topic collects contact
+            # details. Push the lead when an email was captured. A CRM
+            # failure stays off the visitor's reply.
+            if collects_contact_details(self.config):
+                try:
+                    from crm.dispatch import schedule_from_slots
+
+                    schedule_from_slots(self.conversation_manager.bot_id, current_slots, source="chat")
+                except Exception:
+                    log.exception("CRM lead sync could not be scheduled")
         return state
 
     def _generate_slot_question(self, slot_def: SlotDefinition) -> str:

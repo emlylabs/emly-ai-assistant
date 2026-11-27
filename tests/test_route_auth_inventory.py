@@ -44,6 +44,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/channels/{channel_type}/{channel_id}/events"): "channel webhook (provider signature)",
     ("GET", "/channels/{channel_type}/{channel_id}/events"): "channel webhook handshake",
     ("GET", "/channels/{channel_type}/oauth/callback"): "OAuth callback (signed state)",
+    ("GET", "/crm/{provider}/oauth/callback"): "CRM OAuth callback (signed state)",
     # --- Admin sign-in (BFF) — must work before a session exists.
     ("GET", "/api/admin/auth/login"): "admin sign-in",
     ("GET", "/api/admin/auth/callback"): "admin sign-in (OIDC callback)",

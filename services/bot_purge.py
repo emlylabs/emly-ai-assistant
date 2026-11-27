@@ -78,6 +78,7 @@ def purge_one(bot: BotModel) -> None:
         from models.bot_config_history import BotConfigHistory
         from models.crawl_jobs import CrawlJob, CrawlJobPage
         from models.crawl_schedules import CrawlSchedule
+        from models.crm_connections import CrmConnection
         from models.emly_sessions import EMLYSession
 
         from db.db import DB
@@ -88,6 +89,7 @@ def purge_one(bot: BotModel) -> None:
                 CrawlJobPage.delete().where(CrawlJobPage.job_id.in_(job_ids)).execute()
             CrawlJob.delete().where(CrawlJob.bot_id == bot_id).execute()
             CrawlSchedule.delete().where(CrawlSchedule.bot_id == bot_id).execute()
+            CrmConnection.delete().where(CrmConnection.bot_id == bot_id).execute()
             BotConfigHistory.delete().where(BotConfigHistory.bot_id == bot_id).execute()
             EMLYSession.delete().where(EMLYSession.bot_id == bot_id).execute()
             Bot.delete().where(Bot.id == bot_id).execute()

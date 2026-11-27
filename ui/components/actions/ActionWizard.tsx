@@ -64,6 +64,8 @@ type Props = {
   existingTriggerCodes: Iterable<string>;
   /** Existing action names — used to derive a unique starter name. */
   existingActionNames: Iterable<string>;
+  /** The bot has a CRM set up, so form fields get CRM names (`email`, `full_name`). */
+  crmNames?: boolean;
   onCancel: () => void;
   onSave: (action: Action) => void;
 };
@@ -73,6 +75,7 @@ export default function ActionWizard({
   skillIds,
   existingTriggerCodes,
   existingActionNames,
+  crmNames,
   onCancel,
   onSave,
 }: Props) {
@@ -156,6 +159,7 @@ export default function ActionWizard({
             draft={draft}
             onChange={setDraft}
             skillIds={skillIds}
+            crmNames={Boolean(crmNames)}
           />
         )}
         {step === "review" && (
@@ -485,10 +489,12 @@ function ConfigureStep({
   draft,
   onChange,
   skillIds,
+  crmNames,
 }: {
   draft: Action;
   onChange: (a: Action) => void;
   skillIds: string[];
+  crmNames: boolean;
 }) {
   const showForm = draft.kind === "show_form" || draft.kind === "advanced";
   const sendAlert = draft.kind === "send_alert" || draft.kind === "advanced";
@@ -522,6 +528,7 @@ function ConfigureStep({
             onSubmitLabelChange={(submitLabel) =>
               onChange({ ...draft, form: { ...draft.form!, submitLabel } })
             }
+            crmNames={crmNames}
           />
         </div>
       )}

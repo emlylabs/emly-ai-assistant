@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Copy, GripVertical, Trash2 } from "lucide-react";
-import { FIELD_TYPES, FormField, FormFieldType } from "@/lib/actions";
+import {
+  CRM_EMAIL_IDS,
+  FIELD_TYPES,
+  FormField,
+  FormFieldType,
+  crmIdAfterEdit,
+  hasCrmEmailField,
+  withCrmFieldIds,
+} from "@/lib/actions";
 
 // Vertical-card field editor. Replaces the cramped single-row layout.
 //
@@ -24,6 +32,9 @@ type Props = {
   submitLabel: string;
   onSubmitLabelChange: (label: string) => void;
   disabled?: boolean;
+  /** The bot has a CRM. Fields are named from their type and label
+   * (`email`, `full_name`, `phone`) so the CRM can read the submission. */
+  crmNames?: boolean;
 };
 
 export default function FormFieldsEditor({
@@ -32,11 +43,23 @@ export default function FormFieldsEditor({
   submitLabel,
   onSubmitLabelChange,
   disabled,
+  crmNames,
 }: Props) {
   const requiredCount = fields.filter((f) => f.required).length;
+  const crmFixed = crmNames ? withCrmFieldIds(fields) : fields;
+  const canFixIds = crmFixed.some((f, i) => f.id !== fields[i].id);
+  const missingEmail = Boolean(crmNames) && fields.length > 0 && !hasCrmEmailField(crmFixed);
 
   function update(i: number, fn: (f: FormField) => FormField) {
     onChange(fields.map((f, idx) => (idx === i ? fn(f) : f)));
+  }
+  // A type or label edit. With a CRM, a generated id follows the field.
+  function edit(i: number, next: FormField) {
+    if (crmNames) {
+      const others = fields.filter((_, idx) => idx !== i);
+      next = { ...next, id: crmIdAfterEdit(fields[i], next, others) };
+    }
+    update(i, () => next);
   }
   function remove(i: number) {
     onChange(fields.filter((_, idx) => idx !== i));
@@ -93,6 +116,38 @@ export default function FormFieldsEditor({
         </div>
       </div>
 
+      {crmNames && !disabled && (canFixIds || missingEmail) && (
+        <div className="banner warning" role="status" style={{ marginBottom: 12, fontSize: 12 }}>
+          {canFixIds ? (
+            <>
+              A CRM is connected to this bot. It reads a lead by field name, so name the
+              fields <code>full_name</code>, <code>email</code> and <code>phone</code>, not{" "}
+              <code>field_2</code>.{" "}
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => onChange(crmFixed)}
+                style={{ padding: 0, fontSize: 12, textDecoration: "underline" }}
+              >
+                Rename fields for the CRM
+              </button>
+            </>
+          ) : (
+            <>
+              A CRM is connected to this bot, but no field is named{" "}
+              {CRM_EMAIL_IDS.map((id, n) => (
+                <span key={id}>
+                  {n > 0 ? (n === CRM_EMAIL_IDS.length - 1 ? " or " : ", ") : ""}
+                  <code>{id}</code>
+                </span>
+              ))}
+              , so this form&apos;s submissions won&apos;t reach it. Set the email field&apos;s
+              type to Email, or its name to <code>email</code>.
+            </>
+          )}
+        </div>
+      )}
+
       {fields.length === 0 && (
         <p className="muted" style={{ fontSize: 13, margin: "8px 0" }}>
           No fields yet. Add one to start collecting information from visitors.
@@ -108,7 +163,7 @@ export default function FormFieldsEditor({
             disabled={disabled}
             isFirst={i === 0}
             isLast={i === fields.length - 1}
-            onChange={(next) => update(i, () => next)}
+            onChange={(next) => edit(i, next)}
             onRemove={() => remove(i)}
             onDuplicate={() => duplicate(i)}
             onMove={(dir) => move(i, dir)}
